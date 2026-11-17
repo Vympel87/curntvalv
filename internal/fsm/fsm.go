@@ -1,7 +1,6 @@
 // Package fsm is curntValv's replicated state machine. It receives committed
-// Raft entries and keeps the cluster metadata (design D1, D5): for now a
-// key-value map; later the source LSN, sink offsets, pipeline config and the
-// schema registry.
+// Raft entries and keeps the cluster metadata (design D1, D5): a key-value
+// map, the Postgres source position, the schema registry and sink offsets.
 //
 // Every normal Raft entry carries an envelope:
 //
@@ -36,8 +35,9 @@ const (
 type op uint8
 
 const (
-	opPut    op = 1
-	opDelete op = 2
+	opPut        op = 1
+	opDelete     op = 2
+	opSinkOffset op = 3
 )
 
 const (
@@ -46,7 +46,7 @@ const (
 	// MaxValueSize is the largest allowed value in bytes.
 	MaxValueSize = 1 << 20
 
-	snapshotVersion = 2
+	snapshotVersion = 3
 )
 
 var (
@@ -109,12 +109,32 @@ type FSM struct {
 	kv      map[string][]byte
 	src     SourceState
 	schemas map[uint64]*pb.Schema
+	sinks   map[string]uint64
 	applied uint64
+	// changed is closed (and replaced) whenever applied changes.
+	changed chan struct{}
 }
 
 // New returns an empty state machine.
 func New() *FSM {
-	return &FSM{kv: map[string][]byte{}, schemas: map[uint64]*pb.Schema{}}
+	return &FSM{kv: map[string][]byte{}, schemas: map[uint64]*pb.Schema{}, sinks: map[string]uint64{},
+		changed: make(chan struct{})}
+}
+
+// Applied returns the index of the last applied entry and a channel that is
+// closed as soon as it changes. Readers use it to wait for new entries
+// without polling.
+func (f *FSM) Applied() (uint64, <-chan struct{}) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.applied, f.changed
+}
+
+// setApplied must be called with f.mu held for writing.
+func (f *FSM) setApplied(idx uint64) {
+	f.applied = idx
+	close(f.changed)
+	f.changed = make(chan struct{})
 }
 
 // Apply applies one committed entry.
@@ -126,7 +146,7 @@ func (f *FSM) Apply(e raft.Entry) error {
 			return fmt.Errorf("fsm: entry %d: %w", e.Index, err)
 		}
 	}
-	f.applied = e.Index
+	f.setApplied(e.Index)
 	return nil
 }
 
@@ -160,6 +180,8 @@ func (f *FSM) applyMeta(b []byte) error {
 			return fmt.Errorf("%w: trailing bytes in delete", ErrCorrupt)
 		}
 		delete(f.kv, string(key))
+	case opSinkOffset:
+		return f.applySinkOffset(key, rest)
 	default:
 		return fmt.Errorf("%w: unknown meta op %d", ErrCorrupt, b[0])
 	}
@@ -199,9 +221,11 @@ func (f *FSM) AppliedIndex() uint64 {
 //	| version u8 | applied u64 | count uvarint | (key, value)* |
 //	| commit_lsn u64 | end_lsn u64 | partial_lsn u64 | partial_next_seq u32 |
 //	| anomalies u64 | schema count uvarint | schema* |
+//	| sink count uvarint | (sink name, offset u64)* |
 //
-// with keys in sorted order, schemas in id order, and each key, value and
-// schema (protobuf) length-prefixed.
+// with keys in sorted order, schemas in id order, sinks in name order, and
+// each key, value, schema (protobuf) and sink name length-prefixed. Version 2
+// (without the sink section) is still restored.
 func (f *FSM) Snapshot() ([]byte, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -235,12 +259,22 @@ func (f *FSM) Snapshot() ([]byte, error) {
 		}
 		b = appendBytes(b, sb)
 	}
+	names := make([]string, 0, len(f.sinks))
+	for n := range f.sinks {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	b = binary.AppendUvarint(b, uint64(len(names)))
+	for _, n := range names {
+		b = appendBytes(b, []byte(n))
+		b = binary.LittleEndian.AppendUint64(b, f.sinks[n])
+	}
 	return b, nil
 }
 
 // Restore replaces the whole state with a snapshot.
 func (f *FSM) Restore(b []byte) error {
-	if len(b) < 9 || b[0] != snapshotVersion {
+	if len(b) < 9 || (b[0] != snapshotVersion && b[0] != 2) {
 		return fmt.Errorf("%w: bad snapshot header", ErrCorrupt)
 	}
 	applied := binary.LittleEndian.Uint64(b[1:9])
@@ -291,11 +325,28 @@ func (f *FSM) Restore(b []byte) error {
 		schemas[sc.GetId()] = sc
 		rest = r
 	}
+	sinks := map[string]uint64{}
+	if b[0] >= 3 {
+		nk, k := binary.Uvarint(rest)
+		if k <= 0 {
+			return fmt.Errorf("%w: bad sink count", ErrCorrupt)
+		}
+		rest = rest[k:]
+		for range nk {
+			name, r, ok := readBytes(rest)
+			if !ok || len(r) < 8 {
+				return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+			}
+			sinks[string(name)] = binary.LittleEndian.Uint64(r[:8])
+			rest = r[8:]
+		}
+	}
 	if len(rest) != 0 {
 		return fmt.Errorf("%w: trailing bytes in snapshot", ErrCorrupt)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kv, f.applied, f.src, f.schemas = kv, applied, src, schemas
+	f.kv, f.src, f.schemas, f.sinks = kv, src, schemas, sinks
+	f.setApplied(applied)
 	return nil
 }
