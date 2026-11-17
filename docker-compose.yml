@@ -1,9 +1,12 @@
-# A local 3-node curntValv cluster capturing changes from a Postgres.
+# A local 3-node curntValv cluster capturing changes from a Postgres and
+# delivering them to ClickHouse.
 #
 #   docker compose up -d --build
 #   curntvalv status                      # default --addr is 127.0.0.1:7001-7003
 #   docker compose exec postgres psql -U postgres -c "INSERT INTO orders (item, qty) VALUES ('apple', 3)"
-#   curntvalv log --follow                # the change, as JSON
+#   curntvalv subscribe --table orders    # the change, as JSON, then new ones
+#   docker compose exec clickhouse clickhouse-client --password curntvalv \
+#     -q "SELECT op, after FROM curntvalv_events FINAL"
 #   docker compose kill node1             # kill a node (maybe the leader)
 #   docker compose start node1            # it recovers from its volume
 #
@@ -15,6 +18,8 @@ x-node: &node
   restart: "no"
   depends_on:
     postgres:
+      condition: service_healthy
+    clickhouse:
       condition: service_healthy
   environment:
     CURNTVALV_PG_URL: postgres://postgres:curntvalv@postgres:5432/postgres?sslmode=disable
@@ -33,27 +38,43 @@ services:
       test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 2s
       retries: 30
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_PASSWORD: curntvalv
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    ports: ["127.0.0.1:18123:8123"]
+    volumes: ["clickhouse:/var/lib/clickhouse"]
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--password", "curntvalv", "-q", "SELECT 1"]
+      interval: 2s
+      retries: 30
   node1:
     <<: *node
     command: ["server", "--id", "1", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
-              "--listen", "0.0.0.0:7000", "--data-dir", "/data"]
+              "--listen", "0.0.0.0:7000", "--data-dir", "/data",
+              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123"]
     ports: ["127.0.0.1:7001:7000"]
     volumes: ["node1:/data"]
   node2:
     <<: *node
     command: ["server", "--id", "2", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
-              "--listen", "0.0.0.0:7000", "--data-dir", "/data"]
+              "--listen", "0.0.0.0:7000", "--data-dir", "/data",
+              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123"]
     ports: ["127.0.0.1:7002:7000"]
     volumes: ["node2:/data"]
   node3:
     <<: *node
     command: ["server", "--id", "3", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
-              "--listen", "0.0.0.0:7000", "--data-dir", "/data"]
+              "--listen", "0.0.0.0:7000", "--data-dir", "/data",
+              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123"]
     ports: ["127.0.0.1:7003:7000"]
     volumes: ["node3:/data"]
 
 volumes:
   postgres:
+  clickhouse:
   node1:
   node2:
   node3:

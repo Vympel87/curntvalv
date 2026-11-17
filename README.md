@@ -54,27 +54,34 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Raft: election, replication, snapshots, compaction, linearizable reads | ✅ implemented, fault-tested |
 | gRPC transport, `curntvalv server`, metadata KV | ✅ implemented |
 | Postgres source (exactly-once into the log, tested with leader kills) | ✅ implemented |
-| Sinks, subscribe API | ⏳ next |
-| Retention, dashboard, metrics | planned |
+| Sinks (ClickHouse, webhook) with stored offsets, subscribe API | ✅ implemented |
+| Retention, replay policies, chaos test | ⏳ next |
+| Dashboard, metrics | planned |
 
-## Try it: a 3-node cluster with Postgres
+## Try it: a 3-node cluster with Postgres and ClickHouse
 
-With Docker (starts Postgres with a demo `orders` table and three nodes):
+With Docker (starts Postgres with a demo `orders` table, ClickHouse, and
+three nodes that deliver to it):
 
 ```bash
 docker compose up -d --build
 make build
-bin/curntvalv status                 # one leader, two followers
+bin/curntvalv status                 # one leader, two followers, source and sink
 docker compose exec postgres psql -U postgres \
   -c "INSERT INTO orders (item, qty) VALUES ('apple', 3)"
-bin/curntvalv log                    # the change as JSON, read from the log
+bin/curntvalv subscribe --table orders   # the change as JSON; keeps streaming (Ctrl-C)
+docker compose exec clickhouse clickhouse-client --password curntvalv \
+  -q "SELECT op, after FROM curntvalv_events FINAL"
 docker compose kill node1            # kill a node (try the leader)
 docker compose exec postgres psql -U postgres \
   -c "UPDATE orders SET qty = 5 WHERE item = 'apple'"
-bin/curntvalv log --follow           # still captured with 2 of 3 nodes
+bin/curntvalv subscribe --table orders   # still captured and delivered with 2 of 3 nodes
 docker compose start node1           # it recovers from its volume
 docker compose down -v               # remove everything, data included
 ```
+
+`bin/curntvalv log` prints the raw log; `subscribe` filters by table and
+resumes with `--from` (the last printed `index` + 1).
 
 Against your own Postgres (14 or newer):
 
@@ -91,6 +98,32 @@ bin/curntvalv server --id 1 --peers $P --data-dir data/1   # on each node
 The leader creates the replication slot `curntvalv` on first start. The
 user needs the `REPLICATION` attribute (or superuser) and must be able to
 terminate the slot's previous reader.
+
+## Sinks
+
+Add `--sink` (repeatable) to every node, with the same values everywhere:
+
+```bash
+--sink 'name=ch,type=clickhouse,url=http://user:pass@clickhouse:8123'
+--sink 'name=hook,type=webhook,url=https://example.com/cdc,table=orders'
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | Required. Lower case letters, digits, `_`, `-`; the offset is stored under it |
+| `type` | `clickhouse` or `webhook` |
+| `url` | ClickHouse HTTP interface, or the webhook URL |
+| `table` | Only these tables (`orders` or `public.orders`); repeat for more. Default: all |
+| `start` | `earliest` (default: the whole retained history) or `latest`, for a new sink |
+| `database`, `into` | ClickHouse database (default `default`) and table (default `curntvalv_events`) |
+
+Delivery is at-least-once: after a leader change some changes can arrive
+again. Every change has a stable `id` (`"<commit LSN>:<seq>"`). ClickHouse
+gets a `ReplacingMergeTree` changelog table that drops copies on merge (use
+`FINAL` in queries); webhook receivers should de-duplicate on `id`. The
+webhook body is `{"sink": "hook", "events": [...]}`; any 2xx is success,
+anything else is retried with backoff. `curntvalv status` shows each sink's
+offset, lag and last error.
 
 Without Docker, start three processes:
 
@@ -114,6 +147,8 @@ is no TLS yet, so run it on a trusted network only.
 make test    # go vet + go test -race
 make build   # builds ./bin/curntvalv
 make test-pg # the same, plus the Postgres tests (starts Postgres in Docker)
+make test-ch # the same, plus the ClickHouse tests (starts ClickHouse in Docker)
+make test-ext # with both
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 ```
 

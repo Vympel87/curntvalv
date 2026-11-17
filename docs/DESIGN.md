@@ -70,10 +70,11 @@ and are ready to take over.
 | `internal/raft`        | Raft: election, log replication, snapshots. Written from scratch |
 | `internal/fsm`         | State machine: metadata KV applied from committed entries |
 | `internal/source/pg`   | Postgres logical replication reader (pgoutput) |
-| `internal/sink/...`    | Sink interface + ClickHouse, webhook, stdout |
+| `internal/event`       | Turns committed entries into row changes; shared JSON form |
+| `internal/sink`        | Sink runner (offsets, retries) + ClickHouse and webhook sinks |
 | `internal/transport`   | Raft messages between nodes over gRPC (D10) |
 | `internal/pb`          | Generated protobuf/gRPC code (from `proto/`) |
-| `internal/server`      | Client-facing gRPC (admin now; subscribe later) + HTTP (dashboard, metrics) |
+| `internal/server`      | Client-facing gRPC (admin, subscribe); later HTTP (dashboard, metrics) |
 | `cmd/curntvalv`             | Single binary: `curntvalv server`, `curntvalv status`, `curntvalv subscribe`, ... |
 
 ## 3. Key design decisions
@@ -133,8 +134,8 @@ anything anyway — its Raft term is stale.
   the offset. If it crashes between the two steps, some events are delivered
   again.
 - Every event has a stable key: `(commit LSN, position in transaction)`.
-  Sinks use it to make redelivery harmless (ClickHouse `ReplacingMergeTree`
-  versioned by LSN, upsert by primary key, webhook `Idempotency-Key` header).
+  Sinks use it to make redelivery harmless (ClickHouse changelog table as a
+  `ReplacingMergeTree` keyed by it, the webhook's event `id`; see D12).
 
 We say "no lost events, no visible duplicates for idempotent sinks". We do
 not claim exactly-once in general.
@@ -257,6 +258,8 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   the same port. Writes and linearizable reads only work on the leader; other
   nodes answer `FAILED_PRECONDITION` naming the leader, and the CLI tries
   the next address.
+- **SubscribeService** streams row changes to applications from any node
+  (D12).
 - **No TLS or authentication yet.** Clusters must run on a trusted network
   until a later milestone adds TLS.
 - Maximum gRPC message size is 64 MiB (revisit with large transactions, M4).
@@ -305,6 +308,65 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   possible optimization if the target (thousands of changes per second)
   needs it.
 
+### D12. Delivery: sinks and subscribe
+
+- **Offsets.** A sink's offset is the last log index it has delivered,
+  stored in the state machine by a `Meta` command. Applying an offset lower
+  than the stored one changes nothing, so a late command from an old leader
+  cannot move a sink backwards. Snapshots (format v3) include the offsets
+  and the index of the last entry with row changes.
+- **Where sinks run.** Like the source (D11): on the leader only, with the
+  same leader-gated supervisor. A session starts with `ReadIndex`, reads the
+  stored offset and delivers from the next index. Every node must be started
+  with the same `--sink` flags; offsets are kept by sink name.
+- **Delivery loop.** Read up to 100 committed entries after the offset, pass
+  their changes to the sink in batches of at most 500, then store the
+  offset of the last entry read. A failed batch is retried with backoff
+  (100ms to 30s) until it succeeds or leadership moves; the source and
+  Postgres are not affected (D6). A crash or leader change between delivery
+  and storing the offset delivers those changes again (D4).
+- **Skipped entries.** With a table filter, entries whose changes all fail
+  the filter are not delivered, but the offset is still moved past them, at
+  most once a second. Entries that are not transaction batches (no-ops,
+  offsets of other sinks) never cause an offset update by themselves, so
+  offset commands do not feed each other.
+- **New sinks** start with the oldest retained entry, or with `start=latest`
+  at the current commit index. A sink whose offset was removed by log
+  compaction stops with an error (state `failed`) until leadership changes
+  or the node restarts; retention policies come with D5 (M6).
+- **Webhook.** One POST per batch: `{"sink": NAME, "events": [...]}` with
+  the shared JSON form of a change. 2xx means delivered. The
+  `Idempotency-Key` header ("FIRST_ID..LAST_ID") is stable across retries of
+  the same request, but a new leader may cut batches differently, so
+  receivers de-duplicate on each event's `id` (`"<commit LSN>:<seq>"`).
+- **ClickHouse.** Through the HTTP interface with the standard library, so
+  no new dependency. One changelog table (default `curntvalv_events`),
+  created if missing: event id, log index, LSN, seq, xid, commit time,
+  source table, op, and `before`/`after` as JSON text. Engine
+  `ReplacingMergeTree ORDER BY (source_table, lsn, seq)`: a redelivered
+  change has the same key and disappears on merge; `FINAL` hides it before
+  that. Mirror tables (one per Postgres table, upserted by primary key, with
+  typed columns) are planned after v0.1.
+- **Subscribe API.** `SubscribeService.Subscribe(from_index, tables)` is a
+  server stream that any node can serve. It reads only entries the node has
+  applied (so every schema is known), sends each schema once per stream,
+  splits responses at about 1 MiB between log entries, and waits for new
+  entries through a notification from the state machine instead of
+  polling. Offsets are managed by the client: `next_index` in each response
+  is where to resume. Server-side named consumers may follow later.
+  `curntvalv subscribe` prints changes as JSON lines and resumes on another
+  node when its node fails.
+- **Status.** `curntvalv status` shows the source state and, per sink, its
+  state on the leader, stored offset, lag (log entries between the offset and
+  the newest entry with row changes, so 0 when nothing is left to deliver),
+  changes delivered and last error.
+- **Testing.** Runner tests use an in-memory node and cover retries, leader
+  changes, filters, batching and compaction. The end-to-end checker also
+  runs a webhook receiver that fails one request in five, a subscriber
+  process and (with `CURNTVALV_TEST_CH_URL`, `make test-ch`) a ClickHouse
+  sink; after de-duplication by event id each must hold every row exactly
+  once.
+
 ## 4. Data model
 
 ```
@@ -347,8 +409,8 @@ that the sink contains exactly rows 1..N.
 
 ## 6. Open questions
 
-- Subscribe API: server-side named consumers (offset stored in curntValv) vs.
-  client-managed offsets. Leaning: support both, start with client-managed.
+- Subscribe API: client-managed offsets are done (D12). Server-side named
+  consumers (offset stored in curntValv, like a sink) may follow.
 - Initial table snapshot (backfill of rows that existed before the slot):
   needed for real use, planned after v0.1.
 - Entry encoding: the Raft entry header is hand-written binary (D9),
