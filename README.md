@@ -53,23 +53,44 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Log storage (`internal/wal`) | ✅ implemented, tested |
 | Raft: election, replication, snapshots, compaction, linearizable reads | ✅ implemented, fault-tested |
 | gRPC transport, `curntvalv server`, metadata KV | ✅ implemented |
-| Postgres source | ⏳ next |
-| Sinks, subscribe, dashboard | planned |
+| Postgres source (exactly-once into the log, tested with leader kills) | ✅ implemented |
+| Sinks, subscribe API | ⏳ next |
+| Retention, dashboard, metrics | planned |
 
-## Try it: a 3-node cluster
+## Try it: a 3-node cluster with Postgres
 
-With Docker:
+With Docker (starts Postgres with a demo `orders` table and three nodes):
 
 ```bash
 docker compose up -d --build
 make build
 bin/curntvalv status                 # one leader, two followers
-bin/curntvalv kv put hello world
+docker compose exec postgres psql -U postgres \
+  -c "INSERT INTO orders (item, qty) VALUES ('apple', 3)"
+bin/curntvalv log                    # the change as JSON, read from the log
 docker compose kill node1            # kill a node (try the leader)
-bin/curntvalv kv get hello           # still works with 2 of 3 nodes
+docker compose exec postgres psql -U postgres \
+  -c "UPDATE orders SET qty = 5 WHERE item = 'apple'"
+bin/curntvalv log --follow           # still captured with 2 of 3 nodes
 docker compose start node1           # it recovers from its volume
-docker compose down -v               # remove the cluster and its data
+docker compose down -v               # remove everything, data included
 ```
+
+Against your own Postgres (14 or newer):
+
+```sql
+-- postgresql.conf: wal_level = logical (needs a restart)
+CREATE PUBLICATION curntvalv FOR TABLE orders, customers;
+```
+
+```bash
+export CURNTVALV_PG_URL='postgres://user:pass@host:5432/db'
+bin/curntvalv server --id 1 --peers $P --data-dir data/1   # on each node
+```
+
+The leader creates the replication slot `curntvalv` on first start. The
+user needs the `REPLICATION` attribute (or superuser) and must be able to
+terminate the slot's previous reader.
 
 Without Docker, start three processes:
 
@@ -80,6 +101,7 @@ bin/curntvalv server --id 1 --peers $P --data-dir data/1 &
 bin/curntvalv server --id 2 --peers $P --data-dir data/2 &
 bin/curntvalv server --id 3 --peers $P --data-dir data/3 &
 bin/curntvalv status
+bin/curntvalv kv put hello world     # metadata KV, works without Postgres
 ```
 
 The key-value store holds cluster metadata; it is how M3 shows that the
@@ -91,10 +113,11 @@ is no TLS yet, so run it on a trusted network only.
 ```bash
 make test    # go vet + go test -race
 make build   # builds ./bin/curntvalv
+make test-pg # the same, plus the Postgres tests (starts Postgres in Docker)
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 ```
 
-Requires Go 1.24+.
+Requires Go 1.25+.
 
 ## License
 

@@ -118,7 +118,9 @@ in memory with a fake network.
   and drops any transaction with commit LSN ≤ `source_lsn`.
 
 Result: a transaction is never lost (Postgres keeps it until a majority has
-it) and never stored twice (LSN de-duplication).
+it) and never stored twice (LSN de-duplication). For transactions split into
+several entries the state machine also records how far a partly stored
+transaction got, so even its events are stored exactly once (D11).
 
 Fencing: Postgres allows one active connection per slot. A new leader
 terminates the old connection before it starts. The old leader cannot commit
@@ -259,6 +261,50 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   until a later milestone adds TLS.
 - Maximum gRPC message size is 64 MiB (revisit with large transactions, M4).
 
+### D11. Postgres ingest
+
+- **Where it runs.** Only on the Raft leader. A supervisor polls the node's
+  role; it starts a session when the node becomes leader and cancels it as
+  soon as the node is no longer leader of that term.
+- **Session start.** `ReadIndex` first (the state machine then reflects
+  everything committed and we are still leader), then read the stored
+  position. Check `wal_level = logical` and that the publication exists. If
+  the slot is held by another connection, terminate it (fencing, D3) and
+  wait until it is free.
+- **Slot rules (D7).** The slot is created only when the cluster has stored
+  nothing yet. A missing slot after that, or a slot whose confirmed position
+  is past the stored `end_lsn`, stops ingest with an error and is not
+  retried in the same term: changes may have been lost and an operator must
+  decide.
+- **Streaming.** pgoutput protocol version 1: Postgres sends a transaction
+  only after it committed, and BEGIN already carries the commit LSN, so
+  batches can be stored while the transaction is still arriving. A batch is
+  closed at 1000 events or 1 MiB. Batches are proposed one after the other,
+  each waiting for its commit.
+- **Exactly-once storage.** The state machine holds the last fully stored
+  transaction (`commit_lsn`, `end_lsn`) and, while a large transaction is
+  stored only in part, its LSN and next event sequence number. A new leader
+  restarts replication at `end_lsn`, drops transactions at or below
+  `commit_lsn`, and skips the events of the partial transaction that are
+  already stored. A batch that does not continue the stored position exactly
+  is ignored on every node and counted as an anomaly (never seen in tests);
+  failing instead would make a poison entry that stops the cluster forever.
+- **Acknowledgement.** Postgres is told `flush = end_lsn` of the last stored
+  transaction, never more. Since Postgres 15, transactions without published
+  changes are not sent at all, so when idle the source also stores the WAL
+  position from Postgres keepalives (as an empty batch, at most once per
+  status interval, default 10s) and then acknowledges it. Without this, a
+  database whose published tables are quiet would keep WAL forever (D6).
+- **Errors.** Connection and Raft errors retry with backoff (1s to 30s).
+- **Testing.** Tests that need Postgres read `CURNTVALV_TEST_PG_URL` and are
+  skipped without it; `make test-pg` runs them against a throwaway Postgres
+  17 in Docker, and CI runs a Postgres service. The end-to-end checker writes
+  3000 numbered rows while killing the leader three times and verifies every
+  row is stored exactly once, in commit order.
+- **Throughput.** One Raft round trip per batch. Pipelining proposals is a
+  possible optimization if the target (thousands of changes per second)
+  needs it.
+
 ## 4. Data model
 
 ```
@@ -274,8 +320,15 @@ Event {
 ```
 
 Schemas (column names and types, from pgoutput `Relation` messages) are stored
-once in the state machine and referenced by id. Entries use a compact binary
-encoding; JSON is produced at the edges (webhook, CLI, dashboard).
+once in the state machine and referenced by id. The id is derived from the
+schema's content (first 8 bytes of a SHA-256), so every node computes the same
+id and a changed table gets a new one. Entries are protobuf (`TxBatch` in
+`proto/curntvalv/v1/event.proto`); JSON is produced at the edges (webhook,
+CLI, dashboard).
+
+Column values are kept exactly as pgoutput sends them: Postgres text format,
+NULL, or "unchanged TOAST" (a large value an UPDATE did not touch; Postgres
+does not send it). Converting text to typed values is the sinks' job.
 
 ## 5. Failure scenarios the tests must cover
 

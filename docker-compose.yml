@@ -1,10 +1,10 @@
-# A local 3-node curntValv cluster.
+# A local 3-node curntValv cluster capturing changes from a Postgres.
 #
 #   docker compose up -d --build
 #   curntvalv status                      # default --addr is 127.0.0.1:7001-7003
-#   curntvalv kv put hello world
+#   docker compose exec postgres psql -U postgres -c "INSERT INTO orders (item, qty) VALUES ('apple', 3)"
+#   curntvalv log --follow                # the change, as JSON
 #   docker compose kill node1             # kill a node (maybe the leader)
-#   curntvalv kv get hello                # still works with 2 of 3 nodes
 #   docker compose start node1            # it recovers from its volume
 #
 # No TLS: only for a trusted local network (design D10).
@@ -13,8 +13,26 @@ x-node: &node
   build: .
   image: curntvalv:dev
   restart: "no"
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    CURNTVALV_PG_URL: postgres://postgres:curntvalv@postgres:5432/postgres?sslmode=disable
 
 services:
+  postgres:
+    image: postgres:17
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      POSTGRES_PASSWORD: curntvalv
+    ports: ["127.0.0.1:15432:5432"]
+    volumes:
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 30
   node1:
     <<: *node
     command: ["server", "--id", "1", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
@@ -35,6 +53,7 @@ services:
     volumes: ["node3:/data"]
 
 volumes:
+  postgres:
   node1:
   node2:
   node3:
