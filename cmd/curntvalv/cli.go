@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -197,4 +199,143 @@ func onLeader(ctx context.Context, addrs []string, call func(context.Context, pb
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+func logCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("log", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	from := fs.Uint64("from", 0, "first log index (0 = oldest retained)")
+	limit := fs.Int("limit", 0, "stop after this many events (0 = no limit)")
+	follow := fs.Bool("follow", false, "keep waiting for new entries")
+	def := os.Getenv("CURNTVALV_ADDR")
+	if def == "" {
+		def = defaultAddrs
+	}
+	addr := fs.String("addr", def, "node addresses, comma separated; the first reachable one is used")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return usageErr("log takes no arguments")
+	}
+	client, closeFn, err := firstReachable(ctx, strings.Split(*addr, ","))
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	enc := json.NewEncoder(stdout)
+	next, printed := *from, 0
+	for {
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		resp, err := client.ReadLog(rctx, &pb.ReadLogRequest{FromIndex: next, Limit: 500})
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return errors.New(status.Convert(err).Message())
+		}
+		for _, e := range resp.GetEntries() {
+			next = e.GetIndex() + 1
+			tb := e.GetTxBatch()
+			for i, ev := range tb.GetEvents() {
+				if *limit > 0 && printed >= *limit {
+					return nil
+				}
+				if err := enc.Encode(eventJSON(e.GetIndex(), tb, uint32(i), ev, resp.GetSchemas()[ev.GetSchemaId()])); err != nil {
+					return err
+				}
+				printed++
+			}
+		}
+		if len(resp.GetEntries()) > 0 {
+			continue
+		}
+		if !*follow {
+			return nil
+		}
+		if next == 0 {
+			next = resp.GetFirstIndex()
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func firstReachable(ctx context.Context, addrs []string) (pb.AdminServiceClient, func(), error) {
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, err := nodeStatus(ctx, a); err != nil {
+			continue
+		}
+		conn, client, err := dial(a)
+		if err != nil {
+			continue
+		}
+		return client, func() { conn.Close() }, nil
+	}
+	return nil, nil, errors.New("no node reachable")
+}
+
+// jsonEvent is how the CLI prints one row change.
+type jsonEvent struct {
+	Index      uint64         `json:"index"`
+	LSN        string         `json:"lsn"`
+	Seq        uint32         `json:"seq"`
+	Xid        uint32         `json:"xid"`
+	CommitTime string         `json:"commit_time"`
+	Table      string         `json:"table"`
+	Op         string         `json:"op"`
+	Before     map[string]any `json:"before,omitempty"`
+	After      map[string]any `json:"after,omitempty"`
+	Unchanged  []string       `json:"unchanged,omitempty"`
+}
+
+func formatLSN(lsn uint64) string { return fmt.Sprintf("%X/%X", lsn>>32, uint32(lsn)) }
+
+func eventJSON(index uint64, tb *pb.TxBatch, i uint32, ev *pb.Event, sc *pb.Schema) jsonEvent {
+	je := jsonEvent{
+		Index:      index,
+		LSN:        formatLSN(tb.GetCommitLsn()),
+		Seq:        tb.GetFirstSeq() + i,
+		Xid:        tb.GetXid(),
+		CommitTime: time.UnixMicro(tb.GetCommitTimeUs()).UTC().Format(time.RFC3339Nano),
+		Table:      fmt.Sprintf("schema#%d", ev.GetSchemaId()),
+		Op:         strings.ToLower(strings.TrimPrefix(ev.GetOp().String(), "OP_")),
+	}
+	if sc != nil {
+		je.Table = sc.GetNamespace() + "." + sc.GetName()
+	}
+	row := func(r *pb.Row) map[string]any {
+		if r == nil {
+			return nil
+		}
+		m := map[string]any{}
+		for c, v := range r.GetValues() {
+			name := fmt.Sprintf("col%d", c)
+			if sc != nil && c < len(sc.GetColumns()) {
+				name = sc.GetColumns()[c].GetName()
+			}
+			switch v.GetKind() {
+			case pb.ValueKind_VALUE_KIND_NULL:
+				m[name] = nil
+			case pb.ValueKind_VALUE_KIND_TEXT:
+				m[name] = string(v.GetData())
+			case pb.ValueKind_VALUE_KIND_BINARY:
+				m[name] = base64.StdEncoding.EncodeToString(v.GetData())
+			case pb.ValueKind_VALUE_KIND_UNCHANGED:
+				je.Unchanged = append(je.Unchanged, name)
+			}
+		}
+		return m
+	}
+	je.Before, je.After = row(ev.GetBefore()), row(ev.GetAfter())
+	return je
 }

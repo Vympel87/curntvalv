@@ -385,3 +385,50 @@ func (s *syncStable) Save(hs HardState) error {
 	}
 	return s.memStable.Save(hs)
 }
+
+func TestNodeReadCommitted(t *testing.T) {
+	c := newLiveClusterCfg(t, 3, snapCfg(10, 15))
+	for i := range 250 { // enough to fill several 1 KiB wal segments
+		c.propose(fmt.Sprintf("v%d", i))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	n := c.nodes[1].node
+	st, err := n.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.FirstIndex <= 1 {
+		t.Fatalf("log not compacted: %+v", st)
+	}
+	if _, err := n.ReadCommitted(ctx, 1, 10); !errors.Is(err, ErrCompacted) {
+		t.Fatalf("read of compacted entries: %v", err)
+	}
+	// Read everything retained, page by page; indexes are contiguous and
+	// never pass the commit index.
+	next := uint64(0)
+	var got []Entry
+	for {
+		es, err := n.ReadCommitted(ctx, next, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(es) == 0 {
+			break
+		}
+		got = append(got, es...)
+		next = es[len(es)-1].Index + 1
+	}
+	if len(got) == 0 || got[0].Index != st.FirstIndex {
+		t.Fatalf("first entry %v, want index %d", got[:min(1, len(got))], st.FirstIndex)
+	}
+	for i, e := range got {
+		if e.Index != got[0].Index+uint64(i) {
+			t.Fatalf("gap at %d", e.Index)
+		}
+	}
+	st2, _ := n.Status(ctx)
+	if last := got[len(got)-1].Index; last > st2.CommitIndex {
+		t.Fatalf("read past commit index: %d > %d", last, st2.CommitIndex)
+	}
+}

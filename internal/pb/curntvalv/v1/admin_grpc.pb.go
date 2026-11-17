@@ -19,10 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AdminService_Status_FullMethodName = "/curntvalv.v1.AdminService/Status"
-	AdminService_Put_FullMethodName    = "/curntvalv.v1.AdminService/Put"
-	AdminService_Get_FullMethodName    = "/curntvalv.v1.AdminService/Get"
-	AdminService_Delete_FullMethodName = "/curntvalv.v1.AdminService/Delete"
+	AdminService_Status_FullMethodName  = "/curntvalv.v1.AdminService/Status"
+	AdminService_Put_FullMethodName     = "/curntvalv.v1.AdminService/Put"
+	AdminService_Get_FullMethodName     = "/curntvalv.v1.AdminService/Get"
+	AdminService_Delete_FullMethodName  = "/curntvalv.v1.AdminService/Delete"
+	AdminService_ReadLog_FullMethodName = "/curntvalv.v1.AdminService/ReadLog"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -38,6 +39,10 @@ type AdminServiceClient interface {
 	// Get is linearizable (Raft read-only protocol, section 8).
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	// ReadLog returns committed log entries. Any node can serve it; a follower
+	// may be a little behind the leader. Entries removed by log compaction
+	// give OUT_OF_RANGE.
+	ReadLog(ctx context.Context, in *ReadLogRequest, opts ...grpc.CallOption) (*ReadLogResponse, error)
 }
 
 type adminServiceClient struct {
@@ -88,6 +93,16 @@ func (c *adminServiceClient) Delete(ctx context.Context, in *DeleteRequest, opts
 	return out, nil
 }
 
+func (c *adminServiceClient) ReadLog(ctx context.Context, in *ReadLogRequest, opts ...grpc.CallOption) (*ReadLogResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadLogResponse)
+	err := c.cc.Invoke(ctx, AdminService_ReadLog_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -101,6 +116,10 @@ type AdminServiceServer interface {
 	// Get is linearizable (Raft read-only protocol, section 8).
 	Get(context.Context, *GetRequest) (*GetResponse, error)
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
+	// ReadLog returns committed log entries. Any node can serve it; a follower
+	// may be a little behind the leader. Entries removed by log compaction
+	// give OUT_OF_RANGE.
+	ReadLog(context.Context, *ReadLogRequest) (*ReadLogResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -122,6 +141,9 @@ func (UnimplementedAdminServiceServer) Get(context.Context, *GetRequest) (*GetRe
 }
 func (UnimplementedAdminServiceServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedAdminServiceServer) ReadLog(context.Context, *ReadLogRequest) (*ReadLogResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadLog not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -216,6 +238,24 @@ func _AdminService_Delete_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_ReadLog_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadLogRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ReadLog(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ReadLog_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ReadLog(ctx, req.(*ReadLogRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -238,6 +278,10 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Delete",
 			Handler:    _AdminService_Delete_Handler,
+		},
+		{
+			MethodName: "ReadLog",
+			Handler:    _AdminService_ReadLog_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

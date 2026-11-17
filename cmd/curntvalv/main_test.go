@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 )
 
 func TestParsePeers(t *testing.T) {
@@ -251,4 +254,25 @@ func sameApplied(table, want string) bool {
 		}
 	}
 	return true
+}
+
+func TestEventJSON(t *testing.T) {
+	sc := &pb.Schema{Namespace: "public", Name: "orders", Columns: []*pb.Column{{Name: "id"}, {Name: "note"}, {Name: "blob"}}}
+	tb := &pb.TxBatch{CommitLsn: 0x1_0000_00A0, Xid: 7, FirstSeq: 3, CommitTimeUs: 1_700_000_000_000_000}
+	ev := &pb.Event{Op: pb.Op_OP_UPDATE,
+		Before: &pb.Row{Values: []*pb.Value{{Kind: pb.ValueKind_VALUE_KIND_TEXT, Data: []byte("1")}}},
+		After: &pb.Row{Values: []*pb.Value{
+			{Kind: pb.ValueKind_VALUE_KIND_TEXT, Data: []byte("1")},
+			{Kind: pb.ValueKind_VALUE_KIND_NULL},
+			{Kind: pb.ValueKind_VALUE_KIND_UNCHANGED},
+		}}}
+	b, err := json.Marshal(eventJSON(42, tb, 1, ev, sc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"index":42,"lsn":"1/A0","seq":4,"xid":7,"commit_time":"2023-11-14T22:13:20Z","table":"public.orders","op":"update",` +
+		`"before":{"id":"1"},"after":{"id":"1","note":null},"unchanged":["blob"]}`
+	if string(b) != want {
+		t.Fatalf("got  %s\nwant %s", b, want)
+	}
 }

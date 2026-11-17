@@ -21,6 +21,58 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type EntryKind int32
+
+const (
+	EntryKind_ENTRY_KIND_UNSPECIFIED EntryKind = 0
+	EntryKind_ENTRY_KIND_NOOP        EntryKind = 1
+	EntryKind_ENTRY_KIND_META        EntryKind = 2
+	EntryKind_ENTRY_KIND_TX_BATCH    EntryKind = 3
+)
+
+// Enum value maps for EntryKind.
+var (
+	EntryKind_name = map[int32]string{
+		0: "ENTRY_KIND_UNSPECIFIED",
+		1: "ENTRY_KIND_NOOP",
+		2: "ENTRY_KIND_META",
+		3: "ENTRY_KIND_TX_BATCH",
+	}
+	EntryKind_value = map[string]int32{
+		"ENTRY_KIND_UNSPECIFIED": 0,
+		"ENTRY_KIND_NOOP":        1,
+		"ENTRY_KIND_META":        2,
+		"ENTRY_KIND_TX_BATCH":    3,
+	}
+)
+
+func (x EntryKind) Enum() *EntryKind {
+	p := new(EntryKind)
+	*p = x
+	return p
+}
+
+func (x EntryKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EntryKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_curntvalv_v1_admin_proto_enumTypes[0].Descriptor()
+}
+
+func (EntryKind) Type() protoreflect.EnumType {
+	return &file_curntvalv_v1_admin_proto_enumTypes[0]
+}
+
+func (x EntryKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EntryKind.Descriptor instead.
+func (EntryKind) EnumDescriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{0}
+}
+
 type StatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -462,11 +514,205 @@ func (x *DeleteResponse) GetIndex() uint64 {
 	return 0
 }
 
+type ReadLogRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// First index to return; 0 means the oldest retained entry.
+	FromIndex uint64 `protobuf:"varint,1,opt,name=from_index,json=fromIndex,proto3" json:"from_index,omitempty"`
+	// Maximum number of entries; 0 means a server default.
+	Limit         uint32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadLogRequest) Reset() {
+	*x = ReadLogRequest{}
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadLogRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadLogRequest) ProtoMessage() {}
+
+func (x *ReadLogRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadLogRequest.ProtoReflect.Descriptor instead.
+func (*ReadLogRequest) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ReadLogRequest) GetFromIndex() uint64 {
+	if x != nil {
+		return x.FromIndex
+	}
+	return 0
+}
+
+func (x *ReadLogRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type LogEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Index uint64                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
+	Term  uint64                 `protobuf:"varint,2,opt,name=term,proto3" json:"term,omitempty"`
+	Kind  EntryKind              `protobuf:"varint,3,opt,name=kind,proto3,enum=curntvalv.v1.EntryKind" json:"kind,omitempty"`
+	// Set when kind is ENTRY_KIND_TX_BATCH.
+	TxBatch       *TxBatch `protobuf:"bytes,4,opt,name=tx_batch,json=txBatch,proto3" json:"tx_batch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogEntry) Reset() {
+	*x = LogEntry{}
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogEntry) ProtoMessage() {}
+
+func (x *LogEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
+func (*LogEntry) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *LogEntry) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *LogEntry) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *LogEntry) GetKind() EntryKind {
+	if x != nil {
+		return x.Kind
+	}
+	return EntryKind_ENTRY_KIND_UNSPECIFIED
+}
+
+func (x *LogEntry) GetTxBatch() *TxBatch {
+	if x != nil {
+		return x.TxBatch
+	}
+	return nil
+}
+
+type ReadLogResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Entries []*LogEntry            `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// Oldest index still in this node's log.
+	FirstIndex uint64 `protobuf:"varint,2,opt,name=first_index,json=firstIndex,proto3" json:"first_index,omitempty"`
+	// This node's commit index; entries are never returned past it.
+	CommitIndex uint64 `protobuf:"varint,3,opt,name=commit_index,json=commitIndex,proto3" json:"commit_index,omitempty"`
+	// Every schema referenced by the returned batches, by id.
+	Schemas       map[uint64]*Schema `protobuf:"bytes,4,rep,name=schemas,proto3" json:"schemas,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadLogResponse) Reset() {
+	*x = ReadLogResponse{}
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadLogResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadLogResponse) ProtoMessage() {}
+
+func (x *ReadLogResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadLogResponse.ProtoReflect.Descriptor instead.
+func (*ReadLogResponse) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ReadLogResponse) GetEntries() []*LogEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *ReadLogResponse) GetFirstIndex() uint64 {
+	if x != nil {
+		return x.FirstIndex
+	}
+	return 0
+}
+
+func (x *ReadLogResponse) GetCommitIndex() uint64 {
+	if x != nil {
+		return x.CommitIndex
+	}
+	return 0
+}
+
+func (x *ReadLogResponse) GetSchemas() map[uint64]*Schema {
+	if x != nil {
+		return x.Schemas
+	}
+	return nil
+}
+
 var File_curntvalv_v1_admin_proto protoreflect.FileDescriptor
 
 const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\n" +
-	"\x18curntvalv/v1/admin.proto\x12\fcurntvalv.v1\"\x0f\n" +
+	"\x18curntvalv/v1/admin.proto\x12\fcurntvalv.v1\x1a\x18curntvalv/v1/event.proto\"\x0f\n" +
 	"\rStatusRequest\"\xb0\x02\n" +
 	"\x0eStatusResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x12\n" +
@@ -500,12 +746,36 @@ const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\rDeleteRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"&\n" +
 	"\x0eDeleteResponse\x12\x14\n" +
-	"\x05index\x18\x01 \x01(\x04R\x05index2\x90\x02\n" +
+	"\x05index\x18\x01 \x01(\x04R\x05index\"E\n" +
+	"\x0eReadLogRequest\x12\x1d\n" +
+	"\n" +
+	"from_index\x18\x01 \x01(\x04R\tfromIndex\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\rR\x05limit\"\x93\x01\n" +
+	"\bLogEntry\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\x04R\x05index\x12\x12\n" +
+	"\x04term\x18\x02 \x01(\x04R\x04term\x12+\n" +
+	"\x04kind\x18\x03 \x01(\x0e2\x17.curntvalv.v1.EntryKindR\x04kind\x120\n" +
+	"\btx_batch\x18\x04 \x01(\v2\x15.curntvalv.v1.TxBatchR\atxBatch\"\x9f\x02\n" +
+	"\x0fReadLogResponse\x120\n" +
+	"\aentries\x18\x01 \x03(\v2\x16.curntvalv.v1.LogEntryR\aentries\x12\x1f\n" +
+	"\vfirst_index\x18\x02 \x01(\x04R\n" +
+	"firstIndex\x12!\n" +
+	"\fcommit_index\x18\x03 \x01(\x04R\vcommitIndex\x12D\n" +
+	"\aschemas\x18\x04 \x03(\v2*.curntvalv.v1.ReadLogResponse.SchemasEntryR\aschemas\x1aP\n" +
+	"\fSchemasEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x04R\x03key\x12*\n" +
+	"\x05value\x18\x02 \x01(\v2\x14.curntvalv.v1.SchemaR\x05value:\x028\x01*j\n" +
+	"\tEntryKind\x12\x1a\n" +
+	"\x16ENTRY_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
+	"\x0fENTRY_KIND_NOOP\x10\x01\x12\x13\n" +
+	"\x0fENTRY_KIND_META\x10\x02\x12\x17\n" +
+	"\x13ENTRY_KIND_TX_BATCH\x10\x032\xd8\x02\n" +
 	"\fAdminService\x12C\n" +
 	"\x06Status\x12\x1b.curntvalv.v1.StatusRequest\x1a\x1c.curntvalv.v1.StatusResponse\x12:\n" +
 	"\x03Put\x12\x18.curntvalv.v1.PutRequest\x1a\x19.curntvalv.v1.PutResponse\x12:\n" +
 	"\x03Get\x12\x18.curntvalv.v1.GetRequest\x1a\x19.curntvalv.v1.GetResponse\x12C\n" +
-	"\x06Delete\x12\x1b.curntvalv.v1.DeleteRequest\x1a\x1c.curntvalv.v1.DeleteResponseB;Z9github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pbb\x06proto3"
+	"\x06Delete\x12\x1b.curntvalv.v1.DeleteRequest\x1a\x1c.curntvalv.v1.DeleteResponse\x12F\n" +
+	"\aReadLog\x12\x1c.curntvalv.v1.ReadLogRequest\x1a\x1d.curntvalv.v1.ReadLogResponseB;Z9github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pbb\x06proto3"
 
 var (
 	file_curntvalv_v1_admin_proto_rawDescOnce sync.Once
@@ -519,31 +789,46 @@ func file_curntvalv_v1_admin_proto_rawDescGZIP() []byte {
 	return file_curntvalv_v1_admin_proto_rawDescData
 }
 
-var file_curntvalv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_curntvalv_v1_admin_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_curntvalv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_curntvalv_v1_admin_proto_goTypes = []any{
-	(*StatusRequest)(nil),  // 0: curntvalv.v1.StatusRequest
-	(*StatusResponse)(nil), // 1: curntvalv.v1.StatusResponse
-	(*PutRequest)(nil),     // 2: curntvalv.v1.PutRequest
-	(*PutResponse)(nil),    // 3: curntvalv.v1.PutResponse
-	(*GetRequest)(nil),     // 4: curntvalv.v1.GetRequest
-	(*GetResponse)(nil),    // 5: curntvalv.v1.GetResponse
-	(*DeleteRequest)(nil),  // 6: curntvalv.v1.DeleteRequest
-	(*DeleteResponse)(nil), // 7: curntvalv.v1.DeleteResponse
+	(EntryKind)(0),          // 0: curntvalv.v1.EntryKind
+	(*StatusRequest)(nil),   // 1: curntvalv.v1.StatusRequest
+	(*StatusResponse)(nil),  // 2: curntvalv.v1.StatusResponse
+	(*PutRequest)(nil),      // 3: curntvalv.v1.PutRequest
+	(*PutResponse)(nil),     // 4: curntvalv.v1.PutResponse
+	(*GetRequest)(nil),      // 5: curntvalv.v1.GetRequest
+	(*GetResponse)(nil),     // 6: curntvalv.v1.GetResponse
+	(*DeleteRequest)(nil),   // 7: curntvalv.v1.DeleteRequest
+	(*DeleteResponse)(nil),  // 8: curntvalv.v1.DeleteResponse
+	(*ReadLogRequest)(nil),  // 9: curntvalv.v1.ReadLogRequest
+	(*LogEntry)(nil),        // 10: curntvalv.v1.LogEntry
+	(*ReadLogResponse)(nil), // 11: curntvalv.v1.ReadLogResponse
+	nil,                     // 12: curntvalv.v1.ReadLogResponse.SchemasEntry
+	(*TxBatch)(nil),         // 13: curntvalv.v1.TxBatch
+	(*Schema)(nil),          // 14: curntvalv.v1.Schema
 }
 var file_curntvalv_v1_admin_proto_depIdxs = []int32{
-	0, // 0: curntvalv.v1.AdminService.Status:input_type -> curntvalv.v1.StatusRequest
-	2, // 1: curntvalv.v1.AdminService.Put:input_type -> curntvalv.v1.PutRequest
-	4, // 2: curntvalv.v1.AdminService.Get:input_type -> curntvalv.v1.GetRequest
-	6, // 3: curntvalv.v1.AdminService.Delete:input_type -> curntvalv.v1.DeleteRequest
-	1, // 4: curntvalv.v1.AdminService.Status:output_type -> curntvalv.v1.StatusResponse
-	3, // 5: curntvalv.v1.AdminService.Put:output_type -> curntvalv.v1.PutResponse
-	5, // 6: curntvalv.v1.AdminService.Get:output_type -> curntvalv.v1.GetResponse
-	7, // 7: curntvalv.v1.AdminService.Delete:output_type -> curntvalv.v1.DeleteResponse
-	4, // [4:8] is the sub-list for method output_type
-	0, // [0:4] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0,  // 0: curntvalv.v1.LogEntry.kind:type_name -> curntvalv.v1.EntryKind
+	13, // 1: curntvalv.v1.LogEntry.tx_batch:type_name -> curntvalv.v1.TxBatch
+	10, // 2: curntvalv.v1.ReadLogResponse.entries:type_name -> curntvalv.v1.LogEntry
+	12, // 3: curntvalv.v1.ReadLogResponse.schemas:type_name -> curntvalv.v1.ReadLogResponse.SchemasEntry
+	14, // 4: curntvalv.v1.ReadLogResponse.SchemasEntry.value:type_name -> curntvalv.v1.Schema
+	1,  // 5: curntvalv.v1.AdminService.Status:input_type -> curntvalv.v1.StatusRequest
+	3,  // 6: curntvalv.v1.AdminService.Put:input_type -> curntvalv.v1.PutRequest
+	5,  // 7: curntvalv.v1.AdminService.Get:input_type -> curntvalv.v1.GetRequest
+	7,  // 8: curntvalv.v1.AdminService.Delete:input_type -> curntvalv.v1.DeleteRequest
+	9,  // 9: curntvalv.v1.AdminService.ReadLog:input_type -> curntvalv.v1.ReadLogRequest
+	2,  // 10: curntvalv.v1.AdminService.Status:output_type -> curntvalv.v1.StatusResponse
+	4,  // 11: curntvalv.v1.AdminService.Put:output_type -> curntvalv.v1.PutResponse
+	6,  // 12: curntvalv.v1.AdminService.Get:output_type -> curntvalv.v1.GetResponse
+	8,  // 13: curntvalv.v1.AdminService.Delete:output_type -> curntvalv.v1.DeleteResponse
+	11, // 14: curntvalv.v1.AdminService.ReadLog:output_type -> curntvalv.v1.ReadLogResponse
+	10, // [10:15] is the sub-list for method output_type
+	5,  // [5:10] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_curntvalv_v1_admin_proto_init() }
@@ -551,18 +836,20 @@ func file_curntvalv_v1_admin_proto_init() {
 	if File_curntvalv_v1_admin_proto != nil {
 		return
 	}
+	file_curntvalv_v1_event_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_curntvalv_v1_admin_proto_rawDesc), len(file_curntvalv_v1_admin_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   8,
+			NumEnums:      1,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_curntvalv_v1_admin_proto_goTypes,
 		DependencyIndexes: file_curntvalv_v1_admin_proto_depIdxs,
+		EnumInfos:         file_curntvalv_v1_admin_proto_enumTypes,
 		MessageInfos:      file_curntvalv_v1_admin_proto_msgTypes,
 	}.Build()
 	File_curntvalv_v1_admin_proto = out.File

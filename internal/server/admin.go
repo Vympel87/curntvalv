@@ -22,24 +22,36 @@ type RaftNode interface {
 	Status(ctx context.Context) (raft.Status, error)
 }
 
-// KV reads the metadata store. *fsm.FSM implements it.
-type KV interface {
+// LogReader reads committed log entries. *raft.Node implements it.
+type LogReader interface {
+	ReadCommitted(ctx context.Context, from uint64, max int) ([]raft.Entry, error)
+}
+
+// Meta reads the replicated metadata. *fsm.FSM implements it.
+type Meta interface {
 	Get(key string) ([]byte, bool)
+	Schema(id uint64) (*pb.Schema, bool)
 }
 
 // Admin implements pb.AdminServiceServer.
 type Admin struct {
 	pb.UnimplementedAdminServiceServer
 	node  RaftNode
-	kv    KV
+	log   LogReader
+	meta  Meta
 	peers map[uint64]string
 }
 
 // NewAdmin returns the admin service of one node. peers maps node ids to
 // addresses and is used to tell clients where the leader is.
-func NewAdmin(node RaftNode, kv KV, peers map[uint64]string) *Admin {
-	return &Admin{node: node, kv: kv, peers: peers}
+func NewAdmin(node RaftNode, log LogReader, meta Meta, peers map[uint64]string) *Admin {
+	return &Admin{node: node, log: log, meta: meta, peers: peers}
 }
+
+const (
+	defaultReadLogLimit = 100
+	maxReadLogLimit     = 1000
+)
 
 // Status reports this node's Raft state.
 func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResponse, error) {
@@ -96,8 +108,57 @@ func (a *Admin) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, e
 	if err != nil {
 		return nil, a.toStatus(err)
 	}
-	v, ok := a.kv.Get(req.GetKey())
+	v, ok := a.meta.Get(req.GetKey())
 	return &pb.GetResponse{Found: ok, Value: v, ReadIndex: idx}, nil
+}
+
+// ReadLog returns committed entries with their decoded transaction batches.
+func (a *Admin) ReadLog(ctx context.Context, req *pb.ReadLogRequest) (*pb.ReadLogResponse, error) {
+	limit := int(req.GetLimit())
+	if limit <= 0 {
+		limit = defaultReadLogLimit
+	}
+	limit = min(limit, maxReadLogLimit)
+	st, err := a.node.Status(ctx)
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	entries, err := a.log.ReadCommitted(ctx, req.GetFromIndex(), limit)
+	if errors.Is(err, raft.ErrCompacted) {
+		return nil, status.Errorf(codes.OutOfRange, "entries before %d were removed by log compaction", st.FirstIndex)
+	}
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	resp := &pb.ReadLogResponse{FirstIndex: st.FirstIndex, CommitIndex: st.CommitIndex, Schemas: map[uint64]*pb.Schema{}}
+	for _, e := range entries {
+		le := &pb.LogEntry{Index: e.Index, Term: e.Term}
+		switch {
+		case e.Type == raft.EntryNoop:
+			le.Kind = pb.EntryKind_ENTRY_KIND_NOOP
+		default:
+			tb, ok, err := fsm.DecodeTxBatch(e.Data)
+			if err != nil {
+				return nil, a.toStatus(fmt.Errorf("entry %d: %w", e.Index, err))
+			}
+			if !ok {
+				le.Kind = pb.EntryKind_ENTRY_KIND_META
+				break
+			}
+			le.Kind, le.TxBatch = pb.EntryKind_ENTRY_KIND_TX_BATCH, tb
+			for _, ev := range tb.GetEvents() {
+				id := ev.GetSchemaId()
+				if _, done := resp.Schemas[id]; done {
+					continue
+				}
+				if sc, ok := a.meta.Schema(id); ok {
+					resp.Schemas[id] = sc
+				}
+			}
+		}
+		resp.Entries = append(resp.Entries, le)
+	}
+	return resp, nil
 }
 
 // toStatus maps internal errors to gRPC status codes.

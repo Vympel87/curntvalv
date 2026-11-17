@@ -16,6 +16,9 @@ var (
 	ErrLeadershipLost = errors.New("raft: leadership lost before commit")
 	// ErrStopped is returned once the node's Run has returned.
 	ErrStopped = errors.New("raft: node stopped")
+	// ErrCompacted is returned by ReadCommitted for entries that log
+	// compaction has removed.
+	ErrCompacted = errors.New("raft: entries compacted")
 )
 
 // NotLeaderError is returned by Propose on a node that is not the leader.
@@ -236,6 +239,45 @@ func (n *Node) ReadIndex(ctx context.Context) (uint64, error) {
 			return 0, ErrStopped
 		}
 	}
+}
+
+// ReadCommitted returns up to max committed entries starting at index from
+// (0 means the oldest retained entry). It reads the log store directly from
+// the caller's goroutine, which is safe because committed entries are never
+// changed, only removed by compaction (then it returns ErrCompacted). The
+// LogStore must allow concurrent reads; *wal.Log does.
+func (n *Node) ReadCommitted(ctx context.Context, from uint64, max int) ([]Entry, error) {
+	st, err := n.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	log := n.storage.Log
+	if from == 0 {
+		from = log.FirstIndex()
+	}
+	if from < log.FirstIndex() {
+		return nil, ErrCompacted
+	}
+	if from > st.CommitIndex || max <= 0 {
+		return nil, nil
+	}
+	last := min(st.CommitIndex, from+uint64(max)-1)
+	entries := make([]Entry, 0, last-from+1)
+	for i := from; i <= last; i++ {
+		b, err := log.Read(i)
+		if err != nil {
+			if i < log.FirstIndex() {
+				return nil, ErrCompacted
+			}
+			return nil, fmt.Errorf("raft: read entry %d: %w", i, err)
+		}
+		e, err := decodeEntry(i, b)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
 }
 
 // Step delivers a message received from another node. Transports call it.

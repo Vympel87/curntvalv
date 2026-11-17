@@ -3,6 +3,7 @@
 //	curntvalv server --id 1 --peers 1=127.0.0.1:7001,2=127.0.0.1:7002,3=127.0.0.1:7003 --data-dir ./data/1
 //	curntvalv status [--addr ...]
 //	curntvalv kv put|get|del KEY [VALUE] [--addr ...]
+//	curntvalv log [--from N] [--follow] [--addr ...]
 //	curntvalv version
 package main
 
@@ -42,6 +43,7 @@ const usage = `usage:
   curntvalv kv put KEY VALUE [--addr HOST:PORT,...]
   curntvalv kv get KEY [--addr HOST:PORT,...]
   curntvalv kv del KEY [--addr HOST:PORT,...]
+  curntvalv log [--from N] [--follow] [--addr HOST:PORT,...]
   curntvalv version
 
 Run "curntvalv COMMAND -h" for the flags of a command.
@@ -71,6 +73,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = statusCmd(ctx, args[1:], stdout, stderr)
 	case "kv":
 		err = kvCmd(ctx, args[1:], stdout, stderr)
+	case "log":
+		err = logCmd(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -228,7 +232,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 
 	gs := grpc.NewServer(grpc.MaxRecvMsgSize(transport.MaxMessageSize))
 	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
-	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, meta, cfg.peers))
+	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, node, meta, cfg.peers))
 
 	lis, err := net.Listen("tcp", cfg.listen)
 	if err != nil {

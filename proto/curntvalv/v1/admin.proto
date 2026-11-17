@@ -4,6 +4,8 @@ package curntvalv.v1;
 
 option go_package = "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pb";
 
+import "curntvalv/v1/event.proto";
+
 // AdminService is the operator API of a node: cluster status and the metadata
 // key-value store. Writes and reads must go to the leader; other nodes answer
 // FAILED_PRECONDITION with the leader's id and address in the message.
@@ -13,6 +15,10 @@ service AdminService {
   // Get is linearizable (Raft read-only protocol, section 8).
   rpc Get(GetRequest) returns (GetResponse);
   rpc Delete(DeleteRequest) returns (DeleteResponse);
+  // ReadLog returns committed log entries. Any node can serve it; a follower
+  // may be a little behind the leader. Entries removed by log compaction
+  // give OUT_OF_RANGE.
+  rpc ReadLog(ReadLogRequest) returns (ReadLogResponse);
 }
 
 message StatusRequest {}
@@ -56,4 +62,36 @@ message DeleteRequest {
 
 message DeleteResponse {
   uint64 index = 1;
+}
+
+message ReadLogRequest {
+  // First index to return; 0 means the oldest retained entry.
+  uint64 from_index = 1;
+  // Maximum number of entries; 0 means a server default.
+  uint32 limit = 2;
+}
+
+enum EntryKind {
+  ENTRY_KIND_UNSPECIFIED = 0;
+  ENTRY_KIND_NOOP = 1;
+  ENTRY_KIND_META = 2;
+  ENTRY_KIND_TX_BATCH = 3;
+}
+
+message LogEntry {
+  uint64 index = 1;
+  uint64 term = 2;
+  EntryKind kind = 3;
+  // Set when kind is ENTRY_KIND_TX_BATCH.
+  TxBatch tx_batch = 4;
+}
+
+message ReadLogResponse {
+  repeated LogEntry entries = 1;
+  // Oldest index still in this node's log.
+  uint64 first_index = 2;
+  // This node's commit index; entries are never returned past it.
+  uint64 commit_index = 3;
+  // Every schema referenced by the returned batches, by id.
+  map<uint64, Schema> schemas = 4;
 }
