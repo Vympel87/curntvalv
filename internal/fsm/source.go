@@ -72,7 +72,7 @@ func SchemaID(s *pb.Schema) uint64 {
 // or the first part of a newer one. Anything else is counted as an anomaly
 // and ignored. Ignoring (instead of failing) is deterministic on every node
 // and avoids a poison entry that would stop the cluster forever.
-func (f *FSM) applyTxBatch(b []byte) error {
+func (f *FSM) applyTxBatch(index uint64, b []byte) error {
 	tb := &pb.TxBatch{}
 	if err := proto.Unmarshal(b, tb); err != nil {
 		return fmt.Errorf("%w: tx batch: %v", ErrCorrupt, err)
@@ -87,6 +87,9 @@ func (f *FSM) applyTxBatch(b []byte) error {
 	if !ok {
 		s.Anomalies++
 		return nil
+	}
+	if len(tb.GetEvents()) > 0 {
+		f.lastChange = index
 	}
 	for _, sc := range tb.GetSchemas() {
 		if _, known := f.schemas[sc.GetId()]; !known {

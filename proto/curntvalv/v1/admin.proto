@@ -50,7 +50,8 @@ message SinkStatus {
   // Last log index the sink has delivered (replicated, the same on every
   // node); 0 if it has not stored one yet.
   uint64 offset = 4;
-  // Applied entries after the offset.
+  // Log entries between the offset and the newest entry with row changes;
+  // 0 when the sink has everything.
   uint64 lag = 5;
   // Changes delivered by this node since it started.
   uint64 delivered = 6;

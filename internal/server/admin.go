@@ -33,6 +33,7 @@ type Meta interface {
 	Get(key string) ([]byte, bool)
 	Schema(id uint64) (*pb.Schema, bool)
 	SinkOffset(name string) (uint64, bool)
+	LastChange() uint64
 }
 
 // Health reports this node's pipeline components for Status.
@@ -88,10 +89,11 @@ func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResp
 	if a.health != nil {
 		resp.SourceState, resp.SourceError = a.health.Source()
 		resp.Sinks = a.health.Sinks()
+		last := a.meta.LastChange()
 		for _, s := range resp.Sinks {
 			s.Offset, _ = a.meta.SinkOffset(s.Name)
-			if st.LastApplied > s.Offset {
-				s.Lag = st.LastApplied - s.Offset
+			if last > s.Offset {
+				s.Lag = last - s.Offset
 			}
 		}
 	}

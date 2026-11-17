@@ -113,11 +113,13 @@ func TestStatusReportsHealth(t *testing.T) {
 	n := &fakeNode{f: f}
 	a := NewAdmin(n, n, f, fakeHealth{}, nil)
 	ctx := context.Background()
-	for range 5 {
-		a.Put(ctx, &pb.PutRequest{Key: "k", Value: []byte("v")})
+	for i := range 5 { // indexes 1-5 hold changes
+		tb, _ := fsm.EncodeTxBatch(&pb.TxBatch{CommitLsn: uint64(i + 1), Final: true, Events: []*pb.Event{{Op: pb.Op_OP_INSERT}}})
+		n.Propose(ctx, tb)
 	}
 	b, _ := fsm.EncodeSinkOffset("ch", 3)
 	n.Propose(ctx, b) // index 6
+	a.Put(ctx, &pb.PutRequest{Key: "k", Value: []byte("v")})
 	st, err := a.Status(ctx, &pb.StatusRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -125,10 +127,10 @@ func TestStatusReportsHealth(t *testing.T) {
 	if st.SourceState != "retrying" || st.SourceError != "pg: connect: refused" || len(st.Sinks) != 2 {
 		t.Fatalf("status %v", st)
 	}
-	if s := st.Sinks[0]; s.Offset != 3 || s.Lag != 3 || s.Type != "clickhouse" {
+	if s := st.Sinks[0]; s.Offset != 3 || s.Lag != 2 || s.Type != "clickhouse" {
 		t.Fatalf("ch %v", s)
 	}
-	if s := st.Sinks[1]; s.Offset != 0 || s.Lag != 6 {
+	if s := st.Sinks[1]; s.Offset != 0 || s.Lag != 5 {
 		t.Fatalf("new %v", s)
 	}
 }

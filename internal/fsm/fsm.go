@@ -110,7 +110,9 @@ type FSM struct {
 	src     SourceState
 	schemas map[uint64]*pb.Schema
 	sinks   map[string]uint64
-	applied uint64
+	// lastChange is the index of the last applied entry with row changes.
+	lastChange uint64
+	applied    uint64
 	// changed is closed (and replaced) whenever applied changes.
 	changed chan struct{}
 }
@@ -142,7 +144,7 @@ func (f *FSM) Apply(e raft.Entry) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e.Type == raft.EntryNormal {
-		if err := f.applyPayload(e.Data); err != nil {
+		if err := f.applyPayload(e.Index, e.Data); err != nil {
 			return fmt.Errorf("fsm: entry %d: %w", e.Index, err)
 		}
 	}
@@ -150,7 +152,7 @@ func (f *FSM) Apply(e raft.Entry) error {
 	return nil
 }
 
-func (f *FSM) applyPayload(b []byte) error {
+func (f *FSM) applyPayload(index uint64, b []byte) error {
 	if len(b) == 0 {
 		return fmt.Errorf("%w: empty payload", ErrCorrupt)
 	}
@@ -158,7 +160,7 @@ func (f *FSM) applyPayload(b []byte) error {
 	case KindMeta:
 		return f.applyMeta(b[1:])
 	case KindTxBatch:
-		return f.applyTxBatch(b[1:])
+		return f.applyTxBatch(index, b[1:])
 	default:
 		return fmt.Errorf("%w: unknown kind %d", ErrCorrupt, b[0])
 	}
@@ -221,7 +223,7 @@ func (f *FSM) AppliedIndex() uint64 {
 //	| version u8 | applied u64 | count uvarint | (key, value)* |
 //	| commit_lsn u64 | end_lsn u64 | partial_lsn u64 | partial_next_seq u32 |
 //	| anomalies u64 | schema count uvarint | schema* |
-//	| sink count uvarint | (sink name, offset u64)* |
+//	| sink count uvarint | (sink name, offset u64)* | last change index u64 |
 //
 // with keys in sorted order, schemas in id order, sinks in name order, and
 // each key, value, schema (protobuf) and sink name length-prefixed. Version 2
@@ -269,7 +271,7 @@ func (f *FSM) Snapshot() ([]byte, error) {
 		b = appendBytes(b, []byte(n))
 		b = binary.LittleEndian.AppendUint64(b, f.sinks[n])
 	}
-	return b, nil
+	return binary.LittleEndian.AppendUint64(b, f.lastChange), nil
 }
 
 // Restore replaces the whole state with a snapshot.
@@ -326,6 +328,7 @@ func (f *FSM) Restore(b []byte) error {
 		rest = r
 	}
 	sinks := map[string]uint64{}
+	var lastChange uint64
 	if b[0] >= 3 {
 		nk, k := binary.Uvarint(rest)
 		if k <= 0 {
@@ -340,13 +343,17 @@ func (f *FSM) Restore(b []byte) error {
 			sinks[string(name)] = binary.LittleEndian.Uint64(r[:8])
 			rest = r[8:]
 		}
+		if len(rest) < 8 {
+			return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+		}
+		lastChange, rest = binary.LittleEndian.Uint64(rest[:8]), rest[8:]
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("%w: trailing bytes in snapshot", ErrCorrupt)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kv, f.src, f.schemas, f.sinks = kv, src, schemas, sinks
+	f.kv, f.src, f.schemas, f.sinks, f.lastChange = kv, src, schemas, sinks, lastChange
 	f.setApplied(applied)
 	return nil
 }

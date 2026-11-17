@@ -46,6 +46,14 @@ func (f *FSM) SinkOffset(name string) (offset uint64, ok bool) {
 	return offset, ok
 }
 
+// LastChange returns the index of the last applied entry that holds row
+// changes; a sink whose offset is at or past it has nothing to deliver.
+func (f *FSM) LastChange() uint64 {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.lastChange
+}
+
 // SinkOffsets returns the stored offsets of all sinks.
 func (f *FSM) SinkOffsets() map[string]uint64 {
 	f.mu.RLock()

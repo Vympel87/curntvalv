@@ -261,7 +261,8 @@ type SinkStatus struct {
 	// Last log index the sink has delivered (replicated, the same on every
 	// node); 0 if it has not stored one yet.
 	Offset uint64 `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
-	// Applied entries after the offset.
+	// Log entries between the offset and the newest entry with row changes;
+	// 0 when the sink has everything.
 	Lag uint64 `protobuf:"varint,5,opt,name=lag,proto3" json:"lag,omitempty"`
 	// Changes delivered by this node since it started.
 	Delivered     uint64 `protobuf:"varint,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
