@@ -20,7 +20,20 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8
+        env:
+          CLICKHOUSE_PASSWORD: curntvalv
+        ports:
+          - 8123:8123
+        options: >-
+          --ulimit nofile=262144:262144
+          --health-cmd "clickhouse-client --password curntvalv -q 'SELECT 1'"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     env:
+      CURNTVALV_TEST_CH_URL: http://default:curntvalv@localhost:8123
       CURNTVALV_TEST_PG_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
       - name: Enable logical replication in the Postgres service
