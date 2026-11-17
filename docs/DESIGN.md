@@ -229,6 +229,29 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   `commitIndex`, or a log term above the current term stop the node with an
   error (`errSafety`) instead of continuing.
 
+### D10. Node-to-node transport and APIs
+
+- **gRPC + protobuf.** Definitions live in `proto/curntvalv/v1`; generated
+  code in `internal/pb` is committed, so building needs no code generator.
+  `make proto` regenerates it with buf v1.75.0, protoc-gen-go v1.36.12 and
+  protoc-gen-go-grpc v1.6.2. Runtime dependencies: `google.golang.org/grpc`
+  v1.80.0 (the newest release that still supports Go 1.24) and
+  `google.golang.org/protobuf`.
+- **RaftService.Stream** is a client stream of one-way Raft messages. Every
+  node opens one stream to each peer; replies come back on the peer's own
+  stream. `Transport.Send` puts a message in a bounded per-peer queue and
+  never blocks; when the queue is full or the peer is down the message is
+  dropped (Raft retries). Broken streams reconnect with exponential backoff.
+- **The receiver drops** messages that are not addressed to it or come from
+  an id outside the configured peers.
+- **AdminService** (status, put/get/delete on the metadata KV) is served on
+  the same port. Writes and linearizable reads only work on the leader; other
+  nodes answer `FAILED_PRECONDITION` naming the leader, and the CLI tries
+  the next address.
+- **No TLS or authentication yet.** Clusters must run on a trusted network
+  until a later milestone adds TLS.
+- Maximum gRPC message size is 64 MiB (revisit with large transactions, M4).
+
 ## 4. Data model
 
 ```
@@ -268,8 +291,8 @@ that the sink contains exactly rows 1..N.
   client-managed offsets. Leaning: support both, start with client-managed.
 - Initial table snapshot (backfill of rows that existed before the slot):
   needed for real use, planned after v0.1.
-- Entry encoding: protobuf vs. hand-written binary. (The Raft entry header
-  is hand-written, D9; the encoding of `data` and of node-to-node messages is
-  decided with the gRPC transport in M3.)
+- Entry encoding: the Raft entry header is hand-written binary (D9),
+  node-to-node messages are protobuf (D10). The encoding of `TxBatch`
+  payloads is decided in M4.
 - In-memory offset index in `wal` costs 8 bytes per entry; switch to a sparse
   index if logs get very large.
