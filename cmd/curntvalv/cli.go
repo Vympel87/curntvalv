@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/Vympel87/curntvalv/internal/event"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 )
 
@@ -238,12 +238,15 @@ func logCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		}
 		for _, e := range resp.GetEntries() {
 			next = e.GetIndex() + 1
-			tb := e.GetTxBatch()
-			for i, ev := range tb.GetEvents() {
+			lookup := func(id uint64) (*pb.Schema, bool) {
+				sc, ok := resp.GetSchemas()[id]
+				return sc, ok
+			}
+			for _, c := range event.Changes(e.GetIndex(), e.GetTxBatch(), lookup, nil) {
 				if *limit > 0 && printed >= *limit {
 					return nil
 				}
-				if err := enc.Encode(eventJSON(e.GetIndex(), tb, uint32(i), ev, resp.GetSchemas()[ev.GetSchemaId()])); err != nil {
+				if err := enc.Encode(c.JSON()); err != nil {
 					return err
 				}
 				printed++
@@ -282,60 +285,4 @@ func firstReachable(ctx context.Context, addrs []string) (pb.AdminServiceClient,
 		return client, func() { conn.Close() }, nil
 	}
 	return nil, nil, errors.New("no node reachable")
-}
-
-// jsonEvent is how the CLI prints one row change.
-type jsonEvent struct {
-	Index      uint64         `json:"index"`
-	LSN        string         `json:"lsn"`
-	Seq        uint32         `json:"seq"`
-	Xid        uint32         `json:"xid"`
-	CommitTime string         `json:"commit_time"`
-	Table      string         `json:"table"`
-	Op         string         `json:"op"`
-	Before     map[string]any `json:"before,omitempty"`
-	After      map[string]any `json:"after,omitempty"`
-	Unchanged  []string       `json:"unchanged,omitempty"`
-}
-
-func formatLSN(lsn uint64) string { return fmt.Sprintf("%X/%X", lsn>>32, uint32(lsn)) }
-
-func eventJSON(index uint64, tb *pb.TxBatch, i uint32, ev *pb.Event, sc *pb.Schema) jsonEvent {
-	je := jsonEvent{
-		Index:      index,
-		LSN:        formatLSN(tb.GetCommitLsn()),
-		Seq:        tb.GetFirstSeq() + i,
-		Xid:        tb.GetXid(),
-		CommitTime: time.UnixMicro(tb.GetCommitTimeUs()).UTC().Format(time.RFC3339Nano),
-		Table:      fmt.Sprintf("schema#%d", ev.GetSchemaId()),
-		Op:         strings.ToLower(strings.TrimPrefix(ev.GetOp().String(), "OP_")),
-	}
-	if sc != nil {
-		je.Table = sc.GetNamespace() + "." + sc.GetName()
-	}
-	row := func(r *pb.Row) map[string]any {
-		if r == nil {
-			return nil
-		}
-		m := map[string]any{}
-		for c, v := range r.GetValues() {
-			name := fmt.Sprintf("col%d", c)
-			if sc != nil && c < len(sc.GetColumns()) {
-				name = sc.GetColumns()[c].GetName()
-			}
-			switch v.GetKind() {
-			case pb.ValueKind_VALUE_KIND_NULL:
-				m[name] = nil
-			case pb.ValueKind_VALUE_KIND_TEXT:
-				m[name] = string(v.GetData())
-			case pb.ValueKind_VALUE_KIND_BINARY:
-				m[name] = base64.StdEncoding.EncodeToString(v.GetData())
-			case pb.ValueKind_VALUE_KIND_UNCHANGED:
-				je.Unchanged = append(je.Unchanged, name)
-			}
-		}
-		return m
-	}
-	je.Before, je.After = row(ev.GetBefore()), row(ev.GetAfter())
-	return je
 }

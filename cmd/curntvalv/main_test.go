@@ -20,7 +20,7 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 
-	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
+	"github.com/Vympel87/curntvalv/internal/event"
 )
 
 func TestParsePeers(t *testing.T) {
@@ -302,27 +302,6 @@ func sameApplied(table, want string) bool {
 	return true
 }
 
-func TestEventJSON(t *testing.T) {
-	sc := &pb.Schema{Namespace: "public", Name: "orders", Columns: []*pb.Column{{Name: "id"}, {Name: "note"}, {Name: "blob"}}}
-	tb := &pb.TxBatch{CommitLsn: 0x1_0000_00A0, Xid: 7, FirstSeq: 3, CommitTimeUs: 1_700_000_000_000_000}
-	ev := &pb.Event{Op: pb.Op_OP_UPDATE,
-		Before: &pb.Row{Values: []*pb.Value{{Kind: pb.ValueKind_VALUE_KIND_TEXT, Data: []byte("1")}}},
-		After: &pb.Row{Values: []*pb.Value{
-			{Kind: pb.ValueKind_VALUE_KIND_TEXT, Data: []byte("1")},
-			{Kind: pb.ValueKind_VALUE_KIND_NULL},
-			{Kind: pb.ValueKind_VALUE_KIND_UNCHANGED},
-		}}}
-	b, err := json.Marshal(eventJSON(42, tb, 1, ev, sc))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `{"index":42,"lsn":"1/A0","seq":4,"xid":7,"commit_time":"2023-11-14T22:13:20Z","table":"public.orders","op":"update",` +
-		`"before":{"id":"1"},"after":{"id":"1","note":null},"unchanged":["blob"]}`
-	if string(b) != want {
-		t.Fatalf("got  %s\nwant %s", b, want)
-	}
-}
-
 // TestEndToEndPostgresNoLossNoDuplicates is the M4 checker (design §5): a
 // writer inserts numbered rows in transactions of varying size while the
 // leader is killed with SIGKILL several times. Afterwards the log must hold
@@ -399,7 +378,7 @@ func TestEndToEndPostgresNoLossNoDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var events []jsonEvent
+	var events []event.JSON
 	waitE2E(t, "all rows in the log", 60*time.Second, func() bool {
 		events = c.readLog()
 		return len(events) >= rows
@@ -451,9 +430,9 @@ func waitE2E(t *testing.T, what string, timeout time.Duration, cond func() bool)
 }
 
 // readLog returns every event in the log, read from any live node.
-func (c *e2eCluster) readLog() []jsonEvent {
+func (c *e2eCluster) readLog() []event.JSON {
 	c.t.Helper()
-	var out []jsonEvent
+	var out []event.JSON
 	for i, a := range c.addrs {
 		if c.procs[i+1] == nil {
 			continue
@@ -466,7 +445,7 @@ func (c *e2eCluster) readLog() []jsonEvent {
 			if line == "" {
 				continue
 			}
-			var e jsonEvent
+			var e event.JSON
 			if err := json.Unmarshal([]byte(line), &e); err != nil {
 				c.t.Fatalf("bad log line %q: %v", line, err)
 			}
