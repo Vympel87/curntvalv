@@ -4,6 +4,7 @@
 //	curntvalv status [--addr ...]
 //	curntvalv kv put|get|del KEY [VALUE] [--addr ...]
 //	curntvalv log [--from N] [--follow] [--addr ...]
+//	curntvalv subscribe [--table T]... [--from N] [--addr ...]
 //	curntvalv version
 package main
 
@@ -27,6 +28,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/Vympel87/curntvalv/internal/event"
 	"github.com/Vympel87/curntvalv/internal/fsm"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
@@ -45,6 +47,7 @@ const usage = `usage:
   curntvalv kv get KEY [--addr HOST:PORT,...]
   curntvalv kv del KEY [--addr HOST:PORT,...]
   curntvalv log [--from N] [--follow] [--addr HOST:PORT,...]
+  curntvalv subscribe [--table NAME]... [--from N] [--addr HOST:PORT,...]
   curntvalv version
 
 Run "curntvalv COMMAND -h" for the flags of a command.
@@ -76,6 +79,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = kvCmd(ctx, args[1:], stdout, stderr)
 	case "log":
 		err = logCmd(ctx, args[1:], stdout, stderr)
+	case "subscribe":
+		err = subscribeCmd(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -239,6 +244,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	gs := grpc.NewServer(grpc.MaxRecvMsgSize(transport.MaxMessageSize))
 	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
 	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, node, meta, cfg.peers))
+	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(event.NewReader(node, meta)))
 
 	var src *pgsource.Source
 	if cfg.pg.URL != "" {

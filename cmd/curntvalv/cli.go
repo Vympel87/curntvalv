@@ -286,3 +286,117 @@ func firstReachable(ctx context.Context, addrs []string) (pb.AdminServiceClient,
 	}
 	return nil, nil, errors.New("no node reachable")
 }
+
+// listFlag is a flag that may be repeated and also takes comma-separated
+// values.
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(v string) error {
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			*l = append(*l, s)
+		}
+	}
+	return nil
+}
+
+func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("subscribe", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	from := fs.Uint64("from", 0, "first log index (0 = oldest retained); use the last printed index + 1 to resume")
+	limit := fs.Int("limit", 0, "stop after this many events (0 = run until interrupted)")
+	var tables listFlag
+	fs.Var(&tables, "table", "table to receive, as NAME or NAMESPACE.NAME; repeat or comma separate (default: all)")
+	def := os.Getenv("CURNTVALV_ADDR")
+	if def == "" {
+		def = defaultAddrs
+	}
+	addr := fs.String("addr", def, "node addresses, comma separated; on failure the next one is used")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return usageErr("subscribe takes no arguments")
+	}
+	var addrs []string
+	for _, a := range strings.Split(*addr, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			addrs = append(addrs, a)
+		}
+	}
+	if len(addrs) == 0 {
+		return usageErr("--addr is empty")
+	}
+
+	enc := json.NewEncoder(stdout)
+	next, printed := *from, 0
+	for attempt := 0; ; attempt++ {
+		a := addrs[attempt%len(addrs)]
+		err := subscribeOnce(ctx, a, &pb.SubscribeRequest{FromIndex: next, Tables: tables}, func(resp *pb.SubscribeResponse, schemas map[uint64]*pb.Schema) error {
+			for _, ce := range resp.GetEvents() {
+				if *limit > 0 && printed >= *limit {
+					return errLimit
+				}
+				c := event.Change{Index: ce.GetIndex(), CommitLSN: ce.GetCommitLsn(), Seq: ce.GetSeq(), Xid: ce.GetXid(),
+					CommitTimeUs: ce.GetCommitTimeUs(), Event: ce.GetEvent(), Schema: schemas[ce.GetEvent().GetSchemaId()]}
+				if err := enc.Encode(c.JSON()); err != nil {
+					return err
+				}
+				printed++
+			}
+			next = resp.GetNextIndex()
+			if *limit > 0 && printed >= *limit {
+				return errLimit
+			}
+			return nil
+		})
+		switch code := status.Code(err); {
+		case errors.Is(err, errLimit), ctx.Err() != nil:
+			return nil
+		case code == codes.OutOfRange, code == codes.InvalidArgument:
+			return errors.New(status.Convert(err).Message())
+		case err != nil && code == codes.Unknown:
+			return err // e.g. writing stdout failed
+		}
+		fmt.Fprintf(stderr, "subscribe: %s: %s; retrying from index %d\n", a, status.Convert(err).Message(), next)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+var errLimit = errors.New("limit reached")
+
+// subscribeOnce runs one Subscribe stream against addr and calls handle for
+// every response, with all schemas received on the stream so far.
+func subscribeOnce(ctx context.Context, addr string, req *pb.SubscribeRequest, handle func(*pb.SubscribeResponse, map[uint64]*pb.Schema) error) error {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64<<20)))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := pb.NewSubscribeServiceClient(conn).Subscribe(ctx, req)
+	if err != nil {
+		return err
+	}
+	schemas := map[uint64]*pb.Schema{}
+	for {
+		resp, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		for id, sc := range resp.GetSchemas() {
+			schemas[id] = sc
+		}
+		if err := handle(resp, schemas); err != nil {
+			return err
+		}
+	}
+}

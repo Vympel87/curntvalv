@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package curntvalv.v1;
+
+option go_package = "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pb";
+
+import "curntvalv/v1/event.proto";
+
+// SubscribeService streams row changes to applications. Any node can serve
+// it; a follower may be a little behind the leader. Offsets are managed by
+// the client: to resume, subscribe again with the last next_index received.
+// Delivery is at-least-once around a resume; ChangeEvent.id identifies a
+// change across redeliveries (design D4).
+service SubscribeService {
+  // Subscribe sends the stored changes from from_index on, then keeps the
+  // stream open and sends new changes as they are committed. It fails with
+  // OUT_OF_RANGE if from_index was removed by log compaction.
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+}
+
+message SubscribeRequest {
+  // First log index to read; 0 means the oldest retained entry.
+  uint64 from_index = 1;
+  // Tables to receive, as "name" (any namespace) or "namespace.name".
+  // Empty means all tables.
+  repeated string tables = 2;
+}
+
+message SubscribeResponse {
+  repeated ChangeEvent events = 1;
+  // Schemas referenced by events that were not sent earlier on this stream.
+  map<uint64, Schema> schemas = 2;
+  // Index to subscribe from to continue after this response. It also moves
+  // forward when no event matched, so a resume skips entries already seen.
+  uint64 next_index = 3;
+}
+
+// ChangeEvent is one row change.
+message ChangeEvent {
+  // Idempotency key: "<commit LSN>:<seq>", e.g. "0/15185F8:3".
+  string id = 1;
+  // Raft index of the log entry holding the change.
+  uint64 index = 2;
+  uint64 commit_lsn = 3;
+  // Position of the change in its transaction.
+  uint32 seq = 4;
+  uint32 xid = 5;
+  int64 commit_time_us = 6;
+  Event event = 7;
+}
