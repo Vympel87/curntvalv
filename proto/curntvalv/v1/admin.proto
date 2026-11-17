@@ -34,6 +34,27 @@ message StatusResponse {
   uint64 commit_index = 8;
   uint64 last_applied = 9;
   uint64 snapshot_index = 10;
+  // Postgres source on this node: "" (none configured), "standby" (not the
+  // leader), "running", "retrying" or "failed".
+  string source_state = 11;
+  string source_error = 12;
+  repeated SinkStatus sinks = 13;
+}
+
+message SinkStatus {
+  string name = 1;
+  string type = 2;
+  // On this node: "standby" (not the leader), "running", "retrying" or
+  // "failed".
+  string state = 3;
+  // Last log index the sink has delivered (replicated, the same on every
+  // node); 0 if it has not stored one yet.
+  uint64 offset = 4;
+  // Applied entries after the offset.
+  uint64 lag = 5;
+  // Changes delivered by this node since it started.
+  uint64 delivered = 6;
+  string last_error = 7;
 }
 
 message PutRequest {

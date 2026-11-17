@@ -33,6 +33,7 @@ import (
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
 	"github.com/Vympel87/curntvalv/internal/server"
+	"github.com/Vympel87/curntvalv/internal/sink"
 	pgsource "github.com/Vympel87/curntvalv/internal/source/pg"
 	"github.com/Vympel87/curntvalv/internal/transport"
 	"github.com/Vympel87/curntvalv/internal/wal"
@@ -140,6 +141,7 @@ type serverConfig struct {
 	noSync   bool
 	logLevel slog.Level
 	pg       pgsource.Config // pg.URL empty: no Postgres source
+	sinks    []sinkSpec
 }
 
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
@@ -159,6 +161,8 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	pgURL := fs.String("pg-url", os.Getenv("CURNTVALV_PG_URL"), "Postgres connection URL to capture changes from (env CURNTVALV_PG_URL; empty = no source)")
 	pgSlot := fs.String("pg-slot", "curntvalv", "logical replication slot (created on a new cluster)")
 	pgPub := fs.String("pg-publication", "curntvalv", "Postgres publication to read (must exist)")
+	var sinkFlags repeatFlag
+	fs.Var(&sinkFlags, "sink", "deliver changes to a sink, repeatable; give every node the same sinks:\n"+sinkUsage)
 	if err := fs.Parse(args); err != nil {
 		return serverConfig{}, err
 	}
@@ -204,6 +208,18 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	if cfg.listen == "" {
 		cfg.listen = peers[*id]
 	}
+	names := map[string]bool{}
+	for _, f := range sinkFlags {
+		sp, err := parseSinkSpec(f)
+		if err != nil {
+			return serverConfig{}, err
+		}
+		if names[sp.name] {
+			return serverConfig{}, usageErr("--sink: name %q used twice", sp.name)
+		}
+		names[sp.name] = true
+		cfg.sinks = append(cfg.sinks, sp)
+	}
 	return cfg, nil
 }
 
@@ -241,11 +257,6 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		return err
 	}
 
-	gs := grpc.NewServer(grpc.MaxRecvMsgSize(transport.MaxMessageSize))
-	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
-	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, node, meta, cfg.peers))
-	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(event.NewReader(node, meta)))
-
 	var src *pgsource.Source
 	if cfg.pg.URL != "" {
 		pgCfg := cfg.pg
@@ -254,6 +265,26 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 			return err
 		}
 	}
+	reader := event.NewReader(node, meta)
+	var runners []*sink.Runner
+	for _, sp := range cfg.sinks {
+		s, err := newSink(sp)
+		if err != nil {
+			return fmt.Errorf("sink %s: %w", sp.name, err)
+		}
+		rcfg := sinkConfig(sp)
+		rcfg.Logger = logger
+		r, err := sink.NewRunner(rcfg, s, node, reader, meta)
+		if err != nil {
+			return err
+		}
+		runners = append(runners, r)
+	}
+
+	gs := grpc.NewServer(grpc.MaxRecvMsgSize(transport.MaxMessageSize))
+	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
+	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, node, meta, nodeHealth{src: src, runners: runners}, cfg.peers))
+	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(reader))
 
 	lis, err := net.Listen("tcp", cfg.listen)
 	if err != nil {
@@ -263,7 +294,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
-	errc := make(chan error, 4)
+	errc := make(chan error, 4+len(runners))
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
@@ -292,8 +323,21 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 			}
 		}()
 	}
+	for _, r := range runners {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := r.Run(ctx); err != nil {
+				errc <- fmt.Errorf("sink %s: %w", r.Status().Name, err)
+			}
+		}()
+	}
+	sinkNames := make([]string, len(cfg.sinks))
+	for i, sp := range cfg.sinks {
+		sinkNames[i] = sp.name
+	}
 	logger.Info("curntvalv node started", "version", version, "listen", cfg.listen, "data_dir", cfg.dataDir,
-		"peers", cfg.peers, "postgres_source", src != nil)
+		"peers", cfg.peers, "postgres_source", src != nil, "sinks", sinkNames)
 
 	var runErr error
 	select {

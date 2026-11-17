@@ -84,6 +84,7 @@ func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "ADDR\tID\tSTATE\tTERM\tLEADER\tFIRST\tLAST\tCOMMIT\tAPPLIED\tSNAPSHOT")
 	reachable := 0
+	var leader *pb.StatusResponse
 	for _, addr := range cf.addrs {
 		st, err := nodeStatus(ctx, addr)
 		if err != nil {
@@ -91,6 +92,9 @@ func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			continue
 		}
 		reachable++
+		if st.GetState() == "leader" {
+			leader = st
+		}
 		fmt.Fprintf(w, "%s\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", addr, st.GetId(), st.GetState(), st.GetTerm(),
 			st.GetLeader(), st.GetFirstIndex(), st.GetLastIndex(), st.GetCommitIndex(), st.GetLastApplied(), st.GetSnapshotIndex())
 	}
@@ -98,7 +102,39 @@ func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if reachable == 0 {
 		return errors.New("no node reachable")
 	}
+	if leader != nil {
+		printPipeline(stdout, leader)
+	}
 	return nil
+}
+
+// printPipeline prints the source and sinks as the leader (which runs them)
+// sees them. It is separated from the node table by an empty line.
+func printPipeline(out io.Writer, st *pb.StatusResponse) {
+	if st.GetSourceState() == "" && len(st.GetSinks()) == 0 {
+		return
+	}
+	fmt.Fprintln(out)
+	if st.GetSourceState() != "" {
+		fmt.Fprintf(out, "SOURCE postgres: %s", st.GetSourceState())
+		if st.GetSourceError() != "" {
+			fmt.Fprintf(out, " (%s)", st.GetSourceError())
+		}
+		fmt.Fprintln(out)
+	}
+	if len(st.GetSinks()) == 0 {
+		return
+	}
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SINK\tTYPE\tSTATE\tOFFSET\tLAG\tDELIVERED\tERROR")
+	for _, s := range st.GetSinks() {
+		e := s.GetLastError()
+		if e == "" {
+			e = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\t%s\n", s.GetName(), s.GetType(), s.GetState(), s.GetOffset(), s.GetLag(), s.GetDelivered(), e)
+	}
+	w.Flush()
 }
 
 func nodeStatus(ctx context.Context, addr string) (*pb.StatusResponse, error) {

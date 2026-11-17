@@ -175,6 +175,11 @@ func (c *ClickHouse) ensureTable(ctx context.Context) error {
 	return nil
 }
 
+// Query runs a query and returns ClickHouse's answer. Tests and tools use it.
+func (c *ClickHouse) Query(ctx context.Context, query string) ([]byte, error) {
+	return c.exec(ctx, query, nil)
+}
+
 // exec runs query with an optional data body and returns the response.
 func (c *ClickHouse) exec(ctx context.Context, query string, data io.Reader) ([]byte, error) {
 	if data == nil {

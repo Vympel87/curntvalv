@@ -1,5 +1,6 @@
-// Package server implements curntValv's client-facing gRPC services. For now
-// that is AdminService: cluster status and the metadata key-value store.
+// Package server implements curntValv's client-facing gRPC services:
+// AdminService (cluster status and the metadata key-value store) and
+// SubscribeService (streaming row changes).
 package server
 
 import (
@@ -31,21 +32,34 @@ type LogReader interface {
 type Meta interface {
 	Get(key string) ([]byte, bool)
 	Schema(id uint64) (*pb.Schema, bool)
+	SinkOffset(name string) (uint64, bool)
+}
+
+// Health reports this node's pipeline components for Status.
+type Health interface {
+	// Source returns the Postgres source's state ("" if there is none) and
+	// last error.
+	Source() (state, lastErr string)
+	// Sinks returns the configured sinks in a stable order. Offset and Lag
+	// are filled in by the admin service.
+	Sinks() []*pb.SinkStatus
 }
 
 // Admin implements pb.AdminServiceServer.
 type Admin struct {
 	pb.UnimplementedAdminServiceServer
-	node  RaftNode
-	log   LogReader
-	meta  Meta
-	peers map[uint64]string
+	node   RaftNode
+	log    LogReader
+	meta   Meta
+	health Health
+	peers  map[uint64]string
 }
 
 // NewAdmin returns the admin service of one node. peers maps node ids to
-// addresses and is used to tell clients where the leader is.
-func NewAdmin(node RaftNode, log LogReader, meta Meta, peers map[uint64]string) *Admin {
-	return &Admin{node: node, log: log, meta: meta, peers: peers}
+// addresses and is used to tell clients where the leader is. health may be
+// nil.
+func NewAdmin(node RaftNode, log LogReader, meta Meta, health Health, peers map[uint64]string) *Admin {
+	return &Admin{node: node, log: log, meta: meta, health: health, peers: peers}
 }
 
 const (
@@ -59,7 +73,7 @@ func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResp
 	if err != nil {
 		return nil, a.toStatus(err)
 	}
-	return &pb.StatusResponse{
+	resp := &pb.StatusResponse{
 		Id:            st.ID,
 		Term:          st.Term,
 		State:         st.State.String(),
@@ -70,7 +84,18 @@ func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResp
 		CommitIndex:   st.CommitIndex,
 		LastApplied:   st.LastApplied,
 		SnapshotIndex: st.SnapshotIndex,
-	}, nil
+	}
+	if a.health != nil {
+		resp.SourceState, resp.SourceError = a.health.Source()
+		resp.Sinks = a.health.Sinks()
+		for _, s := range resp.Sinks {
+			s.Offset, _ = a.meta.SinkOffset(s.Name)
+			if st.LastApplied > s.Offset {
+				s.Lag = st.LastApplied - s.Offset
+			}
+		}
+	}
+	return resp, nil
 }
 
 // Put stores a value and returns once it is committed.

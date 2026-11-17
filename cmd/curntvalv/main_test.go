@@ -8,7 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Vympel87/curntvalv/internal/event"
+	"github.com/Vympel87/curntvalv/internal/sink"
 )
 
 func TestParsePeers(t *testing.T) {
@@ -291,6 +295,9 @@ func TestEndToEndKillLeader(t *testing.T) {
 // applied exactly want.
 func sameApplied(table, want string) bool {
 	for _, line := range strings.Split(table, "\n")[1:] {
+		if line == "" {
+			break // end of the node table
+		}
 		f := strings.Fields(line)
 		if len(f) < 9 || f[2] == "unreachable" {
 			continue
@@ -302,11 +309,13 @@ func sameApplied(table, want string) bool {
 	return true
 }
 
-// TestEndToEndPostgresNoLossNoDuplicates is the M4 checker (design §5): a
-// writer inserts numbered rows in transactions of varying size while the
+// TestEndToEndPostgresNoLossNoDuplicates is the M4/M5 checker (design §5):
+// a writer inserts numbered rows in transactions of varying size while the
 // leader is killed with SIGKILL several times. Afterwards the log must hold
 // every row exactly once, with every event key unique and transactions in
-// commit order.
+// commit order. The consumers of the log (a webhook that fails one request
+// in five, a subscriber, and ClickHouse if CURNTVALV_TEST_CH_URL is set) must
+// each have every row, and after de-duplication by event id exactly once.
 func TestEndToEndPostgresNoLossNoDuplicates(t *testing.T) {
 	pgURL := os.Getenv("CURNTVALV_TEST_PG_URL")
 	if pgURL == "" {
@@ -334,8 +343,20 @@ func TestEndToEndPostgresNoLossNoDuplicates(t *testing.T) {
 		db.Exec(ctx, "DROP TABLE "+table)
 	})
 
-	c := newE2EWith(t, []string{"CURNTVALV_PG_URL=" + pgURL},
-		"--pg-slot", slot, "--pg-publication", "pub_"+n, "--snapshot-entries", "50")
+	hook := newHookReceiver(t)
+	args := []string{"--pg-slot", slot, "--pg-publication", "pub_" + n, "--snapshot-entries", "50",
+		"--sink", "name=hook,type=webhook,url=" + hook.url + ",table=" + table}
+	chURL := os.Getenv("CURNTVALV_TEST_CH_URL")
+	var ch *sink.ClickHouse
+	if chURL != "" {
+		args = append(args, "--sink", "name=ch,type=clickhouse,url="+chURL+",into="+table)
+		if ch, err = sink.NewClickHouse(sink.ClickHouseConfig{URL: chURL, Table: table}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ch.Query(context.Background(), "DROP TABLE IF EXISTS "+table) })
+	}
+	c := newE2EWith(t, []string{"CURNTVALV_PG_URL=" + pgURL}, args...)
+	sub := c.subscribe("--table", table)
 
 	// Wait for the slot so the first rows are captured.
 	waitE2E(t, "slot", 30*time.Second, func() bool {
@@ -411,6 +432,50 @@ func TestEndToEndPostgresNoLossNoDuplicates(t *testing.T) {
 	if len(events) != rows {
 		t.Fatalf("%d events for %d rows", len(events), rows)
 	}
+
+	// Consumers: every row, once after de-duplication by event id.
+	checkConsumer := func(name string, get func() (ids map[string]string, deliveries int)) {
+		t.Helper()
+		var ids map[string]string
+		var deliveries int
+		waitE2E(t, name+" to have every row", 60*time.Second, func() bool {
+			ids, deliveries = get()
+			return len(ids) >= rows
+		})
+		rowsSeen := map[string]bool{}
+		for _, row := range ids {
+			rowsSeen[row] = true
+		}
+		if len(ids) != rows || len(rowsSeen) != rows {
+			t.Fatalf("%s: %d event ids for %d distinct rows; want %d", name, len(ids), len(rowsSeen), rows)
+		}
+		t.Logf("%s: %d deliveries for %d events", name, deliveries, rows)
+	}
+	checkConsumer("webhook", hook.ids)
+	checkConsumer("subscriber", sub.ids)
+	if ch != nil {
+		checkConsumer("clickhouse", func() (map[string]string, int) {
+			out, err := ch.Query(ctx, "SELECT id, JSONExtractString(after, 'id') FROM "+table+" FINAL FORMAT TSV")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := map[string]string{}
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			for _, l := range lines {
+				if id, row, ok := strings.Cut(l, "\t"); ok {
+					ids[id] = row
+				}
+			}
+			return ids, len(lines)
+		})
+	}
+	if n := c.logCount("sink started"); n < 4 {
+		t.Fatalf("sinks started %d times; expected them to move with the leader", n)
+	}
+	status := c.mustCLI("status")
+	if !strings.Contains(status, "SOURCE postgres: running") || !strings.Contains(status, "hook") {
+		t.Fatalf("status without pipeline:\n%s", status)
+	}
 	// The test is only meaningful if ingest really moved between leaders.
 	if n := c.logCount("ingest started"); n < 4 {
 		t.Fatalf("ingest started %d times; expected a takeover after every kill", n)
@@ -460,4 +525,82 @@ func lsnLess(a, b string) bool {
 	pa, _ := pglogrepl.ParseLSN(a)
 	pb, _ := pglogrepl.ParseLSN(b)
 	return pa < pb
+}
+
+// hookReceiver is a webhook endpoint that fails every fifth request.
+type hookReceiver struct {
+	url        string
+	mu         sync.Mutex
+	got        map[string]string // event id -> row id
+	requests   int
+	deliveries int
+}
+
+func newHookReceiver(t *testing.T) *hookReceiver {
+	h := &hookReceiver{got: map[string]string{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.requests++
+		if h.requests%5 == 0 {
+			http.Error(w, "injected failure", http.StatusInternalServerError)
+			return
+		}
+		var body struct {
+			Events []event.JSON `json:"events"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		for _, e := range body.Events {
+			row, _ := e.After["id"].(string)
+			h.got[e.ID] = row
+			h.deliveries++
+		}
+	}))
+	t.Cleanup(srv.Close)
+	h.url = srv.URL
+	return h
+}
+
+func (h *hookReceiver) ids() (map[string]string, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return maps.Clone(h.got), h.deliveries
+}
+
+// subscriber is a running `curntvalv subscribe` process.
+type subscriber struct {
+	out *syncBuffer
+}
+
+func (c *e2eCluster) subscribe(args ...string) *subscriber {
+	c.t.Helper()
+	s := &subscriber{out: &syncBuffer{}}
+	cmd := exec.Command(c.bin, append([]string{"subscribe", "--addr", strings.Join(c.addrs, ",")}, args...)...)
+	cmd.Stdout = s.out
+	if err := cmd.Start(); err != nil {
+		c.t.Fatal(err)
+	}
+	c.t.Cleanup(func() {
+		cmd.Process.Signal(os.Interrupt)
+		cmd.Wait()
+	})
+	return s
+}
+
+func (s *subscriber) ids() (map[string]string, int) {
+	ids := map[string]string{}
+	n := 0
+	for _, line := range strings.Split(s.out.String(), "\n") {
+		var e event.JSON
+		if json.Unmarshal([]byte(line), &e) != nil {
+			continue // empty or partly written line
+		}
+		row, _ := e.After["id"].(string)
+		ids[e.ID] = row
+		n++
+	}
+	return ids, n
 }

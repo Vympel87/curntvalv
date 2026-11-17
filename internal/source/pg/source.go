@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/jackc/pglogrepl"
@@ -66,6 +67,30 @@ type Source struct {
 	node  Node
 	state State
 	log   *slog.Logger
+
+	mu      sync.Mutex
+	health  string // standby, running, retrying, failed
+	lastErr string
+}
+
+// Health reports what the source is doing on this node: "standby" (not the
+// leader), "running", "retrying" or "failed", and the last error.
+func (s *Source) Health() (state, lastErr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.health, s.lastErr
+}
+
+func (s *Source) setHealth(state string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.health = state
+	switch {
+	case err != nil:
+		s.lastErr = err.Error()
+	case state == "running":
+		s.lastErr = ""
+	}
 }
 
 // New returns a source. It does no I/O.
@@ -85,7 +110,7 @@ func New(cfg Config, node Node, state State) (*Source, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
-	return &Source{cfg: cfg, node: node, state: state, log: cfg.Logger.With("component", "pg-source")}, nil
+	return &Source{cfg: cfg, node: node, state: state, log: cfg.Logger.With("component", "pg-source"), health: "standby"}, nil
 }
 
 // isFatal reports errors that retrying cannot fix: they need an operator.
@@ -115,7 +140,13 @@ func (s *Source) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		if st.State != raft.StateLeader || st.Term == failedTerm {
+		if st.State != raft.StateLeader {
+			if h, _ := s.Health(); h != "standby" {
+				s.setHealth("standby", nil)
+			}
+			continue
+		}
+		if st.Term == failedTerm {
 			continue
 		}
 
@@ -125,10 +156,13 @@ func (s *Source) Run(ctx context.Context) error {
 			return nil
 		case err == nil, errors.Is(err, errNotLeader):
 			backoff = time.Second
+			s.setHealth("standby", nil)
 		case isFatal(err):
 			failedTerm = st.Term
+			s.setHealth("failed", err)
 			s.log.Error("ingest stopped; fix the cause and restart the node or move leadership", "err", err)
 		default:
+			s.setHealth("retrying", err)
 			s.log.Warn("ingest interrupted, retrying", "err", err, "retry_in", backoff)
 			select {
 			case <-ctx.Done():
@@ -217,6 +251,7 @@ func (s *Source) session(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("pg: start replication: %w", err)
 	}
+	s.setHealth("running", nil)
 	s.log.Info("ingest started", "slot", s.cfg.Slot, "from", start,
 		"stored_commit_lsn", pglogrepl.LSN(pos.CommitLSN), "partial_lsn", pglogrepl.LSN(pos.PartialLSN))
 	return s.stream(ctx, rc, pos)

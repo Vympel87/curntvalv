@@ -68,13 +68,13 @@ func (n *fakeNode) ReadIndex(context.Context) (uint64, error) {
 }
 
 func (n *fakeNode) Status(context.Context) (raft.Status, error) {
-	return raft.Status{ID: 1, Term: 4, State: raft.StateLeader, Leader: 1, LastIndex: n.index, CommitIndex: n.index, FirstIndex: max1(n.first)}, nil
+	return raft.Status{ID: 1, Term: 4, State: raft.StateLeader, Leader: 1, LastIndex: n.index, CommitIndex: n.index, LastApplied: n.index, FirstIndex: max1(n.first)}, nil
 }
 
 func newAdmin() (*Admin, *fakeNode) {
 	f := fsm.New()
 	n := &fakeNode{f: f}
-	return NewAdmin(n, n, f, map[uint64]string{1: "a:1", 2: "b:2"}), n
+	return NewAdmin(n, n, f, nil, map[uint64]string{1: "a:1", 2: "b:2"}), n
 }
 
 func TestPutGetDelete(t *testing.T) {
@@ -98,6 +98,38 @@ func TestPutGetDelete(t *testing.T) {
 	st, err := a.Status(ctx, &pb.StatusRequest{})
 	if err != nil || st.GetState() != "leader" || st.GetLeaderAddr() != "a:1" || st.GetTerm() != 4 {
 		t.Fatalf("status: %v %v", st, err)
+	}
+}
+
+type fakeHealth struct{}
+
+func (fakeHealth) Source() (string, string) { return "retrying", "pg: connect: refused" }
+func (fakeHealth) Sinks() []*pb.SinkStatus {
+	return []*pb.SinkStatus{{Name: "ch", Type: "clickhouse", State: "running"}, {Name: "new", Type: "webhook", State: "running"}}
+}
+
+func TestStatusReportsHealth(t *testing.T) {
+	f := fsm.New()
+	n := &fakeNode{f: f}
+	a := NewAdmin(n, n, f, fakeHealth{}, nil)
+	ctx := context.Background()
+	for range 5 {
+		a.Put(ctx, &pb.PutRequest{Key: "k", Value: []byte("v")})
+	}
+	b, _ := fsm.EncodeSinkOffset("ch", 3)
+	n.Propose(ctx, b) // index 6
+	st, err := a.Status(ctx, &pb.StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.SourceState != "retrying" || st.SourceError != "pg: connect: refused" || len(st.Sinks) != 2 {
+		t.Fatalf("status %v", st)
+	}
+	if s := st.Sinks[0]; s.Offset != 3 || s.Lag != 3 || s.Type != "clickhouse" {
+		t.Fatalf("ch %v", s)
+	}
+	if s := st.Sinks[1]; s.Offset != 0 || s.Lag != 6 {
+		t.Fatalf("new %v", s)
 	}
 }
 

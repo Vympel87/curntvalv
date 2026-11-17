@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -93,5 +95,60 @@ func TestListFlag(t *testing.T) {
 	l.Set("c")
 	if l.String() != "a,b,c" {
 		t.Fatalf("%v", l)
+	}
+}
+
+func TestParseSinkSpec(t *testing.T) {
+	sp, err := parseSinkSpec("name=ch,type=clickhouse,url=http://u:p@h:8123,table=orders,table=public.items,start=latest,into=ev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sp.name != "ch" || sp.typ != "clickhouse" || sp.url != "http://u:p@h:8123" || strings.Join(sp.tables, " ") != "orders public.items" ||
+		!sp.startLatest || sp.chTable != "ev" {
+		t.Fatalf("%+v", sp)
+	}
+	if _, err := newSink(sp); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		"type=webhook,url=http://x",                    // no name
+		"name=Hook,type=webhook,url=http://x",          // bad name
+		"name=h,type=kafka,url=http://x",               // unknown type
+		"name=h,type=webhook",                          // no url
+		"name=h,type=webhook,url=http://x,into=t",      // clickhouse key on webhook
+		"name=h,type=webhook,url=http://x,start=now",   // bad start
+		"name=h,type=webhook,url=http://x,colour=blue", // unknown key
+		"name=h,name=g,type=webhook,url=http://x",      // twice
+		"name=h,type=webhook,url",                      // no value
+	} {
+		if _, err := parseSinkSpec(bad); !errors.Is(err, errUsage) {
+			t.Errorf("%q: got %v", bad, err)
+		}
+	}
+	base := []string{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d"}
+	cfg, err := parseServerFlags(append(base, "--sink", "name=a,type=webhook,url=http://x", "--sink", "name=b,type=webhook,url=http://y"), io.Discard)
+	if err != nil || len(cfg.sinks) != 2 || cfg.sinks[1].url != "http://y" {
+		t.Fatalf("%+v %v", cfg.sinks, err)
+	}
+	_, err = parseServerFlags(append(base, "--sink", "name=a,type=webhook,url=http://x", "--sink", "name=a,type=webhook,url=http://y"), io.Discard)
+	if !errors.Is(err, errUsage) {
+		t.Fatalf("duplicate sink name: %v", err)
+	}
+}
+
+func TestPrintPipeline(t *testing.T) {
+	var out bytes.Buffer
+	printPipeline(&out, &pb.StatusResponse{SourceState: "retrying", SourceError: "pg: connect: refused",
+		Sinks: []*pb.SinkStatus{{Name: "hook", Type: "webhook", State: "running", Offset: 9, Lag: 2, Delivered: 30}}})
+	want := "\nSOURCE postgres: retrying (pg: connect: refused)\n" +
+		"SINK  TYPE     STATE    OFFSET  LAG  DELIVERED  ERROR\n" +
+		"hook  webhook  running  9       2    30         -\n"
+	if out.String() != want {
+		t.Fatalf("got\n%q\nwant\n%q", out.String(), want)
+	}
+	out.Reset()
+	printPipeline(&out, &pb.StatusResponse{})
+	if out.Len() != 0 {
+		t.Fatalf("printed %q for a node without pipeline", out.String())
 	}
 }
