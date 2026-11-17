@@ -14,11 +14,37 @@ import (
 // decodes them itself. *wal.Log satisfies this interface.
 //
 // Append must not return before the entries are on stable storage.
+// CompactBefore may keep some entries below index (FirstIndex tells what is
+// left). Reset(next) empties the log so the next entry gets index next; if
+// the process crashes during Reset the log may reopen as a prefix of its old
+// content, which raft detects and repairs on start.
 type LogStore interface {
 	Append(entries ...[]byte) (uint64, error)
 	Read(index uint64) ([]byte, error)
+	FirstIndex() uint64
 	LastIndex() uint64
 	TruncateAfter(index uint64) error
+	CompactBefore(index uint64) error
+	Reset(next uint64) error
+}
+
+// SnapshotMeta identifies a snapshot: the state machine after applying every
+// entry up to and including Index, whose term is Term.
+type SnapshotMeta struct {
+	Index uint64
+	Term  uint64
+}
+
+// SnapshotStore durably stores state machine snapshots. Save must not return
+// before the snapshot is on stable storage and must be atomic: after a crash
+// a snapshot is either fully there or not listed.
+type SnapshotStore interface {
+	// List returns the stored snapshots in ascending index order.
+	List() ([]SnapshotMeta, error)
+	Load(index uint64) ([]byte, error)
+	Save(meta SnapshotMeta, data []byte) error
+	// DeleteBefore removes every snapshot with an index lower than index.
+	DeleteBefore(index uint64) error
 }
 
 // HardState is the state Raft must persist before it answers an RPC
@@ -85,7 +111,7 @@ func (s *FileStableStore) Save(hs HardState) error {
 	binary.LittleEndian.PutUint32(b[16:20], crc32.Checksum(b[:16], castagnoli))
 
 	tmp := s.path + ".tmp"
-	if err := s.writeFile(tmp, b[:]); err != nil {
+	if err := writeFileSync(tmp, b[:], !s.noSync); err != nil {
 		return fmt.Errorf("raft: save hard state: %w", err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
@@ -94,31 +120,8 @@ func (s *FileStableStore) Save(hs HardState) error {
 	if s.noSync {
 		return nil
 	}
-	d, err := os.Open(filepath.Dir(s.path))
-	if err != nil {
+	if err := syncDir(filepath.Dir(s.path)); err != nil {
 		return fmt.Errorf("raft: save hard state: %w", err)
 	}
-	defer d.Close()
-	if err := d.Sync(); err != nil {
-		return fmt.Errorf("raft: save hard state: sync dir: %w", err)
-	}
 	return nil
-}
-
-func (s *FileStableStore) writeFile(path string, b []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	if !s.noSync {
-		if err := f.Sync(); err != nil {
-			f.Close()
-			return err
-		}
-	}
-	return f.Close()
 }

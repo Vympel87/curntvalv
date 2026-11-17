@@ -15,7 +15,7 @@ func newTestRaft(t *testing.T, id uint64, peers []uint64, term uint64, logTerms 
 	}
 	st := &memStable{hs: HardState{Term: term}}
 	tr := &sinkTransport{}
-	r, err := newRaft(Config{ID: id, Peers: peers, Seed: 1}, log, st, tr, &recApplier{})
+	r, err := newRaft(Config{ID: id, Peers: peers, Seed: 1}, Storage{Log: log, Stable: st, Snapshots: &memSnaps{}}, tr, &recApplier{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestRestoreFromStorage(t *testing.T) {
 func TestLogTermAboveCurrentTermIsCorruption(t *testing.T) {
 	log := &memLog{}
 	log.Append(encodeEntry(Entry{Index: 1, Term: 4, Type: EntryNormal}))
-	_, err := newRaft(Config{ID: 1, Peers: []uint64{1}, Seed: 1}, log, &memStable{hs: HardState{Term: 2}}, &sinkTransport{}, &recApplier{})
+	_, err := newRaft(Config{ID: 1, Peers: []uint64{1}, Seed: 1}, Storage{Log: log, Stable: &memStable{hs: HardState{Term: 2}}, Snapshots: &memSnaps{}}, &sinkTransport{}, &recApplier{})
 	if !errors.Is(err, errSafety) {
 		t.Fatalf("got %v, want errSafety", err)
 	}
@@ -135,7 +135,7 @@ func TestVoteOncePerTerm(t *testing.T) {
 	}
 
 	// After a restart the vote is still remembered.
-	r2, err := newRaft(Config{ID: 1, Peers: []uint64{1, 2, 3}, Seed: 2}, log, st, tr, &recApplier{})
+	r2, err := newRaft(Config{ID: 1, Peers: []uint64{1, 2, 3}, Seed: 2}, Storage{Log: log, Stable: st, Snapshots: &memSnaps{}}, tr, &recApplier{})
 	if err != nil {
 		t.Fatal(err)
 	}

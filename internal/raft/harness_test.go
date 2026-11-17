@@ -2,6 +2,8 @@ package raft
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -11,29 +13,63 @@ import (
 // --- in-memory stores -----------------------------------------------------------
 
 // memLog is an in-memory LogStore. It survives a simulated crash because the
-// cluster keeps it while the raft instance is thrown away.
-type memLog struct{ entries [][]byte }
+// cluster keeps it while the raft instance is thrown away. Like wal.Log it
+// compacts in whole "segments" of memSegment entries, so FirstIndex can stay
+// below the requested index.
+type memLog struct {
+	first   uint64 // 0 means 1
+	entries [][]byte
+}
+
+const memSegment = 8
+
+func (l *memLog) FirstIndex() uint64 {
+	if l.first == 0 {
+		return 1
+	}
+	return l.first
+}
+
+func (l *memLog) LastIndex() uint64 { return l.FirstIndex() + uint64(len(l.entries)) - 1 }
 
 func (l *memLog) Append(entries ...[]byte) (uint64, error) {
 	for _, e := range entries {
 		l.entries = append(l.entries, slices.Clone(e))
 	}
-	return uint64(len(l.entries)), nil
+	return l.LastIndex(), nil
 }
 
 func (l *memLog) Read(i uint64) ([]byte, error) {
-	if i == 0 || i > uint64(len(l.entries)) {
-		return nil, fmt.Errorf("memLog: index %d out of range", i)
+	if i < l.FirstIndex() || i > l.LastIndex() {
+		return nil, fmt.Errorf("memLog: index %d out of range [%d, %d]", i, l.FirstIndex(), l.LastIndex())
 	}
-	return slices.Clone(l.entries[i-1]), nil
+	return slices.Clone(l.entries[i-l.FirstIndex()]), nil
 }
 
-func (l *memLog) LastIndex() uint64 { return uint64(len(l.entries)) }
-
 func (l *memLog) TruncateAfter(i uint64) error {
-	if i < uint64(len(l.entries)) {
-		l.entries = l.entries[:i]
+	if i+1 < l.FirstIndex() {
+		return fmt.Errorf("memLog: truncate after %d below first %d", i, l.FirstIndex())
 	}
+	if i < l.LastIndex() {
+		l.entries = l.entries[:i+1-l.FirstIndex()]
+	}
+	return nil
+}
+
+func (l *memLog) CompactBefore(i uint64) error {
+	newFirst := (i-1)/memSegment*memSegment + 1
+	if last := l.LastIndex(); newFirst > last && last >= l.FirstIndex() {
+		newFirst = last // like wal, never drop the active segment entirely
+	}
+	if newFirst > l.FirstIndex() {
+		l.entries = l.entries[newFirst-l.FirstIndex():]
+		l.first = newFirst
+	}
+	return nil
+}
+
+func (l *memLog) Reset(next uint64) error {
+	l.first, l.entries = next, nil
 	return nil
 }
 
@@ -42,7 +78,46 @@ type memStable struct{ hs HardState }
 func (s *memStable) Load() (HardState, error) { return s.hs, nil }
 func (s *memStable) Save(hs HardState) error  { s.hs = hs; return nil }
 
-// recApplier records applied entries.
+type memSnaps struct {
+	metas []SnapshotMeta
+	data  map[uint64][]byte
+}
+
+func (s *memSnaps) List() ([]SnapshotMeta, error) { return slices.Clone(s.metas), nil }
+
+func (s *memSnaps) Load(i uint64) ([]byte, error) {
+	d, ok := s.data[i]
+	if !ok {
+		return nil, fmt.Errorf("memSnaps: no snapshot %d", i)
+	}
+	return slices.Clone(d), nil
+}
+
+func (s *memSnaps) Save(m SnapshotMeta, data []byte) error {
+	if s.data == nil {
+		s.data = map[uint64][]byte{}
+	}
+	s.metas = slices.DeleteFunc(s.metas, func(x SnapshotMeta) bool { return x.Index == m.Index })
+	s.metas = append(s.metas, m)
+	slices.SortFunc(s.metas, func(a, b SnapshotMeta) int { return compareU64(a.Index, b.Index) })
+	s.data[m.Index] = slices.Clone(data)
+	return nil
+}
+
+func (s *memSnaps) DeleteBefore(i uint64) error {
+	s.metas = slices.DeleteFunc(s.metas, func(x SnapshotMeta) bool {
+		if x.Index < i {
+			delete(s.data, x.Index)
+			return true
+		}
+		return false
+	})
+	return nil
+}
+
+// recApplier records applied entries. Its "state" is the whole list of
+// applied entries, so snapshots carry the full history and the state machine
+// safety check keeps working across restores.
 type recApplier struct{ entries []Entry }
 
 func (a *recApplier) Apply(e Entry) error {
@@ -51,6 +126,31 @@ func (a *recApplier) Apply(e Entry) error {
 	}
 	e.Data = slices.Clone(e.Data)
 	a.entries = append(a.entries, e)
+	return nil
+}
+
+func (a *recApplier) Snapshot() ([]byte, error) {
+	var b []byte
+	for _, e := range a.entries {
+		enc := encodeEntry(e)
+		b = binary.LittleEndian.AppendUint32(b, uint32(len(enc)))
+		b = append(b, enc...)
+	}
+	return b, nil
+}
+
+func (a *recApplier) Restore(b []byte) error {
+	a.entries = nil
+	for len(b) > 0 {
+		n := binary.LittleEndian.Uint32(b)
+		e, err := decodeEntry(uint64(len(a.entries))+1, b[4:4+n])
+		if err != nil {
+			return err
+		}
+		e.Data = slices.Clone(e.Data)
+		a.entries = append(a.entries, e)
+		b = b[4+n:]
+	}
 	return nil
 }
 
@@ -82,6 +182,8 @@ type testNet struct {
 	// group[id] is the partition a node is in; nodes in different groups
 	// cannot talk. Empty map means no partition.
 	group map[uint64]int
+
+	delivered map[MessageType]int // messages handed to a node, by type
 }
 
 func (n *testNet) Send(m Message) { n.queue = append(n.queue, m) }
@@ -98,6 +200,7 @@ type cluster struct {
 	rafts   map[uint64]*raft // nil while the node is down
 	logs    map[uint64]*memLog
 	stables map[uint64]*memStable
+	snaps   map[uint64]*memSnaps
 	apps    map[uint64]*recApplier
 	round   int
 
@@ -113,12 +216,19 @@ type cluster struct {
 
 func newCluster(t testing.TB, size int, seed uint64) *cluster {
 	t.Helper()
+	return newClusterCfg(t, size, seed, nil)
+}
+
+// newClusterCfg is newCluster with a hook to change the node config.
+func newClusterCfg(t testing.TB, size int, seed uint64, tweak func(*Config)) *cluster {
+	t.Helper()
 	c := &cluster{
 		t:        t,
 		net:      &testNet{rng: rand.New(rand.NewPCG(seed, 0xc0ffee))},
 		rafts:    map[uint64]*raft{},
 		logs:     map[uint64]*memLog{},
 		stables:  map[uint64]*memStable{},
+		snaps:    map[uint64]*memSnaps{},
 		apps:     map[uint64]*recApplier{},
 		leaderOf: map[uint64]uint64{},
 	}
@@ -126,9 +236,13 @@ func newCluster(t testing.TB, size int, seed uint64) *cluster {
 		c.ids = append(c.ids, uint64(i))
 	}
 	c.cfg = Config{Peers: c.ids, ElectionTicks: 10, HeartbeatTicks: 1, MaxEntriesPerMsg: 8, Seed: seed}
+	if tweak != nil {
+		tweak(&c.cfg)
+	}
 	for _, id := range c.ids {
 		c.logs[id] = &memLog{}
 		c.stables[id] = &memStable{}
+		c.snaps[id] = &memSnaps{}
 		c.start(id)
 	}
 	return c
@@ -141,11 +255,15 @@ func (c *cluster) start(id uint64) {
 	cfg.ID = id
 	cfg.Seed = c.cfg.Seed*1_000_003 + uint64(c.round) + 1 // non-zero, differs per restart
 	c.apps[id] = &recApplier{}
-	r, err := newRaft(cfg, c.logs[id], c.stables[id], c.net, c.apps[id])
+	r, err := newRaft(cfg, c.storage(id), c.net, c.apps[id])
 	if err != nil {
 		c.t.Fatalf("start node %d: %v", id, err)
 	}
 	c.rafts[id] = r
+}
+
+func (c *cluster) storage(id uint64) Storage {
+	return Storage{Log: c.logs[id], Stable: c.stables[id], Snapshots: c.snaps[id]}
 }
 
 // crash stops node id, losing all volatile state.
@@ -204,6 +322,10 @@ func (c *cluster) step() {
 			if r == nil || !n.connected(m.From, m.To) {
 				break
 			}
+			if n.delivered == nil {
+				n.delivered = map[MessageType]int{}
+			}
+			n.delivered[m.Type]++
 			if err := r.step(m); err != nil {
 				c.fatal(m.To, err)
 			}
@@ -375,6 +497,9 @@ func (c *cluster) checkLeaderCompleteness() {
 				c.t.Fatalf("round %d: leader completeness: leader %d (term %d) lacks committed index %d", c.round, id, r.term, e.Index)
 			}
 			t, err := r.termAt(e.Index)
+			if errors.Is(err, errCompacted) {
+				continue // covered by a snapshot, which holds committed state
+			}
 			if err != nil {
 				c.fatal(id, err)
 			}
@@ -387,26 +512,31 @@ func (c *cluster) checkLeaderCompleteness() {
 }
 
 // Log Matching: if two logs have an entry with the same index and term, the
-// logs are identical up to that index.
+// logs are identical up to that index (checked over the part both still hold).
 func (c *cluster) checkLogMatching() {
 	c.t.Helper()
 	for i, a := range c.ids {
 		for _, b := range c.ids[i+1:] {
-			la, lb := c.logs[a].entries, c.logs[b].entries
-			n := min(len(la), len(lb))
+			la, lb := c.logs[a], c.logs[b]
+			lo := max(la.FirstIndex(), lb.FirstIndex())
+			hi := min(la.LastIndex(), lb.LastIndex())
 			// Find the highest index where the terms agree; everything before
 			// it must be byte-identical.
-			hi := -1
-			for k := n - 1; k >= 0; k-- {
-				if bytes.Equal(la[k][:8], lb[k][:8]) {
-					hi = k
+			match := uint64(0)
+			for k := hi; k >= lo && k > 0; k-- {
+				ea, _ := la.Read(k)
+				eb, _ := lb.Read(k)
+				if bytes.Equal(ea[:8], eb[:8]) {
+					match = k
 					break
 				}
 			}
-			for k := 0; k <= hi; k++ {
-				if !bytes.Equal(la[k], lb[k]) {
+			for k := lo; match > 0 && k <= match; k++ {
+				ea, _ := la.Read(k)
+				eb, _ := lb.Read(k)
+				if !bytes.Equal(ea, eb) {
 					c.t.Fatalf("round %d: log matching: nodes %d and %d agree on term at index %d but differ at index %d",
-						c.round, a, b, hi+1, k+1)
+						c.round, a, b, match, k)
 				}
 			}
 		}

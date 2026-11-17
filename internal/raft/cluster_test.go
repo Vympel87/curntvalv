@@ -216,18 +216,24 @@ func TestRandomFaults(t *testing.T) {
 	if testing.Short() {
 		seeds, rounds = 4, 1000
 	}
-	for _, size := range []int{3, 5} {
-		for seed := 1; seed <= seeds; seed++ {
-			t.Run(fmt.Sprintf("n%d/seed%d", size, seed), func(t *testing.T) {
-				t.Parallel()
-				runRandomFaults(t, size, uint64(seed), rounds)
-			})
+	modes := map[string]func(*Config){
+		"plain":   nil,
+		"compact": snapCfg(7, 12), // frequent snapshots, aggressive log cuts
+	}
+	for mode, tweak := range modes {
+		for _, size := range []int{3, 5} {
+			for seed := 1; seed <= seeds; seed++ {
+				t.Run(fmt.Sprintf("%s/n%d/seed%d", mode, size, seed), func(t *testing.T) {
+					t.Parallel()
+					runRandomFaults(t, size, uint64(seed), rounds, tweak)
+				})
+			}
 		}
 	}
 }
 
-func runRandomFaults(t *testing.T, size int, seed uint64, rounds int) {
-	c := newCluster(t, size, seed)
+func runRandomFaults(t *testing.T, size int, seed uint64, rounds int, tweak func(*Config)) *cluster {
+	c := newClusterCfg(t, size, seed, tweak)
 	rng := c.net.rng
 	c.net.dropRate = 0.05
 	c.net.dupRate = 0.02
@@ -303,4 +309,14 @@ func runRandomFaults(t *testing.T, size int, seed uint64, rounds int) {
 	if len(seen) < 2 {
 		t.Fatalf("only %d entries committed; the fault mix is too harsh to be useful", len(seen))
 	}
+	if c.cfg.TrailingEntries > 0 {
+		compacted := false
+		for _, id := range c.ids {
+			compacted = compacted || c.logs[id].FirstIndex() > 1
+		}
+		if !compacted {
+			t.Fatal("compaction is enabled but no log was compacted")
+		}
+	}
+	return c
 }

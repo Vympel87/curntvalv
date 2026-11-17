@@ -44,14 +44,14 @@ type proposeResult struct {
 // calls Run; the other methods talk to it through channels and are safe for
 // concurrent use.
 type Node struct {
-	cfg    Config
-	log    LogStore
-	stable StableStore
-	tr     Transport
-	app    Applier
+	cfg     Config
+	storage Storage
+	tr      Transport
+	app     Applier
 
 	recvc   chan Message
 	propc   chan proposal
+	readc   chan chan proposeResult
 	statusc chan chan Status
 	done    chan struct{}
 	running atomic.Bool
@@ -59,18 +59,21 @@ type Node struct {
 }
 
 // NewNode creates a node. It does no I/O; state is loaded when Run starts.
-func NewNode(cfg Config, log LogStore, stable StableStore, tr Transport, app Applier) (*Node, error) {
+func NewNode(cfg Config, storage Storage, tr Transport, app Applier) (*Node, error) {
 	if err := cfg.setDefaults(); err != nil {
 		return nil, err
 	}
+	if storage.Log == nil || storage.Stable == nil || storage.Snapshots == nil {
+		return nil, errors.New("raft: Storage needs Log, Stable and Snapshots")
+	}
 	return &Node{
 		cfg:     cfg,
-		log:     log,
-		stable:  stable,
+		storage: storage,
 		tr:      tr,
 		app:     app,
 		recvc:   make(chan Message, 1024),
 		propc:   make(chan proposal, 1024),
+		readc:   make(chan chan proposeResult, 1024),
 		statusc: make(chan chan Status),
 		done:    make(chan struct{}),
 	}, nil
@@ -84,10 +87,18 @@ func (n *Node) Run(ctx context.Context) error {
 		return errors.New("raft: Run called twice")
 	}
 	w := &waitingApplier{inner: n.app, waiters: map[uint64]waiter{}}
+	reads := map[uint64]chan proposeResult{}
+	failReads := func(err error) {
+		for id, c := range reads {
+			c <- proposeResult{err: err}
+			delete(reads, id)
+		}
+	}
 	defer close(n.done)
+	defer failReads(ErrStopped)
 	defer w.failAll(ErrStopped)
 
-	r, err := newRaft(n.cfg, n.log, n.stable, n.tr, w)
+	r, err := newRaft(n.cfg, n.storage, n.tr, w)
 	if err != nil {
 		n.err = err
 		return err
@@ -106,6 +117,14 @@ func (n *Node) Run(ctx context.Context) error {
 			err = r.step(m)
 		case p := <-n.propc:
 			err = n.propose(r, w, p)
+		case c := <-n.readc:
+			var id uint64
+			if id, err = r.requestRead(); err == nil {
+				reads[id] = c
+			} else if errors.Is(err, ErrNotLeader) {
+				c <- proposeResult{err: err}
+				err = nil
+			}
 		case c := <-n.statusc:
 			c <- r.status()
 		}
@@ -115,8 +134,20 @@ func (n *Node) Run(ctx context.Context) error {
 		}
 		if r.state != StateLeader {
 			w.failAll(ErrLeadershipLost)
-		} else {
-			w.failOtherTerms(r.term)
+			failReads(ErrLeadershipLost)
+			continue
+		}
+		w.failOtherTerms(r.term)
+		ready, err := r.readyReads()
+		if err != nil {
+			n.err = err
+			return err
+		}
+		for _, id := range ready {
+			// On the leader lastApplied == commitIndex after every event, so
+			// the state machine already reflects the read index.
+			reads[id] <- proposeResult{index: r.commitIndex}
+			delete(reads, id)
 		}
 	}
 }
@@ -171,6 +202,35 @@ func (n *Node) Propose(ctx context.Context, data []byte) (uint64, error) {
 	case <-n.done:
 		select {
 		case res := <-p.result:
+			return res.index, res.err
+		default:
+			return 0, ErrStopped
+		}
+	}
+}
+
+// ReadIndex implements the read-only protocol of §8. It returns once this
+// node has confirmed with a majority that it is still the leader, and the
+// returned index is committed and already applied to the local state
+// machine. Reading the state machine after ReadIndex returns is therefore
+// linearizable. Fails with *NotLeaderError or ErrLeadershipLost.
+func (n *Node) ReadIndex(ctx context.Context) (uint64, error) {
+	c := make(chan proposeResult, 1)
+	select {
+	case n.readc <- c:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-n.done:
+		return 0, ErrStopped
+	}
+	select {
+	case res := <-c:
+		return res.index, res.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-n.done:
+		select {
+		case res := <-c:
 			return res.index, res.err
 		default:
 			return 0, ErrStopped
@@ -242,6 +302,9 @@ func (w *waitingApplier) Apply(e Entry) error {
 	}
 	return nil
 }
+
+func (w *waitingApplier) Snapshot() ([]byte, error) { return w.inner.Snapshot() }
+func (w *waitingApplier) Restore(data []byte) error { return w.inner.Restore(data) }
 
 func (w *waitingApplier) failAll(err error) {
 	for i, wt := range w.waiters {

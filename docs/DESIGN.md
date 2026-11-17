@@ -183,11 +183,12 @@ removing nodes at runtime (Raft single-server membership change) comes later.
 - **RPCs are one-way messages.** A `Message` is a request or a reply; the
   `Transport` may lose, delay, duplicate or reorder any of them. `Send` must
   not block.
-- **Interfaces** (defined in `raft`): `LogStore` (Append, Read, LastIndex,
-  TruncateAfter — four methods so `*wal.Log` fits without an adapter),
-  `StableStore` (Load/Save of term + vote), `Transport` (Send), `Applier`
-  (Apply). `FileStableStore` writes term + vote + CRC to a temp file, fsyncs
-  and renames it.
+- **Interfaces** (defined in `raft`): `LogStore` (Append, Read, FirstIndex,
+  LastIndex, TruncateAfter, CompactBefore, Reset — seven methods, above the
+  usual 1–3, so that `*wal.Log` fits without an adapter), `StableStore`
+  (Load/Save of term + vote), `SnapshotStore` (List, Load, Save,
+  DeleteBefore), `Transport` (Send), `Applier` (Apply, Snapshot, Restore).
+  The file stores write to a temp file, fsync and rename it.
 - **Entry encoding.** `| term u64 LE | type u8 | data |`; the index is the
   position in the `LogStore`. Raft only knows `Normal` and `Noop` entries;
   `TxBatch` vs `Meta` (D1) is decided by the layer above, inside `data`.
@@ -196,14 +197,33 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   entry may still commit later; D3's LSN de-duplication covers the retry).
 - **Persistence order.** Term/vote are saved and entries appended (fsync)
   before any message that depends on them is sent.
-- **Restart.** `commitIndex` and `lastApplied` are volatile (Figure 2), so a
-  restarted node applies its log again from index 1. Snapshots (M3) will
-  bound this.
+- **Restart.** `commitIndex` and `lastApplied` are volatile (Figure 2). A
+  restarted node restores its latest snapshot and applies the entries after
+  it. If the log does not continue that snapshot (a crash between saving an
+  installed snapshot and resetting the log), the log is reset on start.
+- **Snapshots (§7).** A snapshot is taken every `SnapshotEntries` applied
+  entries. With `TrailingEntries > 0` the log is cut at the newest snapshot
+  at least that far behind; the default 0 keeps the whole log until the
+  retention policies of D5 exist (M6). InstallSnapshot is one message (the
+  snapshot is metadata only, D5). The leader always sends its **base
+  snapshot** — the oldest one the log continues from — not the latest, so a
+  new or lagging node receives the same retained history as everyone else.
+  Because `wal` compacts whole segments, the base can be a little after the
+  first retained entry; such a node's history then starts a few entries
+  later than the leader's.
+- **AppendEntries into a compacted region.** If `prevLogIndex` is covered by
+  the follower's snapshot (its term is no longer known), the follower
+  replies success with its `commitIndex`: everything up to there is
+  committed and therefore identical on every node.
+- **Linearizable reads (§8).** `Node.ReadIndex` returns once the leader has
+  committed an entry of its own term and a majority answered a heartbeat
+  sent after the request (the request id travels as `ReadID` and is echoed
+  in replies). The state machine is then read locally.
 - **Rejection hint.** A rejected AppendEntries reply carries the follower's
   last index; the leader sets `nextIndex = min(nextIndex-1, hint+1)`. This is
   still "decrement and retry" (§5.3), it only skips indexes the follower
   cannot have. No other optimizations: no PreVote, no CheckQuorum, no
-  pipelining, no read index. Without PreVote a node rejoining after a
+  pipelining, no leader leases. Without PreVote a node rejoining after a
   partition bumps the term and forces a new election; that is expected.
 - **Broken invariants are fatal.** Two leaders in one term, truncating below
   `commitIndex`, or a log term above the current term stop the node with an

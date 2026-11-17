@@ -12,8 +12,11 @@ const (
 	MsgVoteResp
 	// MsgApp is the AppendEntries RPC (also used as heartbeat).
 	MsgApp
-	// MsgAppResp is the reply to MsgApp.
+	// MsgAppResp is the reply to MsgApp and to MsgSnap.
 	MsgAppResp
+	// MsgSnap is the InstallSnapshot RPC (§7). Snapshots hold only metadata
+	// (design D5), so they are sent in one piece (offset 0, done = true).
+	MsgSnap
 )
 
 func (t MessageType) String() string {
@@ -26,6 +29,8 @@ func (t MessageType) String() string {
 		return "MsgApp"
 	case MsgAppResp:
 		return "MsgAppResp"
+	case MsgSnap:
+		return "MsgSnap"
 	default:
 		return fmt.Sprintf("MessageType(%d)", uint8(t))
 	}
@@ -59,6 +64,20 @@ type Message struct {
 	// follower now knows to match the leader's log.
 	Success    bool
 	MatchIndex uint64
+
+	// MsgSnap.
+	Snapshot *Snapshot
+
+	// MsgApp/MsgSnap: the leader's latest read-only request id. Replies echo
+	// it; a majority of replies proves the leader was still leader after
+	// the request was made (§8).
+	ReadID uint64
+}
+
+// Snapshot is a state machine snapshot together with its position.
+type Snapshot struct {
+	Meta SnapshotMeta
+	Data []byte
 }
 
 // Transport sends messages to other nodes. Send must not block; delivery is
@@ -67,9 +86,13 @@ type Transport interface {
 	Send(m Message)
 }
 
-// Applier receives committed entries, in index order, exactly once per run
-// of a node. Because commitIndex is volatile, a restarted node applies its
-// log again from index 1 (until snapshots exist). An error is fatal.
+// Applier is the replicated state machine. Apply receives committed entries
+// in index order. Snapshot returns the state after the last applied entry;
+// Restore replaces the whole state with a snapshot. A restarted node first
+// restores its latest snapshot (if any) and then applies the entries after
+// it. Every error is fatal for the node.
 type Applier interface {
 	Apply(e Entry) error
+	Snapshot() ([]byte, error)
+	Restore(data []byte) error
 }

@@ -54,6 +54,24 @@ func (a *syncApplier) Apply(e Entry) error {
 	return nil
 }
 
+func (a *syncApplier) Snapshot() ([]byte, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r := recApplier{entries: a.entries}
+	return r.Snapshot()
+}
+
+func (a *syncApplier) Restore(b []byte) error {
+	var r recApplier
+	if err := r.Restore(b); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entries = r.entries
+	return nil
+}
+
 func (a *syncApplier) data() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -76,13 +94,18 @@ type liveNode struct {
 type liveCluster struct {
 	t     *testing.T
 	ids   []uint64
+	tweak func(*Config)
 	dir   string
 	net   *chanNet
 	nodes map[uint64]*liveNode
 }
 
 func newLiveCluster(t *testing.T, size int) *liveCluster {
-	c := &liveCluster{t: t, dir: t.TempDir(), net: &chanNet{nodes: map[uint64]*Node{}}, nodes: map[uint64]*liveNode{}}
+	return newLiveClusterCfg(t, size, nil)
+}
+
+func newLiveClusterCfg(t *testing.T, size int, tweak func(*Config)) *liveCluster {
+	c := &liveCluster{t: t, tweak: tweak, dir: t.TempDir(), net: &chanNet{nodes: map[uint64]*Node{}}, nodes: map[uint64]*liveNode{}}
 	for i := 1; i <= size; i++ {
 		c.ids = append(c.ids, uint64(i))
 	}
@@ -97,17 +120,30 @@ func newLiveCluster(t *testing.T, size int) *liveCluster {
 	return c
 }
 
-// start runs node id on a wal.Log and FileStableStore in its own directory.
+func (c *liveCluster) cfg(id uint64) Config {
+	cfg := Config{ID: id, Peers: c.ids, ElectionTicks: 10, HeartbeatTicks: 1, TickInterval: 2 * time.Millisecond}
+	if c.tweak != nil {
+		c.tweak(&cfg)
+	}
+	return cfg
+}
+
+// start runs node id on a wal.Log, FileStableStore and FileSnapshotStore in
+// its own directory.
 func (c *liveCluster) start(id uint64) {
 	c.t.Helper()
 	dir := filepath.Join(c.dir, fmt.Sprint(id))
-	log, err := wal.Open(dir, wal.Options{NoSync: true})
+	log, err := wal.Open(dir, wal.Options{NoSync: true, SegmentSize: 1024})
 	if err != nil {
 		c.t.Fatal(err)
 	}
 	app := &syncApplier{}
-	cfg := Config{ID: id, Peers: c.ids, ElectionTicks: 10, HeartbeatTicks: 1, TickInterval: 2 * time.Millisecond}
-	node, err := NewNode(cfg, log, NewFileStableStore(filepath.Join(dir, "state"), true), c.net, app)
+	snaps, err := NewFileSnapshotStore(filepath.Join(dir, "snapshots"), true)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	st := Storage{Log: log, Stable: NewFileStableStore(filepath.Join(dir, "state"), true), Snapshots: snaps}
+	node, err := NewNode(c.cfg(id), st, c.net, app)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -251,7 +287,7 @@ func TestNodeStopFailsWaiters(t *testing.T) {
 	// A lone node in a 3-node cluster can never commit.
 	net := &chanNet{nodes: map[uint64]*Node{}}
 	cfg := Config{ID: 1, Peers: []uint64{1, 2, 3}, ElectionTicks: 2, HeartbeatTicks: 1, TickInterval: time.Millisecond}
-	n, err := NewNode(cfg, &syncLog{}, &syncStable{}, net, &syncApplier{})
+	n, err := NewNode(cfg, Storage{Log: &syncLog{}, Stable: &syncStable{}, Snapshots: &memSnaps{}}, net, &syncApplier{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +358,7 @@ func TestNodeFatalStorageError(t *testing.T) {
 	net := &chanNet{nodes: map[uint64]*Node{}}
 	cfg := Config{ID: 1, Peers: []uint64{1}, TickInterval: time.Millisecond}
 	boom := errors.New("disk on fire")
-	n, err := NewNode(cfg, &syncLog{}, &syncStable{err: boom}, net, &syncApplier{})
+	n, err := NewNode(cfg, Storage{Log: &syncLog{}, Stable: &syncStable{err: boom}, Snapshots: &memSnaps{}}, net, &syncApplier{})
 	if err != nil {
 		t.Fatal(err)
 	}
