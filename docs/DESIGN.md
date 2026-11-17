@@ -71,7 +71,9 @@ and are ready to take over.
 | `internal/fsm`         | State machine: metadata KV applied from committed entries |
 | `internal/source/pg`   | Postgres logical replication reader (pgoutput) |
 | `internal/sink/...`    | Sink interface + ClickHouse, webhook, stdout |
-| `internal/server`      | gRPC (node-to-node, subscribe, admin) + HTTP (dashboard, metrics) |
+| `internal/transport`   | Raft messages between nodes over gRPC (D10) |
+| `internal/pb`          | Generated protobuf/gRPC code (from `proto/`) |
+| `internal/server`      | Client-facing gRPC (admin now; subscribe later) + HTTP (dashboard, metrics) |
 | `cmd/curntvalv`             | Single binary: `curntvalv server`, `curntvalv status`, `curntvalv subscribe`, ... |
 
 ## 3. Key design decisions
