@@ -82,13 +82,13 @@ func TestCorruptEntriesAreErrors(t *testing.T) {
 	badDelete, _ := EncodeDelete("key")
 	badDelete = append(badDelete, 'x')
 	cases := map[string][]byte{
-		"empty":         {},
-		"unknown kind":  {99},
-		"txbatch in M3": {byte(KindTxBatch)},
-		"empty meta":    {byte(KindMeta)},
-		"unknown op":    {byte(KindMeta), 9, 1, 'k'},
-		"bad length":    good[:3],
-		"delete+junk":   badDelete,
+		"empty":        {},
+		"unknown kind": {99},
+		"bad txbatch":  {byte(KindTxBatch), 0xff},
+		"empty meta":   {byte(KindMeta)},
+		"unknown op":   {byte(KindMeta), 9, 1, 'k'},
+		"bad length":   good[:3],
+		"delete+junk":  badDelete,
 	}
 	for name, b := range cases {
 		f := New()

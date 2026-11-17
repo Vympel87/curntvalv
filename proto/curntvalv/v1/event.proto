@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package curntvalv.v1;
+
+option go_package = "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pb";
+
+// TxBatch holds the row changes of one Postgres transaction, or a part of it.
+// A large transaction is split into several batches with consecutive event
+// sequence numbers; only the last one has final = true (design D1).
+message TxBatch {
+  // LSN of the transaction's commit record.
+  uint64 commit_lsn = 1;
+  // LSN just after the commit record; what is acknowledged to Postgres.
+  uint64 end_lsn = 2;
+  // Commit time in microseconds since the Unix epoch.
+  int64 commit_time_us = 3;
+  uint32 xid = 4;
+  // Sequence number of events[0] within the transaction. The idempotency
+  // key of an event is (commit_lsn, first_seq + position in events).
+  uint32 first_seq = 5;
+  bool final = 6;
+  // Table schemas used by this batch that the cluster has not stored yet.
+  repeated Schema schemas = 7;
+  repeated Event events = 8;
+}
+
+enum Op {
+  OP_UNSPECIFIED = 0;
+  OP_INSERT = 1;
+  OP_UPDATE = 2;
+  OP_DELETE = 3;
+  OP_TRUNCATE = 4;
+}
+
+message Event {
+  // Refers to a Schema stored in the state machine.
+  uint64 schema_id = 1;
+  Op op = 2;
+  // Old row image: all columns with REPLICA IDENTITY FULL, otherwise only
+  // the key columns, and absent when Postgres does not send it.
+  Row before = 3;
+  // New row image (insert, update).
+  Row after = 4;
+}
+
+message Row {
+  // One value per schema column, in column order.
+  repeated Value values = 1;
+}
+
+enum ValueKind {
+  VALUE_KIND_UNSPECIFIED = 0;
+  VALUE_KIND_NULL = 1;
+  // Postgres text representation in data.
+  VALUE_KIND_TEXT = 2;
+  // A TOASTed value that did not change; Postgres does not send it.
+  VALUE_KIND_UNCHANGED = 3;
+  // Postgres binary representation in data.
+  VALUE_KIND_BINARY = 4;
+}
+
+message Value {
+  ValueKind kind = 1;
+  bytes data = 2;
+}
+
+// Schema describes a table as sent by pgoutput's Relation message.
+message Schema {
+  // Derived from the content (all other fields), so equal definitions get
+  // equal ids on every node.
+  uint64 id = 1;
+  uint32 relation_oid = 2;
+  string namespace = 3;
+  string name = 4;
+  // 'd' default, 'n' nothing, 'f' full, 'i' index.
+  uint32 replica_identity = 5;
+  repeated Column columns = 6;
+}
+
+message Column {
+  string name = 1;
+  uint32 type_oid = 2;
+  int32 type_modifier = 3;
+  // Part of the replica identity key.
+  bool key = 4;
+}

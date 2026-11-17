@@ -7,8 +7,9 @@
 //
 //	| kind uint8 | body |
 //
-// KindMeta bodies are metadata commands. KindTxBatch is reserved for the
-// row changes of one Postgres transaction (milestone M4).
+// KindMeta bodies are metadata commands. KindTxBatch bodies are protobuf
+// pb.TxBatch messages: the row changes of one Postgres transaction (or a
+// part of it) together with the source position they advance to.
 package fsm
 
 import (
@@ -18,6 +19,9 @@ import (
 	"slices"
 	"sync"
 
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
 )
 
@@ -26,7 +30,7 @@ type Kind uint8
 
 const (
 	KindMeta    Kind = 1
-	KindTxBatch Kind = 2 // reserved for M4
+	KindTxBatch Kind = 2
 )
 
 type op uint8
@@ -42,7 +46,7 @@ const (
 	// MaxValueSize is the largest allowed value in bytes.
 	MaxValueSize = 1 << 20
 
-	snapshotVersion = 1
+	snapshotVersion = 2
 )
 
 var (
@@ -103,12 +107,14 @@ func readBytes(b []byte) (v, rest []byte, ok bool) {
 type FSM struct {
 	mu      sync.RWMutex
 	kv      map[string][]byte
+	src     SourceState
+	schemas map[uint64]*pb.Schema
 	applied uint64
 }
 
 // New returns an empty state machine.
 func New() *FSM {
-	return &FSM{kv: map[string][]byte{}}
+	return &FSM{kv: map[string][]byte{}, schemas: map[uint64]*pb.Schema{}}
 }
 
 // Apply applies one committed entry.
@@ -131,6 +137,8 @@ func (f *FSM) applyPayload(b []byte) error {
 	switch Kind(b[0]) {
 	case KindMeta:
 		return f.applyMeta(b[1:])
+	case KindTxBatch:
+		return f.applyTxBatch(b[1:])
 	default:
 		return fmt.Errorf("%w: unknown kind %d", ErrCorrupt, b[0])
 	}
@@ -189,8 +197,11 @@ func (f *FSM) AppliedIndex() uint64 {
 // state always gives the same bytes.
 //
 //	| version u8 | applied u64 | count uvarint | (key, value)* |
+//	| commit_lsn u64 | end_lsn u64 | partial_lsn u64 | partial_next_seq u32 |
+//	| anomalies u64 | schema count uvarint | schema* |
 //
-// with keys in sorted order and each key and value length-prefixed.
+// with keys in sorted order, schemas in id order, and each key, value and
+// schema (protobuf) length-prefixed.
 func (f *FSM) Snapshot() ([]byte, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -205,6 +216,24 @@ func (f *FSM) Snapshot() ([]byte, error) {
 	for _, k := range keys {
 		b = appendBytes(b, []byte(k))
 		b = appendBytes(b, f.kv[k])
+	}
+	b = binary.LittleEndian.AppendUint64(b, f.src.CommitLSN)
+	b = binary.LittleEndian.AppendUint64(b, f.src.EndLSN)
+	b = binary.LittleEndian.AppendUint64(b, f.src.PartialLSN)
+	b = binary.LittleEndian.AppendUint32(b, f.src.PartialNextSeq)
+	b = binary.LittleEndian.AppendUint64(b, f.src.Anomalies)
+	ids := make([]uint64, 0, len(f.schemas))
+	for id := range f.schemas {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	b = binary.AppendUvarint(b, uint64(len(ids)))
+	for _, id := range ids {
+		sb, err := marshalOpts.Marshal(f.schemas[id])
+		if err != nil {
+			return nil, fmt.Errorf("fsm: snapshot schema %d: %w", id, err)
+		}
+		b = appendBytes(b, sb)
 	}
 	return b, nil
 }
@@ -233,11 +262,40 @@ func (f *FSM) Restore(b []byte) error {
 		kv[string(key)] = slices.Clone(val)
 		rest = r
 	}
+	if len(rest) < 36 {
+		return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+	}
+	src := SourceState{
+		CommitLSN:      binary.LittleEndian.Uint64(rest[0:8]),
+		EndLSN:         binary.LittleEndian.Uint64(rest[8:16]),
+		PartialLSN:     binary.LittleEndian.Uint64(rest[16:24]),
+		PartialNextSeq: binary.LittleEndian.Uint32(rest[24:28]),
+		Anomalies:      binary.LittleEndian.Uint64(rest[28:36]),
+	}
+	rest = rest[36:]
+	ns, k := binary.Uvarint(rest)
+	if k <= 0 {
+		return fmt.Errorf("%w: bad schema count", ErrCorrupt)
+	}
+	rest = rest[k:]
+	schemas := make(map[uint64]*pb.Schema, min(ns, 1<<16))
+	for range ns {
+		sb, r, ok := readBytes(rest)
+		if !ok {
+			return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+		}
+		sc := &pb.Schema{}
+		if err := proto.Unmarshal(sb, sc); err != nil {
+			return fmt.Errorf("%w: snapshot schema: %v", ErrCorrupt, err)
+		}
+		schemas[sc.GetId()] = sc
+		rest = r
+	}
 	if len(rest) != 0 {
 		return fmt.Errorf("%w: trailing bytes in snapshot", ErrCorrupt)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kv, f.applied = kv, applied
+	f.kv, f.applied, f.src, f.schemas = kv, applied, src, schemas
 	return nil
 }
