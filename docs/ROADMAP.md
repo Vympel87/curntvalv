@@ -2,7 +2,7 @@
 
 Each milestone ends with something that can be run and shown.
 
-Done: M0, M1, M2.
+Done: M0, M1, M2, M3.
 
 | # | Milestone | Done when |
 |---|---|---|

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
@@ -31,7 +32,9 @@ type Options struct {
 	// QueueSize is the per-peer outgoing queue length. Default 1024.
 	QueueSize int
 	// MinBackoff and MaxBackoff bound the delay between reconnect attempts.
-	// Defaults 50ms and 2s.
+	// Defaults 50ms and 500ms. MaxBackoff should stay well below the Raft
+	// election timeout: a restarted peer that does not hear from the leader
+	// in time starts an election and briefly disrupts the cluster.
 	MinBackoff, MaxBackoff time.Duration
 	// Logger receives connection errors. Default: discard.
 	Logger *slog.Logger
@@ -58,7 +61,7 @@ func New(self uint64, peers map[uint64]string, opts Options) *Transport {
 		opts.MinBackoff = 50 * time.Millisecond
 	}
 	if opts.MaxBackoff < opts.MinBackoff {
-		opts.MaxBackoff = max(2*time.Second, opts.MinBackoff)
+		opts.MaxBackoff = max(500*time.Millisecond, opts.MinBackoff)
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -102,6 +105,19 @@ func (t *Transport) Run(ctx context.Context) error {
 		conn, err := grpc.NewClient(addr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(MaxMessageSize)),
+			// gRPC's own reconnect backoff grows to 120s by default. A peer
+			// that comes back must hear from the leader well within an
+			// election timeout, or it starts elections and disrupts the
+			// cluster, so cap it like our own backoff.
+			grpc.WithConnectParams(grpc.ConnectParams{
+				Backoff: backoff.Config{
+					BaseDelay:  t.opts.MinBackoff,
+					Multiplier: 1.6,
+					Jitter:     0.2,
+					MaxDelay:   t.opts.MaxBackoff,
+				},
+				MinConnectTimeout: max(t.opts.MaxBackoff, time.Second),
+			}),
 		)
 		if err != nil {
 			return fmt.Errorf("transport: client for node %d (%s): %w", id, addr, err)

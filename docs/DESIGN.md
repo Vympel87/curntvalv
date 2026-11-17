@@ -243,7 +243,12 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   node opens one stream to each peer; replies come back on the peer's own
   stream. `Transport.Send` puts a message in a bounded per-peer queue and
   never blocks; when the queue is full or the peer is down the message is
-  dropped (Raft retries). Broken streams reconnect with exponential backoff.
+  dropped (Raft retries). Broken streams reconnect with exponential backoff
+  capped at 500ms by default; gRPC's own connection backoff (up to 120s by
+  default) is capped the same way. The cap must stay well below the election
+  timeout: a node that comes back and does not hear from the leader in time
+  starts an election. Without PreVote (D9) that still happens sometimes after
+  a restart and costs one re-election (about a second without a leader).
 - **The receiver drops** messages that are not addressed to it or come from
   an id outside the configured peers.
 - **AdminService** (status, put/get/delete on the metadata KV) is served on

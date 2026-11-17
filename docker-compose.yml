@@ -1,0 +1,40 @@
+# A local 3-node curntValv cluster.
+#
+#   docker compose up -d --build
+#   curntvalv status                      # default --addr is 127.0.0.1:7001-7003
+#   curntvalv kv put hello world
+#   docker compose kill node1             # kill a node (maybe the leader)
+#   curntvalv kv get hello                # still works with 2 of 3 nodes
+#   docker compose start node1            # it recovers from its volume
+#
+# No TLS: only for a trusted local network (design D10).
+
+x-node: &node
+  build: .
+  image: curntvalv:dev
+  restart: "no"
+
+services:
+  node1:
+    <<: *node
+    command: ["server", "--id", "1", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
+              "--listen", "0.0.0.0:7000", "--data-dir", "/data"]
+    ports: ["127.0.0.1:7001:7000"]
+    volumes: ["node1:/data"]
+  node2:
+    <<: *node
+    command: ["server", "--id", "2", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
+              "--listen", "0.0.0.0:7000", "--data-dir", "/data"]
+    ports: ["127.0.0.1:7002:7000"]
+    volumes: ["node2:/data"]
+  node3:
+    <<: *node
+    command: ["server", "--id", "3", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
+              "--listen", "0.0.0.0:7000", "--data-dir", "/data"]
+    ports: ["127.0.0.1:7003:7000"]
+    volumes: ["node3:/data"]
+
+volumes:
+  node1:
+  node2:
+  node3:

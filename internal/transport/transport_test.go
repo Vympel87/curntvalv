@@ -158,6 +158,41 @@ func TestDeliveryAndReconnect(t *testing.T) {
 	})
 }
 
+// After a long outage the peer must be reachable again quickly, not after
+// gRPC's default reconnect backoff (up to two minutes).
+func TestReconnectAfterLongOutage(t *testing.T) {
+	lis := listen(t, "127.0.0.1:0")
+	addr := lis.Addr().String()
+	peers := map[uint64]string{1: "unused", 2: addr}
+	gs := serve(t, lis, NewServer(2, peers, &recorder{}))
+
+	tr := New(1, peers, Options{MinBackoff: 20 * time.Millisecond, MaxBackoff: 200 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go tr.Run(ctx)
+	tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2})
+
+	gs.Stop()
+	// Keep sending during a 3s outage, so both our and gRPC's backoff grow.
+	outage := time.Now().Add(3 * time.Second)
+	for time.Now().Before(outage) {
+		tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2})
+		time.Sleep(20 * time.Millisecond)
+	}
+	rec := &recorder{}
+	gs2 := serve(t, listen(t, addr), NewServer(2, peers, rec))
+	defer gs2.Stop()
+	back := time.Now()
+	waitFor(t, "delivery after outage", func() bool {
+		tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2, Term: 7})
+		time.Sleep(10 * time.Millisecond)
+		return len(rec.terms()) > 0
+	})
+	if d := time.Since(back); d > time.Second {
+		t.Fatalf("took %v to reach the peer again", d)
+	}
+}
+
 func TestSendNeverBlocks(t *testing.T) {
 	lis := listen(t, "127.0.0.1:0")
 	addr := lis.Addr().String()
