@@ -169,6 +169,46 @@ Recommended setup: Postgres 17+ failover slots, or Patroni permanent slots.
 v0.1 clusters are defined in the config file (fixed list of nodes). Adding and
 removing nodes at runtime (Raft single-server membership change) comes later.
 
+### D9. Shape of the Raft implementation
+
+- **Two layers.** `raft` (unexported) is the protocol as a synchronous state
+  machine: `tick()`, `step(msg)`, `propose(data)` are plain calls with no
+  goroutines and no clock. `Node` runs it in one goroutine (`Run(ctx)`) that
+  owns all Raft state and is fed by channels (messages, proposals, ticks,
+  status requests). No mutex guards protocol state.
+- **Logical time.** Timeouts are counted in ticks (`ElectionTicks`,
+  randomized in `[E, 2E)`, and `HeartbeatTicks`); `Node` turns ticks into
+  wall time with `TickInterval`. Randomness comes from `Config.Seed`.
+  Together this makes fault tests deterministic and reproducible by seed.
+- **RPCs are one-way messages.** A `Message` is a request or a reply; the
+  `Transport` may lose, delay, duplicate or reorder any of them. `Send` must
+  not block.
+- **Interfaces** (defined in `raft`): `LogStore` (Append, Read, LastIndex,
+  TruncateAfter — four methods so `*wal.Log` fits without an adapter),
+  `StableStore` (Load/Save of term + vote), `Transport` (Send), `Applier`
+  (Apply). `FileStableStore` writes term + vote + CRC to a temp file, fsyncs
+  and renames it.
+- **Entry encoding.** `| term u64 LE | type u8 | data |`; the index is the
+  position in the `LogStore`. Raft only knows `Normal` and `Noop` entries;
+  `TxBatch` vs `Meta` (D1) is decided by the layer above, inside `data`.
+- **Propose blocks until commit** and returns the index. It fails with
+  `NotLeaderError` (carries the known leader) or `ErrLeadershipLost` (the
+  entry may still commit later; D3's LSN de-duplication covers the retry).
+- **Persistence order.** Term/vote are saved and entries appended (fsync)
+  before any message that depends on them is sent.
+- **Restart.** `commitIndex` and `lastApplied` are volatile (Figure 2), so a
+  restarted node applies its log again from index 1. Snapshots (M3) will
+  bound this.
+- **Rejection hint.** A rejected AppendEntries reply carries the follower's
+  last index; the leader sets `nextIndex = min(nextIndex-1, hint+1)`. This is
+  still "decrement and retry" (§5.3), it only skips indexes the follower
+  cannot have. No other optimizations: no PreVote, no CheckQuorum, no
+  pipelining, no read index. Without PreVote a node rejoining after a
+  partition bumps the term and forces a new election; that is expected.
+- **Broken invariants are fatal.** Two leaders in one term, truncating below
+  `commitIndex`, or a log term above the current term stop the node with an
+  error (`errSafety`) instead of continuing.
+
 ## 4. Data model
 
 ```
@@ -208,6 +248,8 @@ that the sink contains exactly rows 1..N.
   client-managed offsets. Leaning: support both, start with client-managed.
 - Initial table snapshot (backfill of rows that existed before the slot):
   needed for real use, planned after v0.1.
-- Entry encoding: protobuf vs. hand-written binary.
+- Entry encoding: protobuf vs. hand-written binary. (The Raft entry header
+  is hand-written, D9; the encoding of `data` and of node-to-node messages is
+  decided with the gRPC transport in M3.)
 - In-memory offset index in `wal` costs 8 bytes per entry; switch to a sparse
   index if logs get very large.

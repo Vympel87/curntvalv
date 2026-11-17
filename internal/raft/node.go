@@ -1,0 +1,260 @@
+package raft
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync/atomic"
+	"time"
+)
+
+var (
+	// ErrNotLeader is matched (with errors.Is) by *NotLeaderError.
+	ErrNotLeader = errors.New("raft: not the leader")
+	// ErrLeadershipLost means the node stopped being leader before a proposal
+	// was committed. The entry may or may not be committed later.
+	ErrLeadershipLost = errors.New("raft: leadership lost before commit")
+	// ErrStopped is returned once the node's Run has returned.
+	ErrStopped = errors.New("raft: node stopped")
+)
+
+// NotLeaderError is returned by Propose on a node that is not the leader.
+type NotLeaderError struct {
+	Leader uint64 // the leader this node knows of, 0 if none
+}
+
+func (e *NotLeaderError) Error() string {
+	return fmt.Sprintf("raft: not the leader (leader is %d)", e.Leader)
+}
+
+// Is makes errors.Is(err, ErrNotLeader) true.
+func (e *NotLeaderError) Is(target error) bool { return target == ErrNotLeader }
+
+type proposal struct {
+	data   []byte
+	result chan proposeResult // buffered, size 1
+}
+
+type proposeResult struct {
+	index uint64
+	err   error
+}
+
+// Node runs one Raft node. All Raft state is owned by the goroutine that
+// calls Run; the other methods talk to it through channels and are safe for
+// concurrent use.
+type Node struct {
+	cfg    Config
+	log    LogStore
+	stable StableStore
+	tr     Transport
+	app    Applier
+
+	recvc   chan Message
+	propc   chan proposal
+	statusc chan chan Status
+	done    chan struct{}
+	running atomic.Bool
+	err     error // written before done is closed
+}
+
+// NewNode creates a node. It does no I/O; state is loaded when Run starts.
+func NewNode(cfg Config, log LogStore, stable StableStore, tr Transport, app Applier) (*Node, error) {
+	if err := cfg.setDefaults(); err != nil {
+		return nil, err
+	}
+	return &Node{
+		cfg:     cfg,
+		log:     log,
+		stable:  stable,
+		tr:      tr,
+		app:     app,
+		recvc:   make(chan Message, 1024),
+		propc:   make(chan proposal, 1024),
+		statusc: make(chan chan Status),
+		done:    make(chan struct{}),
+	}, nil
+}
+
+// Run loads the persisted state and runs the node until ctx is cancelled
+// (returns nil) or a fatal error happens (returns it). Run may be called
+// only once.
+func (n *Node) Run(ctx context.Context) error {
+	if !n.running.CompareAndSwap(false, true) {
+		return errors.New("raft: Run called twice")
+	}
+	w := &waitingApplier{inner: n.app, waiters: map[uint64]waiter{}}
+	defer close(n.done)
+	defer w.failAll(ErrStopped)
+
+	r, err := newRaft(n.cfg, n.log, n.stable, n.tr, w)
+	if err != nil {
+		n.err = err
+		return err
+	}
+	ticker := time.NewTicker(n.cfg.TickInterval)
+	defer ticker.Stop()
+
+	for {
+		var err error
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			err = r.tick()
+		case m := <-n.recvc:
+			err = r.step(m)
+		case p := <-n.propc:
+			err = n.propose(r, w, p)
+		case c := <-n.statusc:
+			c <- r.status()
+		}
+		if err != nil {
+			n.err = err
+			return err
+		}
+		if r.state != StateLeader {
+			w.failAll(ErrLeadershipLost)
+		} else {
+			w.failOtherTerms(r.term)
+		}
+	}
+}
+
+// propose appends p and any other queued proposals as one batch.
+func (n *Node) propose(r *raft, w *waitingApplier, p proposal) error {
+	batch := []proposal{p}
+	for len(batch) < n.cfg.MaxEntriesPerMsg {
+		select {
+		case q := <-n.propc:
+			batch = append(batch, q)
+			continue
+		default:
+		}
+		break
+	}
+	if r.state != StateLeader {
+		for _, q := range batch {
+			q.result <- proposeResult{err: &NotLeaderError{Leader: r.leader}}
+		}
+		return nil
+	}
+	// Register waiters first: a single-node cluster commits inside propose.
+	data := make([][]byte, len(batch))
+	first := r.lastIndex + 1
+	for i, q := range batch {
+		data[i] = q.data
+		w.waiters[first+uint64(i)] = waiter{term: r.term, result: q.result}
+	}
+	_, err := r.propose(data)
+	return err
+}
+
+// Propose replicates data through Raft and blocks until it is committed,
+// then returns its log index. It returns a *NotLeaderError on a follower and
+// ErrLeadershipLost if leadership changes first (the entry may still be
+// committed later). The caller must not modify data afterwards.
+func (n *Node) Propose(ctx context.Context, data []byte) (uint64, error) {
+	p := proposal{data: data, result: make(chan proposeResult, 1)}
+	select {
+	case n.propc <- p:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-n.done:
+		return 0, ErrStopped
+	}
+	select {
+	case res := <-p.result:
+		return res.index, res.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-n.done:
+		select {
+		case res := <-p.result:
+			return res.index, res.err
+		default:
+			return 0, ErrStopped
+		}
+	}
+}
+
+// Step delivers a message received from another node. Transports call it.
+func (n *Node) Step(ctx context.Context, m Message) error {
+	select {
+	case n.recvc <- m:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-n.done:
+		return ErrStopped
+	}
+}
+
+// Status returns the node's current Raft state.
+func (n *Node) Status(ctx context.Context) (Status, error) {
+	c := make(chan Status, 1)
+	select {
+	case n.statusc <- c:
+	case <-ctx.Done():
+		return Status{}, ctx.Err()
+	case <-n.done:
+		return Status{}, ErrStopped
+	}
+	return <-c, nil
+}
+
+// Done is closed when Run has returned.
+func (n *Node) Done() <-chan struct{} { return n.done }
+
+// Err returns the fatal error that stopped Run, if any. Valid after Done.
+func (n *Node) Err() error {
+	select {
+	case <-n.done:
+		return n.err
+	default:
+		return nil
+	}
+}
+
+type waiter struct {
+	term   uint64
+	result chan proposeResult
+}
+
+// waitingApplier forwards entries to the real Applier and completes pending
+// proposals. It is used only by the Run goroutine.
+type waitingApplier struct {
+	inner   Applier
+	waiters map[uint64]waiter
+}
+
+func (w *waitingApplier) Apply(e Entry) error {
+	if err := w.inner.Apply(e); err != nil {
+		return err
+	}
+	if wt, ok := w.waiters[e.Index]; ok {
+		delete(w.waiters, e.Index)
+		if wt.term == e.Term {
+			wt.result <- proposeResult{index: e.Index}
+		} else {
+			wt.result <- proposeResult{err: ErrLeadershipLost}
+		}
+	}
+	return nil
+}
+
+func (w *waitingApplier) failAll(err error) {
+	for i, wt := range w.waiters {
+		wt.result <- proposeResult{err: err}
+		delete(w.waiters, i)
+	}
+}
+
+func (w *waitingApplier) failOtherTerms(term uint64) {
+	for i, wt := range w.waiters {
+		if wt.term != term {
+			wt.result <- proposeResult{err: ErrLeadershipLost}
+			delete(w.waiters, i)
+		}
+	}
+}
