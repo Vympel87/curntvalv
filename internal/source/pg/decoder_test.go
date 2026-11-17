@@ -231,6 +231,36 @@ func TestEmptyTransactions(t *testing.T) {
 	}
 }
 
+func TestIdlePosition(t *testing.T) {
+	d := newDecoder(fakeRegistry{}, Limits{}, fsm.SourceState{CommitLSN: 100, EndLSN: 108})
+	d.idle(90) // behind what is stored
+	if d.takeEmpty() != nil {
+		t.Fatal("idle position behind the stored one")
+	}
+	d.idle(500)
+	d.idle(400) // older keepalive: keep the newest
+	e := d.takeEmpty()
+	if e == nil || e.CommitLsn != 500 || e.EndLsn != 500 || !e.Final || len(e.Events) != 0 {
+		t.Fatalf("got %v", e)
+	}
+	// A transaction older than the stored idle position is now skipped.
+	if got := feed(t, d, append([]pglogrepl.Message{orders}, tx(450, 1)...)...); len(got) != 0 {
+		t.Fatalf("tx before stored position: %v", got)
+	}
+	// No idle position while a transaction is open or partly stored.
+	feed(t, d, begin(600))
+	d.idle(700)
+	feed(t, d, commit(600))
+	if e := d.takeEmpty(); e != nil && e.CommitLsn == 700 {
+		t.Fatal("idle recorded inside a transaction")
+	}
+	p := newDecoder(fakeRegistry{}, Limits{}, fsm.SourceState{CommitLSN: 100, PartialLSN: 200, PartialNextSeq: 1})
+	p.idle(900)
+	if p.takeEmpty() != nil {
+		t.Fatal("idle recorded while a transaction is partly stored")
+	}
+}
+
 func TestSkipsAlreadyStoredTransactions(t *testing.T) {
 	d := newDecoder(fakeRegistry{}, Limits{}, fsm.SourceState{CommitLSN: 200, EndLSN: 208})
 	got := feed(t, d, append(append(append([]pglogrepl.Message{orders}, tx(100, 1)...), tx(200, 1)...), tx(300, 1)...)...)

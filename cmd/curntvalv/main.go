@@ -31,6 +31,7 @@ import (
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
 	"github.com/Vympel87/curntvalv/internal/server"
+	pgsource "github.com/Vympel87/curntvalv/internal/source/pg"
 	"github.com/Vympel87/curntvalv/internal/transport"
 	"github.com/Vympel87/curntvalv/internal/wal"
 )
@@ -133,6 +134,7 @@ type serverConfig struct {
 	listen   string
 	noSync   bool
 	logLevel slog.Level
+	pg       pgsource.Config // pg.URL empty: no Postgres source
 }
 
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
@@ -149,6 +151,9 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	trailing := fs.Int("trailing-entries", 0, "compact the log, keeping at least N entries behind the last snapshot (0 = keep everything)")
 	noSync := fs.Bool("unsafe-no-fsync", false, "skip fsync (tests and demos only: a crash can lose committed data)")
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
+	pgURL := fs.String("pg-url", os.Getenv("CURNTVALV_PG_URL"), "Postgres connection URL to capture changes from (env CURNTVALV_PG_URL; empty = no source)")
+	pgSlot := fs.String("pg-slot", "curntvalv", "logical replication slot (created on a new cluster)")
+	pgPub := fs.String("pg-publication", "curntvalv", "Postgres publication to read (must exist)")
 	if err := fs.Parse(args); err != nil {
 		return serverConfig{}, err
 	}
@@ -189,6 +194,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 		listen:   *listen,
 		noSync:   *noSync,
 		logLevel: level,
+		pg:       pgsource.Config{URL: *pgURL, Slot: *pgSlot, Publication: *pgPub},
 	}
 	if cfg.listen == "" {
 		cfg.listen = peers[*id]
@@ -234,6 +240,15 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
 	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, node, meta, cfg.peers))
 
+	var src *pgsource.Source
+	if cfg.pg.URL != "" {
+		pgCfg := cfg.pg
+		pgCfg.Logger = logger
+		if src, err = pgsource.New(pgCfg, node, meta); err != nil {
+			return err
+		}
+	}
+
 	lis, err := net.Listen("tcp", cfg.listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.listen, err)
@@ -242,7 +257,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
-	errc := make(chan error, 3)
+	errc := make(chan error, 4)
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
@@ -262,7 +277,17 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 			errc <- fmt.Errorf("raft: %w", err)
 		}
 	}()
-	logger.Info("curntvalv node started", "version", version, "listen", cfg.listen, "data_dir", cfg.dataDir, "peers", cfg.peers)
+	if src != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := src.Run(ctx); err != nil {
+				errc <- fmt.Errorf("postgres source: %w", err)
+			}
+		}()
+	}
+	logger.Info("curntvalv node started", "version", version, "listen", cfg.listen, "data_dir", cfg.dataDir,
+		"peers", cfg.peers, "postgres_source", src != nil)
 
 	var runErr error
 	select {

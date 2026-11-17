@@ -6,7 +6,31 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        # Service containers cannot take command arguments, so logical
+        # replication is enabled with ALTER SYSTEM + restart below.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      CURNTVALV_TEST_PG_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
+      - name: Enable logical replication in the Postgres service
+        run: |
+          id=$(docker ps --filter "ancestor=postgres:17" --format '{{.ID}}')
+          docker exec "$id" psql -U postgres -c "ALTER SYSTEM SET wal_level = logical"
+          docker exec "$id" psql -U postgres -c "ALTER SYSTEM SET max_replication_slots = 20"
+          docker exec "$id" psql -U postgres -c "ALTER SYSTEM SET max_wal_senders = 20"
+          docker restart "$id"
+          until docker exec "$id" pg_isready -U postgres; do sleep 1; done
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:

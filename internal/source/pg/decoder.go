@@ -70,9 +70,11 @@ type decoder struct {
 	batch     *pb.TxBatch
 	size      int
 
-	// lastEmpty is the most recent transaction without any published
-	// change. The runner may store it (as an empty batch) so the source
-	// position can advance and Postgres can free WAL.
+	// lastEmpty is a position the source may move to without storing any
+	// event: the most recent transaction without published changes, or the
+	// server's WAL position reported while we were idle. The runner stores
+	// it as an empty batch so the slot can advance and Postgres can free
+	// WAL (since Postgres 15 empty transactions are not sent at all).
 	lastEmpty *pb.TxBatch
 }
 
@@ -229,14 +231,28 @@ func (d *decoder) commit(m *pglogrepl.CommitMessage) ([]*pb.TxBatch, error) {
 	return []*pb.TxBatch{b}, nil
 }
 
-// takeEmpty returns the latest transaction without changes, if no other
-// transaction has been returned since, and forgets it.
+// idle records the server's WAL position from a keepalive. Outside a
+// transaction everything before it has been sent to us already, because
+// pgoutput sends transactions in commit order before reporting a later
+// position.
+func (d *decoder) idle(walEnd uint64) {
+	if d.inTx || d.partialLSN != 0 || walEnd <= d.storedLSN {
+		return
+	}
+	if d.lastEmpty == nil || walEnd > d.lastEmpty.EndLsn {
+		d.lastEmpty = &pb.TxBatch{CommitLsn: walEnd, EndLsn: walEnd, Final: true}
+	}
+}
+
+// takeEmpty returns the newest position recorded by an empty transaction or
+// idle, if nothing was returned since, and forgets it.
 func (d *decoder) takeEmpty() *pb.TxBatch {
 	b := d.lastEmpty
 	d.lastEmpty = nil
-	if d.inTx || d.partialLSN != 0 {
+	if b == nil || d.inTx || d.partialLSN != 0 || b.CommitLsn < d.storedLSN {
 		return nil
 	}
+	d.storedLSN = b.CommitLsn
 	return b
 }
 
