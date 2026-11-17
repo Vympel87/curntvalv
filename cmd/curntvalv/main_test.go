@@ -13,8 +13,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 )
@@ -80,7 +84,7 @@ func TestRunUsage(t *testing.T) {
 
 type proc struct {
 	cmd  *exec.Cmd
-	logs *bytes.Buffer
+	logs *syncBuffer
 }
 
 type e2eCluster struct {
@@ -90,6 +94,36 @@ type e2eCluster struct {
 	addrs []string
 	peers string
 	procs map[int]*proc
+	args  []string            // server flags besides id, peers, data dir
+	env   []string            // extra environment for servers
+	logs  map[int]*syncBuffer // kept across restarts
+}
+
+// syncBuffer is a bytes.Buffer that can be read while a process writes it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// logCount counts the lines of all node logs that contain text.
+func (c *e2eCluster) logCount(text string) int {
+	n := 0
+	for _, l := range c.logs {
+		n += strings.Count(l.String(), text)
+	}
+	return n
 }
 
 func freePort(t *testing.T) string {
@@ -103,6 +137,10 @@ func freePort(t *testing.T) string {
 }
 
 func newE2E(t *testing.T) *e2eCluster {
+	return newE2EWith(t, nil, "--snapshot-entries", "10", "--trailing-entries", "15")
+}
+
+func newE2EWith(t *testing.T, env []string, args ...string) *e2eCluster {
 	if testing.Short() {
 		t.Skip("end-to-end test skipped in -short mode")
 	}
@@ -112,7 +150,7 @@ func newE2E(t *testing.T) *e2eCluster {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	c := &e2eCluster{t: t, bin: bin, dir: dir, procs: map[int]*proc{}}
+	c := &e2eCluster{t: t, bin: bin, dir: dir, procs: map[int]*proc{}, args: args, env: env, logs: map[int]*syncBuffer{}}
 	var peers []string
 	for i := 1; i <= 3; i++ {
 		addr := freePort(t)
@@ -124,13 +162,15 @@ func newE2E(t *testing.T) *e2eCluster {
 		c.start(i)
 	}
 	t.Cleanup(func() {
-		for i, p := range c.procs {
+		for _, p := range c.procs {
 			if p != nil {
 				p.cmd.Process.Signal(os.Interrupt)
 				p.cmd.Wait()
-				if t.Failed() {
-					t.Logf("node %d log:\n%s", i, p.logs)
-				}
+			}
+		}
+		if t.Failed() {
+			for i, l := range c.logs {
+				t.Logf("node %d log:\n%s", i, l)
 			}
 		}
 	})
@@ -139,10 +179,16 @@ func newE2E(t *testing.T) *e2eCluster {
 
 func (c *e2eCluster) start(i int) {
 	c.t.Helper()
-	logs := &bytes.Buffer{}
-	cmd := exec.Command(c.bin, "server", "--id", fmt.Sprint(i), "--peers", c.peers,
-		"--data-dir", filepath.Join(c.dir, fmt.Sprintf("node%d", i)),
-		"--tick", "20ms", "--snapshot-entries", "10", "--trailing-entries", "15", "--log-level", "debug")
+	logs := c.logs[i]
+	if logs == nil {
+		logs = &syncBuffer{}
+		c.logs[i] = logs
+	}
+	fmt.Fprintf(logs, "--- start ---\n")
+	args := []string{"server", "--id", fmt.Sprint(i), "--peers", c.peers,
+		"--data-dir", filepath.Join(c.dir, fmt.Sprintf("node%d", i)), "--tick", "20ms", "--log-level", "debug"}
+	cmd := exec.Command(c.bin, append(args, c.args...)...)
+	cmd.Env = append(os.Environ(), c.env...)
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {
 		c.t.Fatal(err)
@@ -275,4 +321,164 @@ func TestEventJSON(t *testing.T) {
 	if string(b) != want {
 		t.Fatalf("got  %s\nwant %s", b, want)
 	}
+}
+
+// TestEndToEndPostgresNoLossNoDuplicates is the M4 checker (design §5): a
+// writer inserts numbered rows in transactions of varying size while the
+// leader is killed with SIGKILL several times. Afterwards the log must hold
+// every row exactly once, with every event key unique and transactions in
+// commit order.
+func TestEndToEndPostgresNoLossNoDuplicates(t *testing.T) {
+	pgURL := os.Getenv("CURNTVALV_TEST_PG_URL")
+	if pgURL == "" {
+		t.Skip("CURNTVALV_TEST_PG_URL not set; run `make test-pg`")
+	}
+	ctx := context.Background()
+	db, err := pgx.Connect(ctx, pgURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close(ctx)
+	n := fmt.Sprintf("e2e_%d", time.Now().UnixNano()%1_000_000_000)
+	table, slot := "rows_"+n, "slot_"+n
+	mustExec := func(sql string) {
+		if _, err := db.Exec(ctx, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	mustExec(fmt.Sprintf("CREATE TABLE %s (id int PRIMARY KEY)", table))
+	mustExec(fmt.Sprintf("CREATE PUBLICATION pub_%s FOR TABLE %s", n, table))
+	t.Cleanup(func() {
+		// Runs after the cluster's cleanup (registered later, runs first).
+		db.Exec(ctx, "SELECT pg_drop_replication_slot($1)", slot)
+		db.Exec(ctx, "DROP PUBLICATION pub_"+n)
+		db.Exec(ctx, "DROP TABLE "+table)
+	})
+
+	c := newE2EWith(t, []string{"CURNTVALV_PG_URL=" + pgURL},
+		"--pg-slot", slot, "--pg-publication", "pub_"+n, "--snapshot-entries", "50")
+
+	// Wait for the slot so the first rows are captured.
+	waitE2E(t, "slot", 30*time.Second, func() bool {
+		var ok bool
+		db.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name=$1)", slot).Scan(&ok)
+		return ok
+	})
+
+	const rows = 3000
+	writer := make(chan error, 1)
+	go func() {
+		w, err := pgx.Connect(ctx, pgURL)
+		if err != nil {
+			writer <- err
+			return
+		}
+		defer w.Close(ctx)
+		for next, size := 1, 1; next <= rows; next += size {
+			size = 1 + next%37 // 1..37 rows per transaction
+			last := min(next+size-1, rows)
+			if _, err := w.Exec(ctx, fmt.Sprintf("INSERT INTO %s SELECT generate_series(%d, %d)", table, next, last)); err != nil {
+				writer <- err
+				return
+			}
+			size = last - next + 1
+			time.Sleep(2 * time.Millisecond)
+		}
+		writer <- nil
+	}()
+
+	// Kill the leader three times while the writer runs.
+	for range 3 {
+		time.Sleep(700 * time.Millisecond)
+		l := c.leader()
+		c.kill(l)
+		time.Sleep(500 * time.Millisecond)
+		c.start(l)
+	}
+	if err := <-writer; err != nil {
+		t.Fatal(err)
+	}
+
+	var events []jsonEvent
+	waitE2E(t, "all rows in the log", 60*time.Second, func() bool {
+		events = c.readLog()
+		return len(events) >= rows
+	})
+	time.Sleep(time.Second) // anything extra (a duplicate) would show up now
+	events = c.readLog()
+
+	seen := map[string]int{}
+	keys := map[string]bool{}
+	lastLSN := ""
+	var lastIdx uint64
+	for _, e := range events {
+		id, _ := e.After["id"].(string)
+		seen[id]++
+		key := fmt.Sprintf("%s/%d", e.LSN, e.Seq)
+		if keys[key] {
+			t.Fatalf("event key %s stored twice", key)
+		}
+		keys[key] = true
+		if e.Index < lastIdx || (e.LSN != lastLSN && lsnLess(e.LSN, lastLSN)) {
+			t.Fatalf("transactions out of commit order at index %d (%s after %s)", e.Index, e.LSN, lastLSN)
+		}
+		lastIdx, lastLSN = e.Index, e.LSN
+	}
+	for i := 1; i <= rows; i++ {
+		if seen[fmt.Sprint(i)] != 1 {
+			t.Fatalf("row %d stored %d times", i, seen[fmt.Sprint(i)])
+		}
+	}
+	if len(events) != rows {
+		t.Fatalf("%d events for %d rows", len(events), rows)
+	}
+	// The test is only meaningful if ingest really moved between leaders.
+	if n := c.logCount("ingest started"); n < 4 {
+		t.Fatalf("ingest started %d times; expected a takeover after every kill", n)
+	}
+	t.Logf("ingest sessions: %d, slot takeovers: %d", c.logCount("ingest started"), c.logCount("terminating previous reader"))
+}
+
+func waitE2E(t *testing.T, what string, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// readLog returns every event in the log, read from any live node.
+func (c *e2eCluster) readLog() []jsonEvent {
+	c.t.Helper()
+	var out []jsonEvent
+	for i, a := range c.addrs {
+		if c.procs[i+1] == nil {
+			continue
+		}
+		raw, err := exec.Command(c.bin, "log", "--addr", a).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			if line == "" {
+				continue
+			}
+			var e jsonEvent
+			if err := json.Unmarshal([]byte(line), &e); err != nil {
+				c.t.Fatalf("bad log line %q: %v", line, err)
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+	return nil
+}
+
+func lsnLess(a, b string) bool {
+	pa, _ := pglogrepl.ParseLSN(a)
+	pb, _ := pglogrepl.ParseLSN(b)
+	return pa < pb
 }
