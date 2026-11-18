@@ -99,12 +99,12 @@ func TestListFlag(t *testing.T) {
 }
 
 func TestParseSinkSpec(t *testing.T) {
-	sp, err := parseSinkSpec("name=ch,type=clickhouse,url=http://u:p@h:8123,table=orders,table=public.items,start=latest,into=ev")
+	sp, err := parseSinkSpec("name=ch,type=clickhouse,url=http://u:p@h:8123,table=orders,table=public.items,start=latest,into=ev,policy=drop")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sp.name != "ch" || sp.typ != "clickhouse" || sp.url != "http://u:p@h:8123" || strings.Join(sp.tables, " ") != "orders public.items" ||
-		!sp.startLatest || sp.chTable != "ev" {
+		!sp.startLatest || sp.chTable != "ev" || !sp.drop {
 		t.Fatalf("%+v", sp)
 	}
 	if _, err := newSink(sp); err != nil {
@@ -120,6 +120,7 @@ func TestParseSinkSpec(t *testing.T) {
 		"name=h,type=webhook,url=http://x,colour=blue", // unknown key
 		"name=h,name=g,type=webhook,url=http://x",      // twice
 		"name=h,type=webhook,url",                      // no value
+		"name=h,type=webhook,url=http://x,policy=keep", // bad policy
 	} {
 		if _, err := parseSinkSpec(bad); !errors.Is(err, errUsage) {
 			t.Errorf("%q: got %v", bad, err)
@@ -139,10 +140,12 @@ func TestParseSinkSpec(t *testing.T) {
 func TestPrintPipeline(t *testing.T) {
 	var out bytes.Buffer
 	printPipeline(&out, &pb.StatusResponse{SourceState: "retrying", SourceError: "pg: connect: refused",
-		Sinks: []*pb.SinkStatus{{Name: "hook", Type: "webhook", State: "running", Offset: 9, Lag: 2, Delivered: 30}}})
-	want := "\nSOURCE postgres: retrying (pg: connect: refused)\n" +
-		"SINK  TYPE     STATE    OFFSET  LAG  DELIVERED  ERROR\n" +
-		"hook  webhook  running  9       2    30         -\n"
+		Retention: &pb.RetentionStatus{MaxAgeSeconds: 7 * 86400, MaxBytes: 10 << 30, LogBytes: 3 << 19, CompactLimit: 4, BlockedBy: "hook"},
+		Sinks:     []*pb.SinkStatus{{Name: "hook", Type: "webhook", Policy: "block", State: "running", Offset: 9, Lag: 2, Delivered: 30}}})
+	want := "\nRETENTION max age 168h0m0s, max size 10.0 GiB; log 1.5 MiB; removable up to entry 4 (held back by sink hook)\n" +
+		"SOURCE postgres: retrying (pg: connect: refused)\n" +
+		"SINK  TYPE     POLICY  STATE    OFFSET  LAG  DELIVERED  ERROR\n" +
+		"hook  webhook  block   running  9       2    30         -\n"
 	if out.String() != want {
 		t.Fatalf("got\n%q\nwant\n%q", out.String(), want)
 	}
@@ -150,5 +153,9 @@ func TestPrintPipeline(t *testing.T) {
 	printPipeline(&out, &pb.StatusResponse{})
 	if out.Len() != 0 {
 		t.Fatalf("printed %q for a node without pipeline", out.String())
+	}
+	printPipeline(&out, &pb.StatusResponse{Retention: &pb.RetentionStatus{LogBytes: 100}})
+	if want := "\nRETENTION keep everything; log 100 B\n"; out.String() != want {
+		t.Fatalf("got %q", out.String())
 	}
 }

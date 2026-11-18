@@ -19,11 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AdminService_Status_FullMethodName  = "/curntvalv.v1.AdminService/Status"
-	AdminService_Put_FullMethodName     = "/curntvalv.v1.AdminService/Put"
-	AdminService_Get_FullMethodName     = "/curntvalv.v1.AdminService/Get"
-	AdminService_Delete_FullMethodName  = "/curntvalv.v1.AdminService/Delete"
-	AdminService_ReadLog_FullMethodName = "/curntvalv.v1.AdminService/ReadLog"
+	AdminService_Status_FullMethodName    = "/curntvalv.v1.AdminService/Status"
+	AdminService_Put_FullMethodName       = "/curntvalv.v1.AdminService/Put"
+	AdminService_Get_FullMethodName       = "/curntvalv.v1.AdminService/Get"
+	AdminService_Delete_FullMethodName    = "/curntvalv.v1.AdminService/Delete"
+	AdminService_ReadLog_FullMethodName   = "/curntvalv.v1.AdminService/ReadLog"
+	AdminService_ResetSink_FullMethodName = "/curntvalv.v1.AdminService/ResetSink"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -43,6 +44,9 @@ type AdminServiceClient interface {
 	// may be a little behind the leader. Entries removed by log compaction
 	// give OUT_OF_RANGE.
 	ReadLog(ctx context.Context, in *ReadLogRequest, opts ...grpc.CallOption) (*ReadLogResponse, error)
+	// ResetSink moves a configured sink to another position, also backwards
+	// (replay), and starts a new generation of its offsets. Leader only.
+	ResetSink(ctx context.Context, in *ResetSinkRequest, opts ...grpc.CallOption) (*ResetSinkResponse, error)
 }
 
 type adminServiceClient struct {
@@ -103,6 +107,16 @@ func (c *adminServiceClient) ReadLog(ctx context.Context, in *ReadLogRequest, op
 	return out, nil
 }
 
+func (c *adminServiceClient) ResetSink(ctx context.Context, in *ResetSinkRequest, opts ...grpc.CallOption) (*ResetSinkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResetSinkResponse)
+	err := c.cc.Invoke(ctx, AdminService_ResetSink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -120,6 +134,9 @@ type AdminServiceServer interface {
 	// may be a little behind the leader. Entries removed by log compaction
 	// give OUT_OF_RANGE.
 	ReadLog(context.Context, *ReadLogRequest) (*ReadLogResponse, error)
+	// ResetSink moves a configured sink to another position, also backwards
+	// (replay), and starts a new generation of its offsets. Leader only.
+	ResetSink(context.Context, *ResetSinkRequest) (*ResetSinkResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -144,6 +161,9 @@ func (UnimplementedAdminServiceServer) Delete(context.Context, *DeleteRequest) (
 }
 func (UnimplementedAdminServiceServer) ReadLog(context.Context, *ReadLogRequest) (*ReadLogResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReadLog not implemented")
+}
+func (UnimplementedAdminServiceServer) ResetSink(context.Context, *ResetSinkRequest) (*ResetSinkResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResetSink not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -256,6 +276,24 @@ func _AdminService_ReadLog_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_ResetSink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResetSinkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ResetSink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ResetSink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ResetSink(ctx, req.(*ResetSinkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -282,6 +320,10 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReadLog",
 			Handler:    _AdminService_ReadLog_Handler,
+		},
+		{
+			MethodName: "ResetSink",
+			Handler:    _AdminService_ResetSink_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

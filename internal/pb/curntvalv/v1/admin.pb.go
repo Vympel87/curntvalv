@@ -21,6 +21,60 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ResetPosition int32
+
+const (
+	ResetPosition_RESET_POSITION_UNSPECIFIED ResetPosition = 0
+	// Replay everything still retained.
+	ResetPosition_RESET_POSITION_EARLIEST ResetPosition = 1
+	// Skip to the current commit index.
+	ResetPosition_RESET_POSITION_LATEST ResetPosition = 2
+	ResetPosition_RESET_POSITION_INDEX  ResetPosition = 3
+)
+
+// Enum value maps for ResetPosition.
+var (
+	ResetPosition_name = map[int32]string{
+		0: "RESET_POSITION_UNSPECIFIED",
+		1: "RESET_POSITION_EARLIEST",
+		2: "RESET_POSITION_LATEST",
+		3: "RESET_POSITION_INDEX",
+	}
+	ResetPosition_value = map[string]int32{
+		"RESET_POSITION_UNSPECIFIED": 0,
+		"RESET_POSITION_EARLIEST":    1,
+		"RESET_POSITION_LATEST":      2,
+		"RESET_POSITION_INDEX":       3,
+	}
+)
+
+func (x ResetPosition) Enum() *ResetPosition {
+	p := new(ResetPosition)
+	*p = x
+	return p
+}
+
+func (x ResetPosition) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ResetPosition) Descriptor() protoreflect.EnumDescriptor {
+	return file_curntvalv_v1_admin_proto_enumTypes[0].Descriptor()
+}
+
+func (ResetPosition) Type() protoreflect.EnumType {
+	return &file_curntvalv_v1_admin_proto_enumTypes[0]
+}
+
+func (x ResetPosition) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ResetPosition.Descriptor instead.
+func (ResetPosition) EnumDescriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{0}
+}
+
 type EntryKind int32
 
 const (
@@ -57,11 +111,11 @@ func (x EntryKind) String() string {
 }
 
 func (EntryKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_curntvalv_v1_admin_proto_enumTypes[0].Descriptor()
+	return file_curntvalv_v1_admin_proto_enumTypes[1].Descriptor()
 }
 
 func (EntryKind) Type() protoreflect.EnumType {
-	return &file_curntvalv_v1_admin_proto_enumTypes[0]
+	return &file_curntvalv_v1_admin_proto_enumTypes[1]
 }
 
 func (x EntryKind) Number() protoreflect.EnumNumber {
@@ -70,7 +124,7 @@ func (x EntryKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use EntryKind.Descriptor instead.
 func (EntryKind) EnumDescriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{0}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{1}
 }
 
 type StatusRequest struct {
@@ -123,9 +177,11 @@ type StatusResponse struct {
 	SnapshotIndex uint64                 `protobuf:"varint,10,opt,name=snapshot_index,json=snapshotIndex,proto3" json:"snapshot_index,omitempty"`
 	// Postgres source on this node: "" (none configured), "standby" (not the
 	// leader), "running", "retrying" or "failed".
-	SourceState   string        `protobuf:"bytes,11,opt,name=source_state,json=sourceState,proto3" json:"source_state,omitempty"`
-	SourceError   string        `protobuf:"bytes,12,opt,name=source_error,json=sourceError,proto3" json:"source_error,omitempty"`
-	Sinks         []*SinkStatus `protobuf:"bytes,13,rep,name=sinks,proto3" json:"sinks,omitempty"`
+	SourceState string        `protobuf:"bytes,11,opt,name=source_state,json=sourceState,proto3" json:"source_state,omitempty"`
+	SourceError string        `protobuf:"bytes,12,opt,name=source_error,json=sourceError,proto3" json:"source_error,omitempty"`
+	Sinks       []*SinkStatus `protobuf:"bytes,13,rep,name=sinks,proto3" json:"sinks,omitempty"`
+	// Log retention on this node; unset on nodes without it (tests).
+	Retention     *RetentionStatus `protobuf:"bytes,14,opt,name=retention,proto3" json:"retention,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -251,6 +307,93 @@ func (x *StatusResponse) GetSinks() []*SinkStatus {
 	return nil
 }
 
+func (x *StatusResponse) GetRetention() *RetentionStatus {
+	if x != nil {
+		return x.Retention
+	}
+	return nil
+}
+
+type RetentionStatus struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Configured limits; 0 means none.
+	MaxAgeSeconds int64 `protobuf:"varint,1,opt,name=max_age_seconds,json=maxAgeSeconds,proto3" json:"max_age_seconds,omitempty"`
+	MaxBytes      int64 `protobuf:"varint,2,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	// Current size of the log on this node.
+	LogBytes int64 `protobuf:"varint,3,opt,name=log_bytes,json=logBytes,proto3" json:"log_bytes,omitempty"`
+	// Highest index that may be removed now.
+	CompactLimit uint64 `protobuf:"varint,4,opt,name=compact_limit,json=compactLimit,proto3" json:"compact_limit,omitempty"`
+	// The block sink holding compact_limit back, if any.
+	BlockedBy     string `protobuf:"bytes,5,opt,name=blocked_by,json=blockedBy,proto3" json:"blocked_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RetentionStatus) Reset() {
+	*x = RetentionStatus{}
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetentionStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetentionStatus) ProtoMessage() {}
+
+func (x *RetentionStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetentionStatus.ProtoReflect.Descriptor instead.
+func (*RetentionStatus) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *RetentionStatus) GetMaxAgeSeconds() int64 {
+	if x != nil {
+		return x.MaxAgeSeconds
+	}
+	return 0
+}
+
+func (x *RetentionStatus) GetMaxBytes() int64 {
+	if x != nil {
+		return x.MaxBytes
+	}
+	return 0
+}
+
+func (x *RetentionStatus) GetLogBytes() int64 {
+	if x != nil {
+		return x.LogBytes
+	}
+	return 0
+}
+
+func (x *RetentionStatus) GetCompactLimit() uint64 {
+	if x != nil {
+		return x.CompactLimit
+	}
+	return 0
+}
+
+func (x *RetentionStatus) GetBlockedBy() string {
+	if x != nil {
+		return x.BlockedBy
+	}
+	return ""
+}
+
 type SinkStatus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -265,15 +408,19 @@ type SinkStatus struct {
 	// 0 when the sink has everything.
 	Lag uint64 `protobuf:"varint,5,opt,name=lag,proto3" json:"lag,omitempty"`
 	// Changes delivered by this node since it started.
-	Delivered     uint64 `protobuf:"varint,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
-	LastError     string `protobuf:"bytes,7,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	Delivered uint64 `protobuf:"varint,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
+	LastError string `protobuf:"bytes,7,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// "block" (the log keeps what the sink has not delivered) or "drop".
+	Policy string `protobuf:"bytes,8,opt,name=policy,proto3" json:"policy,omitempty"`
+	// Number of resets (replicated).
+	Generation    uint64 `protobuf:"varint,9,opt,name=generation,proto3" json:"generation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SinkStatus) Reset() {
 	*x = SinkStatus{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[2]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -285,7 +432,7 @@ func (x *SinkStatus) String() string {
 func (*SinkStatus) ProtoMessage() {}
 
 func (x *SinkStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[2]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -298,7 +445,7 @@ func (x *SinkStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SinkStatus.ProtoReflect.Descriptor instead.
 func (*SinkStatus) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{2}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SinkStatus) GetName() string {
@@ -350,6 +497,144 @@ func (x *SinkStatus) GetLastError() string {
 	return ""
 }
 
+func (x *SinkStatus) GetPolicy() string {
+	if x != nil {
+		return x.Policy
+	}
+	return ""
+}
+
+func (x *SinkStatus) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+type ResetSinkRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Name     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Position ResetPosition          `protobuf:"varint,2,opt,name=position,proto3,enum=curntvalv.v1.ResetPosition" json:"position,omitempty"`
+	// With RESET_POSITION_INDEX: the new offset, i.e. the last log index
+	// counted as delivered. Delivery continues after it.
+	Index         uint64 `protobuf:"varint,3,opt,name=index,proto3" json:"index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResetSinkRequest) Reset() {
+	*x = ResetSinkRequest{}
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResetSinkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResetSinkRequest) ProtoMessage() {}
+
+func (x *ResetSinkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResetSinkRequest.ProtoReflect.Descriptor instead.
+func (*ResetSinkRequest) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ResetSinkRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ResetSinkRequest) GetPosition() ResetPosition {
+	if x != nil {
+		return x.Position
+	}
+	return ResetPosition_RESET_POSITION_UNSPECIFIED
+}
+
+func (x *ResetSinkRequest) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+type ResetSinkResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Raft index at which the reset was committed.
+	Index uint64 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
+	// New offset (0 for earliest) and generation.
+	Offset        uint64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	Generation    uint64 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResetSinkResponse) Reset() {
+	*x = ResetSinkResponse{}
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResetSinkResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResetSinkResponse) ProtoMessage() {}
+
+func (x *ResetSinkResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResetSinkResponse.ProtoReflect.Descriptor instead.
+func (*ResetSinkResponse) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ResetSinkResponse) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *ResetSinkResponse) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ResetSinkResponse) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
 type PutRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -360,7 +645,7 @@ type PutRequest struct {
 
 func (x *PutRequest) Reset() {
 	*x = PutRequest{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[3]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -372,7 +657,7 @@ func (x *PutRequest) String() string {
 func (*PutRequest) ProtoMessage() {}
 
 func (x *PutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[3]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -385,7 +670,7 @@ func (x *PutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutRequest.ProtoReflect.Descriptor instead.
 func (*PutRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{3}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PutRequest) GetKey() string {
@@ -412,7 +697,7 @@ type PutResponse struct {
 
 func (x *PutResponse) Reset() {
 	*x = PutResponse{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[4]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -424,7 +709,7 @@ func (x *PutResponse) String() string {
 func (*PutResponse) ProtoMessage() {}
 
 func (x *PutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[4]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -437,7 +722,7 @@ func (x *PutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutResponse.ProtoReflect.Descriptor instead.
 func (*PutResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{4}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PutResponse) GetIndex() uint64 {
@@ -456,7 +741,7 @@ type GetRequest struct {
 
 func (x *GetRequest) Reset() {
 	*x = GetRequest{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[5]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -468,7 +753,7 @@ func (x *GetRequest) String() string {
 func (*GetRequest) ProtoMessage() {}
 
 func (x *GetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[5]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -481,7 +766,7 @@ func (x *GetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRequest.ProtoReflect.Descriptor instead.
 func (*GetRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{5}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetRequest) GetKey() string {
@@ -502,7 +787,7 @@ type GetResponse struct {
 
 func (x *GetResponse) Reset() {
 	*x = GetResponse{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[6]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -514,7 +799,7 @@ func (x *GetResponse) String() string {
 func (*GetResponse) ProtoMessage() {}
 
 func (x *GetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[6]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -527,7 +812,7 @@ func (x *GetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetResponse.ProtoReflect.Descriptor instead.
 func (*GetResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{6}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetResponse) GetFound() bool {
@@ -560,7 +845,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[7]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -572,7 +857,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[7]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -585,7 +870,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{7}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DeleteRequest) GetKey() string {
@@ -604,7 +889,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -616,7 +901,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -629,7 +914,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{8}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DeleteResponse) GetIndex() uint64 {
@@ -651,7 +936,7 @@ type ReadLogRequest struct {
 
 func (x *ReadLogRequest) Reset() {
 	*x = ReadLogRequest{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -663,7 +948,7 @@ func (x *ReadLogRequest) String() string {
 func (*ReadLogRequest) ProtoMessage() {}
 
 func (x *ReadLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -676,7 +961,7 @@ func (x *ReadLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadLogRequest.ProtoReflect.Descriptor instead.
 func (*ReadLogRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{9}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ReadLogRequest) GetFromIndex() uint64 {
@@ -706,7 +991,7 @@ type LogEntry struct {
 
 func (x *LogEntry) Reset() {
 	*x = LogEntry{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -718,7 +1003,7 @@ func (x *LogEntry) String() string {
 func (*LogEntry) ProtoMessage() {}
 
 func (x *LogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -731,7 +1016,7 @@ func (x *LogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
 func (*LogEntry) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{10}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *LogEntry) GetIndex() uint64 {
@@ -777,7 +1062,7 @@ type ReadLogResponse struct {
 
 func (x *ReadLogResponse) Reset() {
 	*x = ReadLogResponse{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[11]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -789,7 +1074,7 @@ func (x *ReadLogResponse) String() string {
 func (*ReadLogResponse) ProtoMessage() {}
 
 func (x *ReadLogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[11]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -802,7 +1087,7 @@ func (x *ReadLogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadLogResponse.ProtoReflect.Descriptor instead.
 func (*ReadLogResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{11}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ReadLogResponse) GetEntries() []*LogEntry {
@@ -838,7 +1123,7 @@ var File_curntvalv_v1_admin_proto protoreflect.FileDescriptor
 const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\n" +
 	"\x18curntvalv/v1/admin.proto\x12\fcurntvalv.v1\x1a\x18curntvalv/v1/event.proto\"\x0f\n" +
-	"\rStatusRequest\"\xa6\x03\n" +
+	"\rStatusRequest\"\xe3\x03\n" +
 	"\x0eStatusResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x12\n" +
 	"\x04term\x18\x02 \x01(\x04R\x04term\x12\x14\n" +
@@ -856,7 +1141,15 @@ const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	" \x01(\x04R\rsnapshotIndex\x12!\n" +
 	"\fsource_state\x18\v \x01(\tR\vsourceState\x12!\n" +
 	"\fsource_error\x18\f \x01(\tR\vsourceError\x12.\n" +
-	"\x05sinks\x18\r \x03(\v2\x18.curntvalv.v1.SinkStatusR\x05sinks\"\xb1\x01\n" +
+	"\x05sinks\x18\r \x03(\v2\x18.curntvalv.v1.SinkStatusR\x05sinks\x12;\n" +
+	"\tretention\x18\x0e \x01(\v2\x1d.curntvalv.v1.RetentionStatusR\tretention\"\xb7\x01\n" +
+	"\x0fRetentionStatus\x12&\n" +
+	"\x0fmax_age_seconds\x18\x01 \x01(\x03R\rmaxAgeSeconds\x12\x1b\n" +
+	"\tmax_bytes\x18\x02 \x01(\x03R\bmaxBytes\x12\x1b\n" +
+	"\tlog_bytes\x18\x03 \x01(\x03R\blogBytes\x12#\n" +
+	"\rcompact_limit\x18\x04 \x01(\x04R\fcompactLimit\x12\x1d\n" +
+	"\n" +
+	"blocked_by\x18\x05 \x01(\tR\tblockedBy\"\xe9\x01\n" +
 	"\n" +
 	"SinkStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
@@ -866,7 +1159,21 @@ const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\x03lag\x18\x05 \x01(\x04R\x03lag\x12\x1c\n" +
 	"\tdelivered\x18\x06 \x01(\x04R\tdelivered\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\a \x01(\tR\tlastError\"4\n" +
+	"last_error\x18\a \x01(\tR\tlastError\x12\x16\n" +
+	"\x06policy\x18\b \x01(\tR\x06policy\x12\x1e\n" +
+	"\n" +
+	"generation\x18\t \x01(\x04R\n" +
+	"generation\"u\n" +
+	"\x10ResetSinkRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x127\n" +
+	"\bposition\x18\x02 \x01(\x0e2\x1b.curntvalv.v1.ResetPositionR\bposition\x12\x14\n" +
+	"\x05index\x18\x03 \x01(\x04R\x05index\"a\n" +
+	"\x11ResetSinkResponse\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\x04R\x05index\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x04R\x06offset\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\x04R\n" +
+	"generation\"4\n" +
 	"\n" +
 	"PutRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -902,18 +1209,24 @@ const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\aschemas\x18\x04 \x03(\v2*.curntvalv.v1.ReadLogResponse.SchemasEntryR\aschemas\x1aP\n" +
 	"\fSchemasEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x04R\x03key\x12*\n" +
-	"\x05value\x18\x02 \x01(\v2\x14.curntvalv.v1.SchemaR\x05value:\x028\x01*j\n" +
+	"\x05value\x18\x02 \x01(\v2\x14.curntvalv.v1.SchemaR\x05value:\x028\x01*\x81\x01\n" +
+	"\rResetPosition\x12\x1e\n" +
+	"\x1aRESET_POSITION_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17RESET_POSITION_EARLIEST\x10\x01\x12\x19\n" +
+	"\x15RESET_POSITION_LATEST\x10\x02\x12\x18\n" +
+	"\x14RESET_POSITION_INDEX\x10\x03*j\n" +
 	"\tEntryKind\x12\x1a\n" +
 	"\x16ENTRY_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fENTRY_KIND_NOOP\x10\x01\x12\x13\n" +
 	"\x0fENTRY_KIND_META\x10\x02\x12\x17\n" +
-	"\x13ENTRY_KIND_TX_BATCH\x10\x032\xd8\x02\n" +
+	"\x13ENTRY_KIND_TX_BATCH\x10\x032\xa6\x03\n" +
 	"\fAdminService\x12C\n" +
 	"\x06Status\x12\x1b.curntvalv.v1.StatusRequest\x1a\x1c.curntvalv.v1.StatusResponse\x12:\n" +
 	"\x03Put\x12\x18.curntvalv.v1.PutRequest\x1a\x19.curntvalv.v1.PutResponse\x12:\n" +
 	"\x03Get\x12\x18.curntvalv.v1.GetRequest\x1a\x19.curntvalv.v1.GetResponse\x12C\n" +
 	"\x06Delete\x12\x1b.curntvalv.v1.DeleteRequest\x1a\x1c.curntvalv.v1.DeleteResponse\x12F\n" +
-	"\aReadLog\x12\x1c.curntvalv.v1.ReadLogRequest\x1a\x1d.curntvalv.v1.ReadLogResponseB;Z9github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pbb\x06proto3"
+	"\aReadLog\x12\x1c.curntvalv.v1.ReadLogRequest\x1a\x1d.curntvalv.v1.ReadLogResponse\x12L\n" +
+	"\tResetSink\x12\x1e.curntvalv.v1.ResetSinkRequest\x1a\x1f.curntvalv.v1.ResetSinkResponseB;Z9github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pbb\x06proto3"
 
 var (
 	file_curntvalv_v1_admin_proto_rawDescOnce sync.Once
@@ -927,48 +1240,56 @@ func file_curntvalv_v1_admin_proto_rawDescGZIP() []byte {
 	return file_curntvalv_v1_admin_proto_rawDescData
 }
 
-var file_curntvalv_v1_admin_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_curntvalv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_curntvalv_v1_admin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_curntvalv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_curntvalv_v1_admin_proto_goTypes = []any{
-	(EntryKind)(0),          // 0: curntvalv.v1.EntryKind
-	(*StatusRequest)(nil),   // 1: curntvalv.v1.StatusRequest
-	(*StatusResponse)(nil),  // 2: curntvalv.v1.StatusResponse
-	(*SinkStatus)(nil),      // 3: curntvalv.v1.SinkStatus
-	(*PutRequest)(nil),      // 4: curntvalv.v1.PutRequest
-	(*PutResponse)(nil),     // 5: curntvalv.v1.PutResponse
-	(*GetRequest)(nil),      // 6: curntvalv.v1.GetRequest
-	(*GetResponse)(nil),     // 7: curntvalv.v1.GetResponse
-	(*DeleteRequest)(nil),   // 8: curntvalv.v1.DeleteRequest
-	(*DeleteResponse)(nil),  // 9: curntvalv.v1.DeleteResponse
-	(*ReadLogRequest)(nil),  // 10: curntvalv.v1.ReadLogRequest
-	(*LogEntry)(nil),        // 11: curntvalv.v1.LogEntry
-	(*ReadLogResponse)(nil), // 12: curntvalv.v1.ReadLogResponse
-	nil,                     // 13: curntvalv.v1.ReadLogResponse.SchemasEntry
-	(*TxBatch)(nil),         // 14: curntvalv.v1.TxBatch
-	(*Schema)(nil),          // 15: curntvalv.v1.Schema
+	(ResetPosition)(0),        // 0: curntvalv.v1.ResetPosition
+	(EntryKind)(0),            // 1: curntvalv.v1.EntryKind
+	(*StatusRequest)(nil),     // 2: curntvalv.v1.StatusRequest
+	(*StatusResponse)(nil),    // 3: curntvalv.v1.StatusResponse
+	(*RetentionStatus)(nil),   // 4: curntvalv.v1.RetentionStatus
+	(*SinkStatus)(nil),        // 5: curntvalv.v1.SinkStatus
+	(*ResetSinkRequest)(nil),  // 6: curntvalv.v1.ResetSinkRequest
+	(*ResetSinkResponse)(nil), // 7: curntvalv.v1.ResetSinkResponse
+	(*PutRequest)(nil),        // 8: curntvalv.v1.PutRequest
+	(*PutResponse)(nil),       // 9: curntvalv.v1.PutResponse
+	(*GetRequest)(nil),        // 10: curntvalv.v1.GetRequest
+	(*GetResponse)(nil),       // 11: curntvalv.v1.GetResponse
+	(*DeleteRequest)(nil),     // 12: curntvalv.v1.DeleteRequest
+	(*DeleteResponse)(nil),    // 13: curntvalv.v1.DeleteResponse
+	(*ReadLogRequest)(nil),    // 14: curntvalv.v1.ReadLogRequest
+	(*LogEntry)(nil),          // 15: curntvalv.v1.LogEntry
+	(*ReadLogResponse)(nil),   // 16: curntvalv.v1.ReadLogResponse
+	nil,                       // 17: curntvalv.v1.ReadLogResponse.SchemasEntry
+	(*TxBatch)(nil),           // 18: curntvalv.v1.TxBatch
+	(*Schema)(nil),            // 19: curntvalv.v1.Schema
 }
 var file_curntvalv_v1_admin_proto_depIdxs = []int32{
-	3,  // 0: curntvalv.v1.StatusResponse.sinks:type_name -> curntvalv.v1.SinkStatus
-	0,  // 1: curntvalv.v1.LogEntry.kind:type_name -> curntvalv.v1.EntryKind
-	14, // 2: curntvalv.v1.LogEntry.tx_batch:type_name -> curntvalv.v1.TxBatch
-	11, // 3: curntvalv.v1.ReadLogResponse.entries:type_name -> curntvalv.v1.LogEntry
-	13, // 4: curntvalv.v1.ReadLogResponse.schemas:type_name -> curntvalv.v1.ReadLogResponse.SchemasEntry
-	15, // 5: curntvalv.v1.ReadLogResponse.SchemasEntry.value:type_name -> curntvalv.v1.Schema
-	1,  // 6: curntvalv.v1.AdminService.Status:input_type -> curntvalv.v1.StatusRequest
-	4,  // 7: curntvalv.v1.AdminService.Put:input_type -> curntvalv.v1.PutRequest
-	6,  // 8: curntvalv.v1.AdminService.Get:input_type -> curntvalv.v1.GetRequest
-	8,  // 9: curntvalv.v1.AdminService.Delete:input_type -> curntvalv.v1.DeleteRequest
-	10, // 10: curntvalv.v1.AdminService.ReadLog:input_type -> curntvalv.v1.ReadLogRequest
-	2,  // 11: curntvalv.v1.AdminService.Status:output_type -> curntvalv.v1.StatusResponse
-	5,  // 12: curntvalv.v1.AdminService.Put:output_type -> curntvalv.v1.PutResponse
-	7,  // 13: curntvalv.v1.AdminService.Get:output_type -> curntvalv.v1.GetResponse
-	9,  // 14: curntvalv.v1.AdminService.Delete:output_type -> curntvalv.v1.DeleteResponse
-	12, // 15: curntvalv.v1.AdminService.ReadLog:output_type -> curntvalv.v1.ReadLogResponse
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	5,  // 0: curntvalv.v1.StatusResponse.sinks:type_name -> curntvalv.v1.SinkStatus
+	4,  // 1: curntvalv.v1.StatusResponse.retention:type_name -> curntvalv.v1.RetentionStatus
+	0,  // 2: curntvalv.v1.ResetSinkRequest.position:type_name -> curntvalv.v1.ResetPosition
+	1,  // 3: curntvalv.v1.LogEntry.kind:type_name -> curntvalv.v1.EntryKind
+	18, // 4: curntvalv.v1.LogEntry.tx_batch:type_name -> curntvalv.v1.TxBatch
+	15, // 5: curntvalv.v1.ReadLogResponse.entries:type_name -> curntvalv.v1.LogEntry
+	17, // 6: curntvalv.v1.ReadLogResponse.schemas:type_name -> curntvalv.v1.ReadLogResponse.SchemasEntry
+	19, // 7: curntvalv.v1.ReadLogResponse.SchemasEntry.value:type_name -> curntvalv.v1.Schema
+	2,  // 8: curntvalv.v1.AdminService.Status:input_type -> curntvalv.v1.StatusRequest
+	8,  // 9: curntvalv.v1.AdminService.Put:input_type -> curntvalv.v1.PutRequest
+	10, // 10: curntvalv.v1.AdminService.Get:input_type -> curntvalv.v1.GetRequest
+	12, // 11: curntvalv.v1.AdminService.Delete:input_type -> curntvalv.v1.DeleteRequest
+	14, // 12: curntvalv.v1.AdminService.ReadLog:input_type -> curntvalv.v1.ReadLogRequest
+	6,  // 13: curntvalv.v1.AdminService.ResetSink:input_type -> curntvalv.v1.ResetSinkRequest
+	3,  // 14: curntvalv.v1.AdminService.Status:output_type -> curntvalv.v1.StatusResponse
+	9,  // 15: curntvalv.v1.AdminService.Put:output_type -> curntvalv.v1.PutResponse
+	11, // 16: curntvalv.v1.AdminService.Get:output_type -> curntvalv.v1.GetResponse
+	13, // 17: curntvalv.v1.AdminService.Delete:output_type -> curntvalv.v1.DeleteResponse
+	16, // 18: curntvalv.v1.AdminService.ReadLog:output_type -> curntvalv.v1.ReadLogResponse
+	7,  // 19: curntvalv.v1.AdminService.ResetSink:output_type -> curntvalv.v1.ResetSinkResponse
+	14, // [14:20] is the sub-list for method output_type
+	8,  // [8:14] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_curntvalv_v1_admin_proto_init() }
@@ -982,8 +1303,8 @@ func file_curntvalv_v1_admin_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_curntvalv_v1_admin_proto_rawDesc), len(file_curntvalv_v1_admin_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   13,
+			NumEnums:      2,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

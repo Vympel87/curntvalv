@@ -39,12 +39,37 @@ func TestParsePeers(t *testing.T) {
 	}
 }
 
+func TestParseSizes(t *testing.T) {
+	for in, want := range map[string]time.Duration{"0": 0, "7d": 7 * 24 * time.Hour, "1d12h": 36 * time.Hour, "90m": 90 * time.Minute} {
+		if got, err := parseAge(in); err != nil || got != want {
+			t.Errorf("parseAge(%q) = %v %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{"d", "7x", "-1h", "1.5d", "7d7d"} {
+		if _, err := parseAge(bad); err == nil {
+			t.Errorf("parseAge(%q) accepted", bad)
+		}
+	}
+	for in, want := range map[string]int64{"0": 0, "123": 123, "1KB": 1024, "512mb": 512 << 20, "10GB": 10 << 30, "2 TB": 2 << 40, "7B": 7} {
+		if got, err := parseBytes(in); err != nil || got != want {
+			t.Errorf("parseBytes(%q) = %v %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{"", "MB", "-1", "1.5GB", "9999999999TB"} {
+		if _, err := parseBytes(bad); err == nil {
+			t.Errorf("parseBytes(%q) accepted", bad)
+		}
+	}
+}
+
 func TestParseServerFlags(t *testing.T) {
-	cfg, err := parseServerFlags([]string{"--id", "2", "--peers", "1=a:1,2=b:2,3=c:3", "--data-dir", "/d", "--trailing-entries", "50"}, io.Discard)
+	cfg, err := parseServerFlags([]string{"--id", "2", "--peers", "1=a:1,2=b:2,3=c:3", "--data-dir", "/d",
+		"--retention-age", "1d12h", "--retention-bytes", "2GB", "--wal-segment-bytes", "1MB"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.raft.ID != 2 || fmt.Sprint(cfg.raft.Peers) != "[1 2 3]" || cfg.listen != "b:2" || cfg.raft.TrailingEntries != 50 {
+	if cfg.raft.ID != 2 || fmt.Sprint(cfg.raft.Peers) != "[1 2 3]" || cfg.listen != "b:2" ||
+		cfg.retention.MaxAge != 36*time.Hour || cfg.retention.MaxBytes != 2<<30 || cfg.segmentBytes != 1<<20 {
 		t.Fatalf("%+v", cfg)
 	}
 	for _, args := range [][]string{
@@ -53,6 +78,9 @@ func TestParseServerFlags(t *testing.T) {
 		{"--id", "1", "--peers", "1=a:1"},                     // no data dir
 		{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d", "--log-level", "loud"},
 		{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d", "extra"},
+		{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d", "--retention-age", "a week"},
+		{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d", "--retention-bytes", "lots"},
+		{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d", "--wal-segment-bytes", "0"},
 	} {
 		if _, err := parseServerFlags(args, io.Discard); !errors.Is(err, errUsage) {
 			t.Errorf("%v: got %v", args, err)
@@ -141,7 +169,7 @@ func freePort(t *testing.T) string {
 }
 
 func newE2E(t *testing.T) *e2eCluster {
-	return newE2EWith(t, nil, "--snapshot-entries", "10", "--trailing-entries", "15")
+	return newE2EWith(t, nil, "--snapshot-entries", "10", "--retention-bytes", "512", "--wal-segment-bytes", "200")
 }
 
 func newE2EWith(t *testing.T, env []string, args ...string) *e2eCluster {
@@ -288,6 +316,16 @@ func TestEndToEndKillLeader(t *testing.T) {
 			t.Fatalf("restarted node did not catch up:\n%s\n%s", out, leaderOut)
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+	// --retention-bytes 512 with 200 byte segments: every log was cut.
+	out := c.mustCLI("status")
+	for _, line := range strings.Split(out, "\n")[1:4] {
+		if f := strings.Fields(line); len(f) < 6 || f[5] == "1" {
+			t.Fatalf("log not compacted:\n%s", out)
+		}
+	}
+	if !strings.Contains(out, "RETENTION max size 512 B") {
+		t.Fatalf("status without retention:\n%s", out)
 	}
 }
 

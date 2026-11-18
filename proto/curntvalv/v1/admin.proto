@@ -19,6 +19,9 @@ service AdminService {
   // may be a little behind the leader. Entries removed by log compaction
   // give OUT_OF_RANGE.
   rpc ReadLog(ReadLogRequest) returns (ReadLogResponse);
+  // ResetSink moves a configured sink to another position, also backwards
+  // (replay), and starts a new generation of its offsets. Leader only.
+  rpc ResetSink(ResetSinkRequest) returns (ResetSinkResponse);
 }
 
 message StatusRequest {}
@@ -39,6 +42,20 @@ message StatusResponse {
   string source_state = 11;
   string source_error = 12;
   repeated SinkStatus sinks = 13;
+  // Log retention on this node; unset on nodes without it (tests).
+  RetentionStatus retention = 14;
+}
+
+message RetentionStatus {
+  // Configured limits; 0 means none.
+  int64 max_age_seconds = 1;
+  int64 max_bytes = 2;
+  // Current size of the log on this node.
+  int64 log_bytes = 3;
+  // Highest index that may be removed now.
+  uint64 compact_limit = 4;
+  // The block sink holding compact_limit back, if any.
+  string blocked_by = 5;
 }
 
 message SinkStatus {
@@ -56,6 +73,35 @@ message SinkStatus {
   // Changes delivered by this node since it started.
   uint64 delivered = 6;
   string last_error = 7;
+  // "block" (the log keeps what the sink has not delivered) or "drop".
+  string policy = 8;
+  // Number of resets (replicated).
+  uint64 generation = 9;
+}
+
+message ResetSinkRequest {
+  string name = 1;
+  ResetPosition position = 2;
+  // With RESET_POSITION_INDEX: the new offset, i.e. the last log index
+  // counted as delivered. Delivery continues after it.
+  uint64 index = 3;
+}
+
+enum ResetPosition {
+  RESET_POSITION_UNSPECIFIED = 0;
+  // Replay everything still retained.
+  RESET_POSITION_EARLIEST = 1;
+  // Skip to the current commit index.
+  RESET_POSITION_LATEST = 2;
+  RESET_POSITION_INDEX = 3;
+}
+
+message ResetSinkResponse {
+  // Raft index at which the reset was committed.
+  uint64 index = 1;
+  // New offset (0 for earliest) and generation.
+  uint64 offset = 2;
+  uint64 generation = 3;
 }
 
 message PutRequest {

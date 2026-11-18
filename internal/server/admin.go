@@ -32,7 +32,7 @@ type LogReader interface {
 type Meta interface {
 	Get(key string) ([]byte, bool)
 	Schema(id uint64) (*pb.Schema, bool)
-	SinkOffset(name string) (uint64, bool)
+	SinkPosition(name string) (fsm.SinkPosition, bool)
 	LastChange() uint64
 }
 
@@ -41,9 +41,11 @@ type Health interface {
 	// Source returns the Postgres source's state ("" if there is none) and
 	// last error.
 	Source() (state, lastErr string)
-	// Sinks returns the configured sinks in a stable order. Offset and Lag
-	// are filled in by the admin service.
+	// Sinks returns the configured sinks in a stable order. Offset, Lag and
+	// Generation are filled in by the admin service.
 	Sinks() []*pb.SinkStatus
+	// Retention returns the log retention status, or nil.
+	Retention() *pb.RetentionStatus
 }
 
 // Admin implements pb.AdminServiceServer.
@@ -89,9 +91,11 @@ func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResp
 	if a.health != nil {
 		resp.SourceState, resp.SourceError = a.health.Source()
 		resp.Sinks = a.health.Sinks()
+		resp.Retention = a.health.Retention()
 		last := a.meta.LastChange()
 		for _, s := range resp.Sinks {
-			s.Offset, _ = a.meta.SinkOffset(s.Name)
+			pos, _ := a.meta.SinkPosition(s.Name)
+			s.Offset, s.Generation = pos.Offset, pos.Gen
 			if last > s.Offset {
 				s.Lag = last - s.Offset
 			}
@@ -186,6 +190,65 @@ func (a *Admin) ReadLog(ctx context.Context, req *pb.ReadLogRequest) (*pb.ReadLo
 		resp.Entries = append(resp.Entries, le)
 	}
 	return resp, nil
+}
+
+// ResetSink moves a sink to another position and starts a new generation of
+// its offsets. Only sinks configured on this node can be reset, so a typo
+// does not create a stray offset.
+func (a *Admin) ResetSink(ctx context.Context, req *pb.ResetSinkRequest) (*pb.ResetSinkResponse, error) {
+	name := req.GetName()
+	if !a.configured(name) {
+		return nil, status.Errorf(codes.NotFound, "no sink %q is configured on this node", name)
+	}
+	var offset uint64
+	switch req.GetPosition() {
+	case pb.ResetPosition_RESET_POSITION_EARLIEST:
+	case pb.ResetPosition_RESET_POSITION_LATEST, pb.ResetPosition_RESET_POSITION_INDEX:
+		// A linearizable commit index; also fails early on a follower.
+		commit, err := a.node.ReadIndex(ctx)
+		if err != nil {
+			return nil, a.toStatus(err)
+		}
+		offset = commit
+		if req.GetPosition() == pb.ResetPosition_RESET_POSITION_INDEX {
+			st, err := a.node.Status(ctx)
+			if err != nil {
+				return nil, a.toStatus(err)
+			}
+			offset = req.GetIndex()
+			switch {
+			case offset > commit:
+				return nil, status.Errorf(codes.InvalidArgument, "index %d is past the commit index %d", offset, commit)
+			case offset > 0 && offset+1 < st.FirstIndex:
+				return nil, status.Errorf(codes.OutOfRange, "entries after %d were removed by log compaction; the oldest retained entry is %d",
+					offset, st.FirstIndex)
+			}
+		}
+	default:
+		return nil, status.Error(codes.InvalidArgument, "position must be earliest, latest or index")
+	}
+	data, err := fsm.EncodeSinkReset(name, offset)
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	idx, err := a.node.Propose(ctx, data)
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	pos, _ := a.meta.SinkPosition(name)
+	return &pb.ResetSinkResponse{Index: idx, Offset: offset, Generation: pos.Gen}, nil
+}
+
+func (a *Admin) configured(name string) bool {
+	if a.health == nil {
+		return false
+	}
+	for _, s := range a.health.Sinks() {
+		if s.GetName() == name {
+			return true
+		}
+	}
+	return false
 }
 
 // toStatus maps internal errors to gRPC status codes.

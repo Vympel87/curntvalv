@@ -107,6 +107,9 @@ func (fakeHealth) Source() (string, string) { return "retrying", "pg: connect: r
 func (fakeHealth) Sinks() []*pb.SinkStatus {
 	return []*pb.SinkStatus{{Name: "ch", Type: "clickhouse", State: "running"}, {Name: "new", Type: "webhook", State: "running"}}
 }
+func (fakeHealth) Retention() *pb.RetentionStatus {
+	return &pb.RetentionStatus{MaxBytes: 100, CompactLimit: 3, BlockedBy: "ch"}
+}
 
 func TestStatusReportsHealth(t *testing.T) {
 	f := fsm.New()
@@ -133,7 +136,52 @@ func TestStatusReportsHealth(t *testing.T) {
 	if s := st.Sinks[1]; s.Offset != 0 || s.Lag != 5 {
 		t.Fatalf("new %v", s)
 	}
+	if st.Retention.GetBlockedBy() != "ch" {
+		t.Fatalf("retention %v", st.Retention)
+	}
+
+	// Resets: the offset can move backwards and the generation grows.
+	for _, tc := range []struct {
+		req    *pb.ResetSinkRequest
+		code   codes.Code
+		offset uint64
+		gen    uint64
+	}{
+		{&pb.ResetSinkRequest{Name: "ch", Position: pb.ResetPosition_RESET_POSITION_EARLIEST}, codes.OK, 0, 1},
+		{&pb.ResetSinkRequest{Name: "ch", Position: pb.ResetPosition_RESET_POSITION_INDEX, Index: 4}, codes.OK, 4, 2},
+		{&pb.ResetSinkRequest{Name: "new", Position: pb.ResetPosition_RESET_POSITION_LATEST}, codes.OK, 9, 1},
+		{&pb.ResetSinkRequest{Name: "ch", Position: pb.ResetPosition_RESET_POSITION_INDEX, Index: 99}, codes.InvalidArgument, 0, 0},
+		{&pb.ResetSinkRequest{Name: "ch"}, codes.InvalidArgument, 0, 0},
+		{&pb.ResetSinkRequest{Name: "typo", Position: pb.ResetPosition_RESET_POSITION_EARLIEST}, codes.NotFound, 0, 0},
+	} {
+		resp, err := a.ResetSink(ctx, tc.req)
+		if status.Code(err) != tc.code {
+			t.Fatalf("%v: %v", tc.req, err)
+		}
+		if err == nil && (resp.Offset != tc.offset || resp.Generation != tc.gen) {
+			t.Fatalf("%v: %v", tc.req, resp)
+		}
+	}
+	n.first = 6 // entries before 6 compacted
+	_, err = a.ResetSink(ctx, &pb.ResetSinkRequest{Name: "ch", Position: pb.ResetPosition_RESET_POSITION_INDEX, Index: 3})
+	if status.Code(err) != codes.OutOfRange {
+		t.Fatalf("reset into compacted region: %v", err)
+	}
+	st, _ = a.Status(ctx, &pb.StatusRequest{})
+	if s := st.Sinks[0]; s.Offset != 4 || s.Generation != 2 {
+		t.Fatalf("ch after resets %v", s)
+	}
+	n.readErr = &raft.NotLeaderError{Leader: 2}
+	_, err = a.ResetSink(ctx, &pb.ResetSinkRequest{Name: "ch", Position: pb.ResetPosition_RESET_POSITION_LATEST})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("follower: %v", err)
+	}
+	if _, err := newAdminNoHealth().ResetSink(ctx, &pb.ResetSinkRequest{Name: "ch", Position: 1}); status.Code(err) != codes.NotFound {
+		t.Fatalf("without health: %v", err)
+	}
 }
+
+func newAdminNoHealth() *Admin { a, _ := newAdmin(); return a }
 
 func TestErrorCodes(t *testing.T) {
 	ctx := context.Background()

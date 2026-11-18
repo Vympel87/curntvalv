@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -29,9 +30,14 @@ type clientFlags struct {
 	timeout time.Duration
 }
 
-func parseClientFlags(name string, args []string, stderr io.Writer) (clientFlags, []string, error) {
+// parseClientFlags parses the shared client flags; extra adds a command's
+// own flags.
+func parseClientFlags(name string, args []string, stderr io.Writer, extra ...func(*flag.FlagSet)) (clientFlags, []string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	for _, f := range extra {
+		f(fs)
+	}
 	def := os.Getenv("CURNTVALV_ADDR")
 	if def == "" {
 		def = defaultAddrs
@@ -111,10 +117,20 @@ func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 // printPipeline prints the source and sinks as the leader (which runs them)
 // sees them. It is separated from the node table by an empty line.
 func printPipeline(out io.Writer, st *pb.StatusResponse) {
-	if st.GetSourceState() == "" && len(st.GetSinks()) == 0 {
+	if st.GetSourceState() == "" && len(st.GetSinks()) == 0 && st.GetRetention() == nil {
 		return
 	}
 	fmt.Fprintln(out)
+	if r := st.GetRetention(); r != nil {
+		fmt.Fprintf(out, "RETENTION %s; log %s", retentionLimits(r), formatBytes(r.GetLogBytes()))
+		switch {
+		case r.GetBlockedBy() != "":
+			fmt.Fprintf(out, "; removable up to entry %d (held back by sink %s)", r.GetCompactLimit(), r.GetBlockedBy())
+		case r.GetCompactLimit() > 0:
+			fmt.Fprintf(out, "; removable up to entry %d", r.GetCompactLimit())
+		}
+		fmt.Fprintln(out)
+	}
 	if st.GetSourceState() != "" {
 		fmt.Fprintf(out, "SOURCE postgres: %s", st.GetSourceState())
 		if st.GetSourceError() != "" {
@@ -126,15 +142,81 @@ func printPipeline(out io.Writer, st *pb.StatusResponse) {
 		return
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SINK\tTYPE\tSTATE\tOFFSET\tLAG\tDELIVERED\tERROR")
+	fmt.Fprintln(w, "SINK\tTYPE\tPOLICY\tSTATE\tOFFSET\tLAG\tDELIVERED\tERROR")
 	for _, s := range st.GetSinks() {
 		e := s.GetLastError()
 		if e == "" {
 			e = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\t%s\n", s.GetName(), s.GetType(), s.GetState(), s.GetOffset(), s.GetLag(), s.GetDelivered(), e)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n", s.GetName(), s.GetType(), s.GetPolicy(), s.GetState(),
+			s.GetOffset(), s.GetLag(), s.GetDelivered(), e)
 	}
 	w.Flush()
+}
+
+func retentionLimits(r *pb.RetentionStatus) string {
+	var parts []string
+	if a := r.GetMaxAgeSeconds(); a > 0 {
+		parts = append(parts, "max age "+(time.Duration(a)*time.Second).String())
+	}
+	if b := r.GetMaxBytes(); b > 0 {
+		parts = append(parts, "max size "+formatBytes(b))
+	}
+	if len(parts) == 0 {
+		return "keep everything"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// sinkCmd runs "sink reset NAME --to earliest|latest|INDEX".
+func sinkCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	const want = "want: sink reset NAME --to earliest|latest|INDEX"
+	var to string
+	cf, pos, err := parseClientFlags("sink", args, stderr, func(fs *flag.FlagSet) {
+		fs.StringVar(&to, "to", "", "new position: earliest (replay everything retained), latest (skip to now) "+
+			"or a log index (the last entry counted as delivered)")
+	})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 || pos[0] != "reset" {
+		return usageErr(want)
+	}
+	req := &pb.ResetSinkRequest{Name: pos[1]}
+	switch to {
+	case "earliest":
+		req.Position = pb.ResetPosition_RESET_POSITION_EARLIEST
+	case "latest":
+		req.Position = pb.ResetPosition_RESET_POSITION_LATEST
+	default:
+		idx, err := strconv.ParseUint(to, 10, 64)
+		if err != nil {
+			return usageErr(want)
+		}
+		req.Position, req.Index = pb.ResetPosition_RESET_POSITION_INDEX, idx
+	}
+	ctx, cancel := context.WithTimeout(ctx, cf.timeout)
+	defer cancel()
+	return onLeader(ctx, cf.addrs, func(ctx context.Context, c pb.AdminServiceClient) error {
+		r, err := c.ResetSink(ctx, req)
+		if err == nil {
+			fmt.Fprintf(stdout, "sink %s reset to offset %d, generation %d (index %d)\n", req.Name, r.GetOffset(), r.GetGeneration(), r.GetIndex())
+		}
+		return err
+	})
 }
 
 func nodeStatus(ctx context.Context, addr string) (*pb.StatusResponse, error) {

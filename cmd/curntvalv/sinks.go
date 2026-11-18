@@ -3,26 +3,30 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Vympel87/curntvalv/internal/event"
 	"github.com/Vympel87/curntvalv/internal/fsm"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
+	"github.com/Vympel87/curntvalv/internal/retention"
 	"github.com/Vympel87/curntvalv/internal/sink"
 	pgsource "github.com/Vympel87/curntvalv/internal/source/pg"
+	"github.com/Vympel87/curntvalv/internal/wal"
 )
 
 // sinkSpec is one --sink flag:
 //
-//	name=NAME,type=webhook,url=URL[,table=T]...[,start=earliest|latest]
-//	name=NAME,type=clickhouse,url=URL[,database=DB][,into=TABLE][,table=T]...[,start=...]
+//	name=NAME,type=webhook,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]
+//	name=NAME,type=clickhouse,url=URL[,database=DB][,into=TABLE][,table=T]...[,start=...][,policy=...]
 type sinkSpec struct {
 	name, typ, url    string
 	tables            []string
 	startLatest       bool
+	drop              bool // policy=drop: retention does not wait for this sink
 	database, chTable string
 }
 
-const sinkUsage = "name=NAME,type=webhook|clickhouse,url=URL[,table=T]...[,start=earliest|latest][,database=DB][,into=TABLE]"
+const sinkUsage = "name=NAME,type=webhook|clickhouse,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop][,database=DB][,into=TABLE]"
 
 func parseSinkSpec(s string) (sinkSpec, error) {
 	var sp sinkSpec
@@ -54,6 +58,11 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 				return sinkSpec{}, usageErr("--sink: start must be earliest or latest")
 			}
 			sp.startLatest = v == "latest"
+		case "policy":
+			if v != "block" && v != "drop" {
+				return sinkSpec{}, usageErr("--sink: policy must be block or drop")
+			}
+			sp.drop = v == "drop"
 		case "database":
 			sp.database = v
 		case "into":
@@ -100,10 +109,15 @@ func (r *repeatFlag) Set(v string) error {
 	return nil
 }
 
-// nodeHealth implements server.Health over this node's source and sinks.
+// nodeHealth implements server.Health over this node's source, sinks and
+// log retention.
 type nodeHealth struct {
 	src     *pgsource.Source // nil without a Postgres source
 	runners []*sink.Runner
+	specs   []sinkSpec // same order as runners
+	ret     *retention.Policy
+	retCfg  retention.Config
+	log     *wal.Log
 }
 
 func (h nodeHealth) Source() (string, string) {
@@ -117,8 +131,25 @@ func (h nodeHealth) Sinks() []*pb.SinkStatus {
 	out := make([]*pb.SinkStatus, 0, len(h.runners))
 	for _, r := range h.runners {
 		st := r.Status()
-		out = append(out, &pb.SinkStatus{Name: st.Name, Type: st.Type, State: string(st.State),
-			Delivered: st.Delivered, LastError: st.LastError})
+		s := &pb.SinkStatus{Name: st.Name, Type: st.Type, State: string(st.State),
+			Delivered: st.Delivered, LastError: st.LastError, Policy: "block"}
+		if i := len(out); i < len(h.specs) && h.specs[i].drop {
+			s.Policy = "drop"
+		}
+		out = append(out, s)
 	}
 	return out
+}
+
+func (h nodeHealth) Retention() *pb.RetentionStatus {
+	if h.ret == nil {
+		return nil
+	}
+	st := h.ret.Status()
+	var size int64
+	for _, s := range h.log.Segments() {
+		size += s.Bytes
+	}
+	return &pb.RetentionStatus{MaxAgeSeconds: int64(h.retCfg.MaxAge / time.Second), MaxBytes: h.retCfg.MaxBytes,
+		LogBytes: size, CompactLimit: st.Limit, BlockedBy: st.BlockedBy}
 }

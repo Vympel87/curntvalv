@@ -5,6 +5,7 @@
 //	curntvalv kv put|get|del KEY [VALUE] [--addr ...]
 //	curntvalv log [--from N] [--follow] [--addr ...]
 //	curntvalv subscribe [--table T]... [--from N] [--addr ...]
+//	curntvalv sink reset NAME --to earliest|latest|INDEX [--addr ...]
 //	curntvalv version
 package main
 
@@ -32,6 +33,7 @@ import (
 	"github.com/Vympel87/curntvalv/internal/fsm"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
+	"github.com/Vympel87/curntvalv/internal/retention"
 	"github.com/Vympel87/curntvalv/internal/server"
 	"github.com/Vympel87/curntvalv/internal/sink"
 	pgsource "github.com/Vympel87/curntvalv/internal/source/pg"
@@ -49,6 +51,7 @@ const usage = `usage:
   curntvalv kv del KEY [--addr HOST:PORT,...]
   curntvalv log [--from N] [--follow] [--addr HOST:PORT,...]
   curntvalv subscribe [--table NAME]... [--from N] [--addr HOST:PORT,...]
+  curntvalv sink reset NAME --to earliest|latest|INDEX [--addr HOST:PORT,...]
   curntvalv version
 
 Run "curntvalv COMMAND -h" for the flags of a command.
@@ -82,6 +85,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = logCmd(ctx, args[1:], stdout, stderr)
 	case "subscribe":
 		err = subscribeCmd(ctx, args[1:], stdout, stderr)
+	case "sink":
+		err = sinkCmd(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -107,6 +112,50 @@ var errUsage = errors.New("usage error")
 
 func usageErr(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", errUsage, fmt.Sprintf(format, a...))
+}
+
+// parseAge parses a duration that may also use days ("7d", "1d12h").
+func parseAge(s string) (time.Duration, error) {
+	if s == "0" || s == "" {
+		return 0, nil
+	}
+	var days time.Duration
+	if before, after, ok := strings.Cut(s, "d"); ok {
+		n, err := strconv.ParseUint(before, 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("bad duration %q, want e.g. 7d, 36h or 90m", s)
+		}
+		days, s = time.Duration(n)*24*time.Hour, after
+		if s == "" {
+			return days, nil
+		}
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("bad duration %q, want e.g. 7d, 36h or 90m", s)
+	}
+	return days + d, nil
+}
+
+// parseBytes parses a size: a number of bytes with an optional unit KB, MB,
+// GB or TB (powers of 1024).
+func parseBytes(s string) (int64, error) {
+	num := strings.ToUpper(strings.TrimSpace(s))
+	mult := int64(1)
+	for _, u := range []struct {
+		suffix string
+		mult   int64
+	}{{"KB", 1 << 10}, {"MB", 1 << 20}, {"GB", 1 << 30}, {"TB", 1 << 40}, {"B", 1}} {
+		if strings.HasSuffix(num, u.suffix) {
+			num, mult = strings.TrimSuffix(num, u.suffix), u.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(num), 10, 64)
+	if err != nil || n < 0 || n > (1<<62)/mult {
+		return 0, fmt.Errorf("bad size %q, want e.g. 512MB or 10GB", s)
+	}
+	return n * mult, nil
 }
 
 // parsePeers parses "1=host:port,2=host:port".
@@ -142,6 +191,9 @@ type serverConfig struct {
 	logLevel slog.Level
 	pg       pgsource.Config // pg.URL empty: no Postgres source
 	sinks    []sinkSpec
+	// retention without Block; the block sinks come from sinks.
+	retention    retention.Config
+	segmentBytes int64
 }
 
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
@@ -155,7 +207,9 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	election := fs.Int("election-ticks", 10, "minimum election timeout in ticks")
 	heartbeat := fs.Int("heartbeat-ticks", 1, "heartbeat interval in ticks")
 	snapEvery := fs.Int("snapshot-entries", 1024, "take a snapshot every N applied entries")
-	trailing := fs.Int("trailing-entries", 0, "compact the log, keeping at least N entries behind the last snapshot (0 = keep everything)")
+	retAge := fs.String("retention-age", "0", "remove log segments older than this, e.g. 7d or 36h (0 = no age limit)")
+	retBytes := fs.String("retention-bytes", "0", "remove the oldest log segments while the log is larger than this, e.g. 10GB (0 = no size limit)")
+	segBytes := fs.String("wal-segment-bytes", "64MB", "size at which a new log segment is started; retention removes whole segments")
 	noSync := fs.Bool("unsafe-no-fsync", false, "skip fsync (tests and demos only: a crash can lose committed data)")
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	pgURL := fs.String("pg-url", os.Getenv("CURNTVALV_PG_URL"), "Postgres connection URL to capture changes from (env CURNTVALV_PG_URL; empty = no source)")
@@ -196,7 +250,6 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 			HeartbeatTicks:  *heartbeat,
 			TickInterval:    *tick,
 			SnapshotEntries: *snapEvery,
-			TrailingEntries: *trailing,
 		},
 		peers:    peers,
 		dataDir:  *dataDir,
@@ -207,6 +260,15 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	}
 	if cfg.listen == "" {
 		cfg.listen = peers[*id]
+	}
+	if cfg.retention.MaxAge, err = parseAge(*retAge); err != nil {
+		return serverConfig{}, usageErr("--retention-age: %v", err)
+	}
+	if cfg.retention.MaxBytes, err = parseBytes(*retBytes); err != nil {
+		return serverConfig{}, usageErr("--retention-bytes: %v", err)
+	}
+	if cfg.segmentBytes, err = parseBytes(*segBytes); err != nil || cfg.segmentBytes == 0 {
+		return serverConfig{}, usageErr("--wal-segment-bytes: want a size above 0, e.g. 64MB")
 	}
 	names := map[string]bool{}
 	for _, f := range sinkFlags {
@@ -235,7 +297,7 @@ func serverCmd(ctx context.Context, args []string, stderr io.Writer) error {
 // runServer wires one node together and runs it until ctx is cancelled or a
 // component fails.
 func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error {
-	log, err := wal.Open(filepath.Join(cfg.dataDir, "wal"), wal.Options{NoSync: cfg.noSync})
+	log, err := wal.Open(filepath.Join(cfg.dataDir, "wal"), wal.Options{SegmentSize: cfg.segmentBytes, NoSync: cfg.noSync})
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}
@@ -251,8 +313,19 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	}
 
 	meta := fsm.New()
+	retCfg := cfg.retention
+	for _, sp := range cfg.sinks {
+		if !sp.drop {
+			retCfg.Block = append(retCfg.Block, sp.name)
+		}
+	}
+	ret := retention.New(retCfg, log, meta)
+	raftCfg := cfg.raft
+	if retCfg.MaxAge > 0 || retCfg.MaxBytes > 0 {
+		raftCfg.Retention = ret
+	}
 	tr := transport.New(cfg.raft.ID, cfg.peers, transport.Options{Logger: logger})
-	node, err := raft.NewNode(cfg.raft, storage, tr, meta)
+	node, err := raft.NewNode(raftCfg, storage, tr, meta)
 	if err != nil {
 		return err
 	}
@@ -283,7 +356,8 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 
 	gs := grpc.NewServer(grpc.MaxRecvMsgSize(transport.MaxMessageSize))
 	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
-	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, node, meta, nodeHealth{src: src, runners: runners}, cfg.peers))
+	health := nodeHealth{src: src, runners: runners, specs: cfg.sinks, ret: ret, retCfg: retCfg, log: log}
+	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, node, meta, health, cfg.peers))
 	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(reader))
 
 	lis, err := net.Listen("tcp", cfg.listen)
@@ -337,7 +411,8 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		sinkNames[i] = sp.name
 	}
 	logger.Info("curntvalv node started", "version", version, "listen", cfg.listen, "data_dir", cfg.dataDir,
-		"peers", cfg.peers, "postgres_source", src != nil, "sinks", sinkNames)
+		"peers", cfg.peers, "postgres_source", src != nil, "sinks", sinkNames,
+		"retention_age", retCfg.MaxAge, "retention_bytes", retCfg.MaxBytes, "retention_block", retCfg.Block)
 
 	var runErr error
 	select {
