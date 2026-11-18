@@ -55,7 +55,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | gRPC transport, `curntvalv server`, metadata KV | ✅ implemented |
 | Postgres source (exactly-once into the log, tested with leader kills) | ✅ implemented |
 | Sinks (ClickHouse, webhook) with stored offsets, subscribe API | ✅ implemented |
-| Retention, replay policies, chaos test | ⏳ next |
+| Retention, sink policies, replay (`sink reset`), chaos test | ✅ implemented |
 | Dashboard, metrics | planned |
 
 ## Try it: a 3-node cluster with Postgres and ClickHouse
@@ -115,6 +115,7 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `url` | ClickHouse HTTP interface, or the webhook URL |
 | `table` | Only these tables (`orders` or `public.orders`); repeat for more. Default: all |
 | `start` | `earliest` (default: the whole retained history) or `latest`, for a new sink |
+| `policy` | `block` (default): the log keeps everything the sink has not delivered. `drop`: retention cuts anyway; a sink left behind stops (`failed`) until it is reset |
 | `database`, `into` | ClickHouse database (default `default`) and table (default `curntvalv_events`) |
 
 Delivery is at-least-once: after a leader change some changes can arrive
@@ -124,6 +125,32 @@ gets a `ReplacingMergeTree` changelog table that drops copies on merge (use
 webhook body is `{"sink": "hook", "events": [...]}`; any 2xx is success,
 anything else is retried with backoff. `curntvalv status` shows each sink's
 offset, lag and last error.
+
+## Retention and replay
+
+By default the log is kept forever. Limit it per node:
+
+```bash
+--retention-age 7d          # remove log segments older than this
+--retention-bytes 10GB      # remove the oldest segments while the log is larger
+--wal-segment-bytes 64MB    # retention removes whole segments (default 64MB)
+```
+
+The log is never cut past what a `block` sink has delivered; `curntvalv
+status` shows the retention line and which sink, if any, holds it back.
+Subscribe clients keep their own position and do not hold the log: one that
+falls behind the oldest entry gets `OUT_OF_RANGE` and starts again from 0.
+
+Replay a sink, or recover one that a `drop` policy left behind:
+
+```bash
+curntvalv sink reset hook --to earliest   # everything still retained
+curntvalv sink reset hook --to latest     # skip to now
+curntvalv sink reset hook --to 1200       # continue after log index 1200
+```
+
+A sink added later starts with the oldest retained entry (or with
+`start=latest`).
 
 Without Docker, start three processes:
 
@@ -149,6 +176,7 @@ make build   # builds ./bin/curntvalv
 make test-pg # the same, plus the Postgres tests (starts Postgres in Docker)
 make test-ch # the same, plus the ClickHouse tests (starts ClickHouse in Docker)
 make test-ext # with both
+make chaos   # random faults against a real cluster and Postgres (CHAOS_TIME=2m, CHAOS_SEED=N)
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 ```
 

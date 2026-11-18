@@ -72,6 +72,7 @@ and are ready to take over.
 | `internal/source/pg`   | Postgres logical replication reader (pgoutput) |
 | `internal/event`       | Turns committed entries into row changes; shared JSON form |
 | `internal/sink`        | Sink runner (offsets, retries) + ClickHouse and webhook sinks |
+| `internal/retention`   | How much log to keep: age, size and block-sink limits (D5) |
 | `internal/transport`   | Raft messages between nodes over gRPC (D10) |
 | `internal/pb`          | Generated protobuf/gRPC code (from `proto/`) |
 | `internal/server`      | Client-facing gRPC (admin, subscribe); later HTTP (dashboard, metrics) |
@@ -143,13 +144,30 @@ not claim exactly-once in general.
 ### D5. Retention and compaction
 
 - Snapshots contain **only metadata** (the state machine), never events.
-- Retention is by age and/or size (`retention: 7d`).
-- The log may be cut only up to the index of a snapshot that is older than the
-  retention window. So a node that is far behind (or new) installs that
+- Retention is by age and/or size, per node: `--retention-age 7d`,
+  `--retention-bytes 10GB`. The default keeps everything. The log is stored
+  in segments (`--wal-segment-bytes`, default 64MB) and only whole segments
+  are removed, never the active one. A segment is removable when its last
+  write is older than the age limit, or while the log is larger than the
+  size limit (oldest first). Age is measured from the local write time, so a
+  node keeps *at least* the retention window.
+- The log may be cut only at a snapshot index at or below that limit (Raft
+  §7: compaction is a local decision of each server; the protocol does not
+  change). A node that is far behind (or new) installs the leader's base
   snapshot and then replays the retained log — it ends up with the same
   history as everyone else.
-- If a sink is further behind than retention, policy is per sink:
-  `block` (keep the log, default) or `drop` (cut anyway, mark sink as broken).
+- If a sink is further behind than retention, policy is per sink
+  (`policy=` in `--sink`): `block` (default) keeps the log — the cut point
+  never passes the sink's stored offset, and a block sink without an offset
+  keeps the whole log — or `drop` cuts anyway; the sink then stops with
+  state `failed` until it is reset (D12).
+- Implementation: `internal/retention` computes the limit from the segment
+  list of `wal` and the sink offsets in the state machine; Raft asks for it
+  (`Config.Retention`) after every snapshot and every 100 ticks, so an idle
+  cluster is cleaned up too. Snapshots newer than the cut point are kept as
+  future cut points: one small metadata file per `SnapshotEntries` entries
+  inside the retention window.
+- Subscribe clients keep their own position and never hold the log back.
 
 ### D6. Slow sinks never hold back Postgres
 
@@ -207,9 +225,10 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   it. If the log does not continue that snapshot (a crash between saving an
   installed snapshot and resetting the log), the log is reset on start.
 - **Snapshots (§7).** A snapshot is taken every `SnapshotEntries` applied
-  entries. With `TrailingEntries > 0` the log is cut at the newest snapshot
-  at least that far behind; the default 0 keeps the whole log until the
-  retention policies of D5 exist (M6). InstallSnapshot is one message (the
+  entries. The log is cut at the newest snapshot allowed by
+  `TrailingEntries` (at least that many entries behind; used by tests)
+  and by `Retention` (the policies of D5); with neither the whole log is
+  kept. InstallSnapshot is one message (the
   snapshot is metadata only, D5). The leader always sends its **base
   snapshot** — the oldest one the log continues from — not the latest, so a
   new or lagging node receives the same retained history as everyone else.
@@ -331,9 +350,20 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   offsets of other sinks) never cause an offset update by themselves, so
   offset commands do not feed each other.
 - **New sinks** start with the oldest retained entry, or with `start=latest`
-  at the current commit index. A sink whose offset was removed by log
-  compaction stops with an error (state `failed`) until leadership changes
-  or the node restarts; retention policies come with D5 (M6).
+  at the current commit index. A sink whose undelivered entries were removed
+  by log compaction (only possible with `policy=drop`, D5) stops with an
+  error (state `failed`) until it is reset, leadership changes or the node
+  restarts.
+- **Reset and replay.** `curntvalv sink reset NAME --to
+  earliest|latest|INDEX` (`AdminService.ResetSink`, leader only, configured
+  sinks only) stores a new offset through Raft — also a lower one — and
+  starts a new *generation* of the sink's offsets. Offset commands carry the
+  generation they were made for; one for another generation is ignored, so
+  a runner that has not yet seen the reset cannot move the offset forward
+  again. A runner checks the generation after every read and starts a new
+  session when it changed. `earliest` is stored as offset 0: "from the
+  oldest retained entry". Snapshot format v4 adds the generation; offset
+  commands and snapshots from M5 (generation 0) are still read.
 - **Webhook.** One POST per batch: `{"sink": NAME, "events": [...]}` with
   the shared JSON form of a change. 2xx means delivered. The
   `Idempotency-Key` header ("FIRST_ID..LAST_ID") is stable across retries of
@@ -407,6 +437,23 @@ does not send it). Converting text to typed values is the sinks' job.
 End-to-end checker: write N numbered rows while injecting faults, then verify
 that the sink contains exactly rows 1..N.
 
+The checker runs in two forms (`cmd/curntvalv`, with Postgres):
+
+- `TestEndToEndPostgresNoLossNoDuplicates` (part of `make test-pg`): leader
+  kills during a fixed workload; the log and every consumer hold each row
+  exactly once.
+- `TestChaos` (`make chaos`, `CHAOS_TIME`, default 2m): random faults from a
+  logged seed (`CHAOS_SEED` repeats a run) — SIGKILL of the leader or any
+  node, SIGSTOP of the leader for up to 3s (a stand-in for a partition;
+  real partitions are covered by the in-process Raft tests), a restart of
+  all nodes, `pg_terminate_backend` on the walsender, and webhook outages —
+  with small retention, so logs are cut and nodes install snapshots
+  meanwhile. Every consumer must hold exactly rows 1..N after
+  de-duplication by event id, and every node the same log.
+- `TestEndToEndRetentionAndReplay` (part of `make test-pg`): size retention,
+  a block sink holding the cut back, a drop sink that falls behind and is
+  recovered with a reset, a sink added by a rolling restart, and a replay.
+
 ## 6. Open questions
 
 - Subscribe API: client-managed offsets are done (D12). Server-side named
@@ -418,3 +465,7 @@ that the sink contains exactly rows 1..N.
   payloads is decided in M4.
 - In-memory offset index in `wal` costs 8 bytes per entry; switch to a sparse
   index if logs get very large.
+- Ingest throughput: the source proposes one transaction at a time and
+  waits for its commit (two fsyncs in a row), about 25 transactions a second
+  on a laptop with macOS's full fsync. Batching several transactions per
+  proposal (keeping D3's ordering) is the obvious next step; measure in M7.
