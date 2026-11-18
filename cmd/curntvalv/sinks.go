@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -8,10 +9,13 @@ import (
 	"github.com/Vympel87/curntvalv/internal/event"
 	"github.com/Vympel87/curntvalv/internal/fsm"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
+	"github.com/Vympel87/curntvalv/internal/raft"
 	"github.com/Vympel87/curntvalv/internal/retention"
+	"github.com/Vympel87/curntvalv/internal/server"
 	"github.com/Vympel87/curntvalv/internal/sink"
 	pgsource "github.com/Vympel87/curntvalv/internal/source/pg"
 	"github.com/Vympel87/curntvalv/internal/wal"
+	"github.com/Vympel87/curntvalv/internal/web"
 )
 
 // sinkSpec is one --sink flag:
@@ -132,7 +136,7 @@ func (h nodeHealth) Sinks() []*pb.SinkStatus {
 	for _, r := range h.runners {
 		st := r.Status()
 		s := &pb.SinkStatus{Name: st.Name, Type: st.Type, State: string(st.State),
-			Delivered: st.Delivered, LastError: st.LastError, Policy: "block"}
+			Delivered: st.Delivered, Failures: st.Failures, LastError: st.LastError, Policy: "block"}
 		if i := len(out); i < len(h.specs) && h.specs[i].drop {
 			s.Policy = "drop"
 		}
@@ -152,4 +156,22 @@ func (h nodeHealth) Retention() *pb.RetentionStatus {
 	}
 	return &pb.RetentionStatus{MaxAgeSeconds: int64(h.retCfg.MaxAge / time.Second), MaxBytes: h.retCfg.MaxBytes,
 		LogBytes: size, CompactLimit: st.Limit, BlockedBy: st.BlockedBy}
+}
+
+// counters collects the event counters of this node for /metrics.
+func counters(ctx context.Context, node *raft.Node, src *pgsource.Source, sub *server.Subscribe) web.Counters {
+	var c web.Counters
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if st, err := node.Status(ctx); err == nil {
+		rc := st.Counters
+		c.Elections, c.BecameLeader, c.SnapshotsTaken, c.SnapshotsInstalled = rc.Elections, rc.BecameLeader, rc.SnapshotsTaken, rc.SnapshotsInstalled
+	}
+	if src != nil {
+		ss := src.Stats()
+		c.SourceBatches, c.SourceTransactions, c.SourceEvents = ss.Batches, ss.Transactions, ss.Events
+	}
+	ss := sub.Stats()
+	c.SubscribeStreams, c.SubscribeSent = ss.Active, ss.Sent
+	return c
 }

@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -39,6 +40,7 @@ import (
 	pgsource "github.com/Vympel87/curntvalv/internal/source/pg"
 	"github.com/Vympel87/curntvalv/internal/transport"
 	"github.com/Vympel87/curntvalv/internal/wal"
+	"github.com/Vympel87/curntvalv/internal/web"
 )
 
 var version = "0.0.0-dev"
@@ -194,6 +196,7 @@ type serverConfig struct {
 	// retention without Block; the block sinks come from sinks.
 	retention    retention.Config
 	segmentBytes int64
+	httpListen   string // empty: no HTTP server
 }
 
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
@@ -210,6 +213,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	retAge := fs.String("retention-age", "0", "remove log segments older than this, e.g. 7d or 36h (0 = no age limit)")
 	retBytes := fs.String("retention-bytes", "0", "remove the oldest log segments while the log is larger than this, e.g. 10GB (0 = no size limit)")
 	segBytes := fs.String("wal-segment-bytes", "64MB", "size at which a new log segment is started; retention removes whole segments")
+	httpListen := fs.String("http-listen", "127.0.0.1:8080", "address for the dashboard, /metrics, /healthz and /readyz (empty = off); there is no authentication")
 	noSync := fs.Bool("unsafe-no-fsync", false, "skip fsync (tests and demos only: a crash can lose committed data)")
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	pgURL := fs.String("pg-url", os.Getenv("CURNTVALV_PG_URL"), "Postgres connection URL to capture changes from (env CURNTVALV_PG_URL; empty = no source)")
@@ -251,12 +255,13 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 			TickInterval:    *tick,
 			SnapshotEntries: *snapEvery,
 		},
-		peers:    peers,
-		dataDir:  *dataDir,
-		listen:   *listen,
-		noSync:   *noSync,
-		logLevel: level,
-		pg:       pgsource.Config{URL: *pgURL, Slot: *pgSlot, Publication: *pgPub},
+		peers:      peers,
+		dataDir:    *dataDir,
+		listen:     *listen,
+		noSync:     *noSync,
+		logLevel:   level,
+		pg:         pgsource.Config{URL: *pgURL, Slot: *pgSlot, Publication: *pgPub},
+		httpListen: *httpListen,
 	}
 	if cfg.listen == "" {
 		cfg.listen = peers[*id]
@@ -357,8 +362,10 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	gs := grpc.NewServer(grpc.MaxRecvMsgSize(transport.MaxMessageSize))
 	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
 	health := nodeHealth{src: src, runners: runners, specs: cfg.sinks, ret: ret, retCfg: retCfg, log: log}
-	pb.RegisterAdminServiceServer(gs, server.NewAdmin(node, node, meta, health, cfg.peers))
-	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(reader))
+	admin := server.NewAdmin(node, node, meta, health, cfg.peers)
+	subscribe := server.NewSubscribe(reader)
+	pb.RegisterAdminServiceServer(gs, admin)
+	pb.RegisterSubscribeServiceServer(gs, subscribe)
 
 	lis, err := net.Listen("tcp", cfg.listen)
 	if err != nil {
@@ -367,8 +374,40 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	var hs *http.Server
+	var hlis net.Listener
+	if cfg.httpListen != "" {
+		if hlis, err = net.Listen("tcp", cfg.httpListen); err != nil {
+			lis.Close()
+			return fmt.Errorf("listen on %s: %w", cfg.httpListen, err)
+		}
+		peers := web.NewGRPCPeers()
+		defer peers.Close()
+		addrs := make([]string, 0, len(cfg.raft.Peers))
+		for _, id := range cfg.raft.Peers {
+			addrs = append(addrs, cfg.peers[id])
+		}
+		ws := web.New(web.Config{Version: version, Peers: addrs, Self: cfg.peers[cfg.raft.ID], Logger: logger,
+			Counters: func(ctx context.Context) web.Counters { return counters(ctx, node, src, subscribe) }},
+			admin, peers, reader)
+		// Requests end with the node, so open change feeds do not delay
+		// the shutdown.
+		hs = &http.Server{Handler: ws.Handler(), ReadHeaderTimeout: 10 * time.Second,
+			BaseContext: func(net.Listener) context.Context { return ctx }}
+	}
+
 	var wg sync.WaitGroup
-	errc := make(chan error, 4+len(runners))
+	errc := make(chan error, 5+len(runners))
+	if hs != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := hs.Serve(hlis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errc <- fmt.Errorf("http server: %w", err)
+			}
+		}()
+	}
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
@@ -410,7 +449,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	for i, sp := range cfg.sinks {
 		sinkNames[i] = sp.name
 	}
-	logger.Info("curntvalv node started", "version", version, "listen", cfg.listen, "data_dir", cfg.dataDir,
+	logger.Info("curntvalv node started", "version", version, "listen", cfg.listen, "http", cfg.httpListen, "data_dir", cfg.dataDir,
 		"peers", cfg.peers, "postgres_source", src != nil, "sinks", sinkNames,
 		"retention_age", retCfg.MaxAge, "retention_bytes", retCfg.MaxBytes, "retention_block", retCfg.Block)
 
@@ -422,6 +461,13 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		logger.Error("stopping after failure", "err", runErr)
 	}
 	cancel()
+	if hs != nil {
+		sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if hs.Shutdown(sctx) != nil {
+			hs.Close()
+		}
+		scancel()
+	}
 	// Peer streams never end on their own, so give in-flight admin calls a
 	// moment and then close everything.
 	stopped := make(chan struct{})

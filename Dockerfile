@@ -14,5 +14,6 @@ COPY --from=build /out/curntvalv /usr/local/bin/curntvalv
 # Owned by the nonroot user so a fresh named volume mounted here is writable.
 COPY --from=build --chown=65532:65532 /out/data /data
 USER nonroot
-EXPOSE 7000
+# 7000: gRPC (Raft, admin, subscribe); 8080: dashboard and /metrics (--http-listen)
+EXPOSE 7000 8080
 ENTRYPOINT ["curntvalv"]

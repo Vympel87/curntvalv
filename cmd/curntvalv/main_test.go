@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -125,6 +126,7 @@ type e2eCluster struct {
 	bin   string
 	dir   string
 	addrs []string
+	https []string // HTTP addresses (--http-listen)
 	peers string
 	procs map[int]*proc
 	args  []string            // server flags besides id, peers, data dir
@@ -188,6 +190,7 @@ func newE2EWith(t *testing.T, env []string, args ...string) *e2eCluster {
 	for i := 1; i <= 3; i++ {
 		addr := freePort(t)
 		c.addrs = append(c.addrs, addr)
+		c.https = append(c.https, freePort(t))
 		peers = append(peers, fmt.Sprintf("%d=%s", i, addr))
 	}
 	c.peers = strings.Join(peers, ",")
@@ -220,7 +223,8 @@ func (c *e2eCluster) start(i int) {
 	}
 	fmt.Fprintf(logs, "--- start ---\n")
 	args := []string{"server", "--id", fmt.Sprint(i), "--peers", c.peers,
-		"--data-dir", filepath.Join(c.dir, fmt.Sprintf("node%d", i)), "--tick", "20ms", "--log-level", "debug"}
+		"--data-dir", filepath.Join(c.dir, fmt.Sprintf("node%d", i)), "--tick", "20ms", "--log-level", "debug",
+		"--http-listen", c.https[i-1]}
 	cmd := exec.Command(c.bin, append(args, c.args...)...)
 	cmd.Env = append(os.Environ(), c.env...)
 	cmd.Stdout, cmd.Stderr = logs, logs
@@ -327,6 +331,8 @@ func TestEndToEndKillLeader(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	checkHTTP(t, c)
+
 	// --retention-bytes 512 with 200 byte segments: every log was cut.
 	out := c.mustCLI("status")
 	for _, line := range strings.Split(out, "\n")[1:4] {
@@ -336,6 +342,105 @@ func TestEndToEndKillLeader(t *testing.T) {
 	}
 	if !strings.Contains(out, "RETENTION max size 512 B") {
 		t.Fatalf("status without retention:\n%s", out)
+	}
+}
+
+// feed reads /api/events from the first live node, from the start of the
+// log, until it has want distinct events (or 30s pass).
+func (c *e2eCluster) feed(t *testing.T, table string, want int) (map[string]string, int) {
+	t.Helper()
+	ids, n := map[string]string{}, 0
+	for i, h := range c.https {
+		if c.procs[i+1] == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+h+"/api/events?from=1&table="+table, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+		sc := bufio.NewScanner(resp.Body)
+		for len(ids) < want && sc.Scan() {
+			data, ok := strings.CutPrefix(sc.Text(), "data: ")
+			if !ok {
+				continue
+			}
+			var e event.JSON
+			if err := json.Unmarshal([]byte(data), &e); err != nil {
+				t.Fatalf("feed event %q: %v", data, err)
+			}
+			row, _ := e.After["id"].(string)
+			ids[e.ID] = row
+			n++
+		}
+		return ids, n
+	}
+	return ids, n
+}
+
+// checkHTTP checks the HTTP endpoints of a running cluster (design D13)
+// after a leader change: every node is ready, shows the whole cluster with
+// one leader, and exports metrics.
+func checkHTTP(t *testing.T, c *e2eCluster) {
+	t.Helper()
+	httpGet := func(url string) (int, string) {
+		resp, err := http.Get(url)
+		if err != nil {
+			return 0, err.Error()
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	for i, h := range c.https {
+		base := "http://" + h
+		waitE2E(t, fmt.Sprintf("node %d ready", i+1), 15*time.Second, func() bool { code, _ := httpGet(base + "/readyz"); return code == 200 })
+		var view struct {
+			Nodes []struct {
+				Addr  string `json:"addr"`
+				State string `json:"state"`
+			} `json:"nodes"`
+		}
+		waitE2E(t, fmt.Sprintf("node %d to see one leader", i+1), 15*time.Second, func() bool {
+			code, body := httpGet(base + "/api/status")
+			if code != 200 || json.Unmarshal([]byte(body), &view) != nil || len(view.Nodes) != 3 {
+				return false
+			}
+			leaders := 0
+			for _, n := range view.Nodes {
+				if n.State == "unreachable" {
+					return false
+				}
+				if n.State == "leader" {
+					leaders++
+				}
+			}
+			return leaders == 1
+		})
+		code, metrics := httpGet(base + "/metrics")
+		if code != 200 || !strings.Contains(metrics, "curntvalv_raft_commit_index ") ||
+			!strings.Contains(metrics, fmt.Sprintf(`curntvalv_info{version="0.0.0-dev",node="%d"} 1`, i+1)) {
+			t.Fatalf("node %d metrics: %d\n%.500s", i+1, code, metrics)
+		}
+		if code, page := httpGet(base + "/"); code != 200 || !strings.Contains(page, "curntValv") {
+			t.Fatalf("node %d dashboard: %d", i+1, code)
+		}
+	}
+	// The cluster lost a leader, so somebody won an election since.
+	won := 0
+	for _, h := range c.https {
+		_, m := httpGet("http://" + h + "/metrics")
+		for _, line := range strings.Split(m, "\n") {
+			if v, ok := strings.CutPrefix(line, "curntvalv_raft_became_leader_total "); ok && v != "0" {
+				won++
+			}
+		}
+	}
+	if won == 0 {
+		t.Fatal("no node reports a won election")
 	}
 }
 
@@ -490,6 +595,7 @@ func TestEndToEndPostgresNoLossNoDuplicates(t *testing.T) {
 			return ids, len(lines)
 		})
 	}
+	checkConsumer("dashboard feed", func() (map[string]string, int) { return c.feed(t, table, rows) })
 	if n := c.logCount("sink started"); n < 4 {
 		t.Fatalf("sinks started %d times; expected them to move with the leader", n)
 	}
