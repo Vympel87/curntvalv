@@ -54,9 +54,17 @@ type Config struct {
 	SnapshotEntries int
 	// TrailingEntries enables log compaction: the log is cut at the newest
 	// snapshot that is at least this many entries behind the last applied
-	// entry. 0 (the default) never cuts the log. The retention policies of
-	// design D5 (by age/size) build on this later.
+	// entry. 0 (the default) does not limit the cut point.
 	TrailingEntries int
+	// Retention, if set, enables log compaction and limits the cut point:
+	// the log is cut at the newest snapshot at or below CompactLimit (design
+	// D5). It is asked after every snapshot and every CompactTicks ticks.
+	// With both TrailingEntries and Retention the lower limit wins; with
+	// neither the log is never cut.
+	Retention Retention
+	// CompactTicks is how often (in ticks) Retention is asked again while no
+	// snapshot is taken. Default 100.
+	CompactTicks int
 	// Seed seeds the election timeout randomness. 0 picks a random seed.
 	Seed uint64
 }
@@ -77,6 +85,9 @@ func (c *Config) setDefaults() error {
 	if c.SnapshotEntries == 0 {
 		c.SnapshotEntries = 1024
 	}
+	if c.CompactTicks == 0 {
+		c.CompactTicks = 100
+	}
 	if c.Seed == 0 {
 		c.Seed = rand.Uint64()
 	}
@@ -86,8 +97,8 @@ func (c *Config) setDefaults() error {
 	if c.HeartbeatTicks < 1 || c.ElectionTicks <= c.HeartbeatTicks {
 		return errors.New("raft: config: need 1 <= HeartbeatTicks < ElectionTicks")
 	}
-	if c.TickInterval < 0 || c.MaxEntriesPerMsg < 1 || c.SnapshotEntries < 1 || c.TrailingEntries < 0 {
-		return errors.New("raft: config: invalid TickInterval, MaxEntriesPerMsg, SnapshotEntries or TrailingEntries")
+	if c.TickInterval < 0 || c.MaxEntriesPerMsg < 1 || c.SnapshotEntries < 1 || c.TrailingEntries < 0 || c.CompactTicks < 1 {
+		return errors.New("raft: config: invalid TickInterval, MaxEntriesPerMsg, SnapshotEntries, TrailingEntries or CompactTicks")
 	}
 	seen := map[uint64]bool{}
 	for _, p := range c.Peers {
@@ -100,6 +111,13 @@ func (c *Config) setDefaults() error {
 		return fmt.Errorf("raft: config: Peers must contain ID %d", c.ID)
 	}
 	return nil
+}
+
+// Retention decides how much of the log must be kept (design D5).
+type Retention interface {
+	// CompactLimit returns the highest log index that may be removed. It is
+	// called from the node's Run goroutine and must not block.
+	CompactLimit() uint64
 }
 
 // Storage groups the durable stores of a node.
@@ -162,8 +180,10 @@ type raft struct {
 	// Volatile state on all servers.
 	commitIndex uint64
 	lastApplied uint64
-	state       StateType
-	leader      uint64
+	// Ticks since compaction was last checked (with Retention).
+	compactElapsed int
+	state          StateType
+	leader         uint64
 
 	electionElapsed  int
 	electionTimeout  int
@@ -445,6 +465,17 @@ func (r *raft) becomeLeader() error {
 
 // tick advances the logical clock by one tick.
 func (r *raft) tick() error {
+	if r.cfg.Retention != nil {
+		r.compactElapsed++
+		if r.compactElapsed >= r.cfg.CompactTicks {
+			r.compactElapsed = 0
+			if len(r.snapshots) > 0 {
+				if err := r.compact(); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	if r.state == StateLeader {
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.cfg.HeartbeatTicks {
@@ -842,20 +873,18 @@ func (r *raft) maybeSnapshot() error {
 	return r.compact()
 }
 
-// compact cuts the log at the newest snapshot that is at least
-// TrailingEntries behind lastApplied, then deletes snapshots that are no
-// longer needed. Kept are: the latest (for restarts), the base, i.e. the
-// oldest one covering the start of the log (for InstallSnapshot), and every
-// snapshot newer than the current cut point (future cut points).
+// compact cuts the log at the newest snapshot allowed by TrailingEntries
+// and Retention, then deletes snapshots that are no longer needed. Kept are:
+// the latest (for restarts), the base, i.e. the oldest one covering the
+// start of the log (for InstallSnapshot), and every snapshot newer than the
+// current cut point (future cut points).
 func (r *raft) compact() error {
 	keep := r.snapshots[len(r.snapshots)-1].Index
-	if tr := uint64(r.cfg.TrailingEntries); tr > 0 {
+	if limit, ok := r.compactLimit(); ok {
 		var cut uint64
-		if r.lastApplied > tr {
-			for _, s := range r.snapshots {
-				if s.Index <= r.lastApplied-tr {
-					cut = s.Index
-				}
+		for _, s := range r.snapshots {
+			if s.Index <= limit {
+				cut = s.Index
 			}
 		}
 		if cut > 0 && cut+1 > r.log.FirstIndex() {
@@ -873,6 +902,23 @@ func (r *raft) compact() error {
 		keep = min(keep, base.Index)
 	}
 	return r.dropSnapshotsBefore(keep)
+}
+
+// compactLimit returns the highest index the log may be cut at. ok is false
+// when compaction is disabled.
+func (r *raft) compactLimit() (limit uint64, ok bool) {
+	tr, ret := uint64(r.cfg.TrailingEntries), r.cfg.Retention
+	if tr == 0 && ret == nil {
+		return 0, false
+	}
+	limit = r.lastApplied
+	if tr > 0 {
+		limit = r.lastApplied - min(tr, r.lastApplied)
+	}
+	if ret != nil {
+		limit = min(limit, ret.CompactLimit())
+	}
+	return limit, true
 }
 
 // baseSnapshot returns the oldest snapshot from which the log continues

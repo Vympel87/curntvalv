@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -303,4 +304,78 @@ func TestNodeClusterCompactsAndRecovers(t *testing.T) {
 	if !compacted {
 		t.Fatal("no node compacted its log")
 	}
+}
+
+// fixedRetention is a Retention with a limit the test moves.
+type fixedRetention struct{ limit atomic.Uint64 }
+
+func (f *fixedRetention) CompactLimit() uint64 { return f.limit.Load() }
+
+// With Retention the log is cut only up to its limit; a raised limit is
+// picked up by the periodic check, without a new snapshot (design D5).
+func TestRetentionLimitsCompaction(t *testing.T) {
+	ret := &fixedRetention{}
+	c := newClusterCfg(t, 3, 23, func(cfg *Config) {
+		cfg.SnapshotEntries, cfg.Retention, cfg.CompactTicks = 10, ret, 5
+	})
+	l := c.waitLeader()
+	var last uint64
+	for i := range 60 {
+		last = c.propose(l, fmt.Sprintf("v%d", i))
+	}
+	c.waitApplied(last)
+	c.run(10)
+	for _, id := range c.ids {
+		if first := c.logs[id].FirstIndex(); first != 1 {
+			t.Fatalf("node %d cut its log to %d with limit 0", id, first)
+		}
+		// Every snapshot is kept: each one is a future cut point.
+		if n := len(c.snaps[id].metas); n < 5 {
+			t.Fatalf("node %d keeps %d snapshots", id, n)
+		}
+	}
+
+	ret.limit.Store(35)
+	c.run(10) // no new entries: only the periodic check runs
+	for _, id := range c.ids {
+		first := c.logs[id].FirstIndex()
+		snaps := c.snaps[id].metas
+		if first <= 1 || first > 36 {
+			t.Fatalf("node %d log starts at %d with limit 35", id, first)
+		}
+		if snaps[0].Index > 35 || snaps[0].Index+1 < first {
+			t.Fatalf("node %d snapshots %v, log starts at %d", id, snaps, first)
+		}
+	}
+
+	// TrailingEntries and Retention together: the lower limit wins.
+	ret.limit.Store(last)
+	for _, id := range c.ids {
+		c.rafts[id].cfg.TrailingEntries = 30
+	}
+	c.run(10)
+	for _, id := range c.ids {
+		if first := c.logs[id].FirstIndex(); first > last-30+1 {
+			t.Fatalf("node %d log starts at %d, trailing 30 of %d", id, first, last)
+		}
+	}
+
+	// A follower behind the cut gets the base snapshot.
+	f := c.ids[0]
+	if f == l {
+		f = c.ids[1]
+	}
+	c.crash(f)
+	for i := range 40 {
+		last = c.propose(l, fmt.Sprintf("w%d", i))
+	}
+	ret.limit.Store(last)
+	c.waitApplied(last)
+	before := c.net.delivered[MsgSnap]
+	c.start(f)
+	c.waitApplied(last)
+	if c.net.delivered[MsgSnap] == before {
+		t.Fatal("restarted follower did not receive a snapshot")
+	}
+	c.checkLogMatching()
 }
