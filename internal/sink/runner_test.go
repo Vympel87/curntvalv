@@ -351,7 +351,7 @@ func TestRunnerFailsWhenBehindCompaction(t *testing.T) {
 	h := newHarness(t)
 	h.node.ingest(t, 100, "orders", 1)
 	h.node.ingest(t, 200, "orders", 2)
-	b, _ := fsm.EncodeSinkOffset("test", 1) // delivered entry 1 only
+	b, _ := fsm.EncodeSinkOffset("test", 0, 1) // delivered entry 1 only
 	h.node.Propose(context.Background(), b)
 	h.node.mu.Lock()
 	h.node.first, h.node.log = 3, h.node.log[2:] // entry 2 compacted away
@@ -363,6 +363,49 @@ func TestRunnerFailsWhenBehindCompaction(t *testing.T) {
 	}
 	if len(h.sink.got()) != 0 {
 		t.Fatalf("delivered %v", h.sink.got())
+	}
+
+	// A reset to the oldest retained entry brings it back, in the same term.
+	h.node.ingest(t, 300, "orders", 3)
+	h.reset("test", 0)
+	h.waitRows("orders:3")
+	waitFor(t, "running", func() bool { return r.Status().State == StateRunning })
+}
+
+func (h *harness) reset(name string, offset uint64) {
+	h.t.Helper()
+	b, err := fsm.EncodeSinkReset(name, offset)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if _, err := h.node.Propose(context.Background(), b); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// A reset replays history to a running sink, and offsets stored by the old
+// session no longer count (design D12).
+func TestRunnerReplaysAfterReset(t *testing.T) {
+	h := newHarness(t)
+	h.node.ingest(t, 100, "orders", 1)
+	h.node.ingest(t, 200, "orders", 2)
+	r, _ := h.run(Config{})
+	h.waitRows("orders:1", "orders:2")
+	waitFor(t, "offset", func() bool { return h.offset("test") == 2 })
+
+	h.reset("test", 1) // replay everything after entry 1
+	h.waitRows("orders:1", "orders:2", "orders:2")
+	h.reset("test", 0) // replay from the start
+	h.waitRows("orders:1", "orders:2", "orders:2", "orders:1", "orders:2")
+	h.node.ingest(t, 300, "orders", 3)
+	h.waitRows("orders:1", "orders:2", "orders:2", "orders:1", "orders:2", "orders:3")
+	pos, _ := h.node.f.SinkPosition("test")
+	if pos.Gen != 2 {
+		t.Fatalf("position %+v", pos)
+	}
+	waitFor(t, "offset", func() bool { p, _ := h.node.f.SinkPosition("test"); return p.Offset >= 6 })
+	if r.Status().State != StateRunning {
+		t.Fatalf("status %+v", r.Status())
 	}
 }
 

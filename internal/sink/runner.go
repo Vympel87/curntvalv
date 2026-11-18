@@ -39,9 +39,9 @@ type Reader interface {
 	Read(ctx context.Context, from uint64, max int, filter event.Filter) (event.Result, error)
 }
 
-// Offsets reads stored sink offsets. *fsm.FSM implements it.
+// Offsets reads stored sink positions. *fsm.FSM implements it.
 type Offsets interface {
-	SinkOffset(name string) (uint64, bool)
+	SinkPosition(name string) (fsm.SinkPosition, bool)
 }
 
 // Config configures one runner.
@@ -81,7 +81,7 @@ const (
 	StateStandby  State = "standby"  // not the leader; another node delivers
 	StateRunning  State = "running"  // delivering or waiting for changes
 	StateRetrying State = "retrying" // the last delivery failed
-	StateFailed   State = "failed"   // stopped until leadership changes or restart
+	StateFailed   State = "failed"   // stopped until a reset, a leadership change or a restart
 )
 
 // Status is a runner's view of its sink. The stored offset is in the state
@@ -162,12 +162,12 @@ func (r *Runner) addDelivered(n int) {
 }
 
 // Run delivers while this node is the leader, until ctx is cancelled. Errors
-// are retried; only ErrCompacted stops the sink, until leadership changes or
-// the process restarts.
+// are retried; only ErrCompacted stops the sink, until it is reset,
+// leadership changes or the process restarts.
 func (r *Runner) Run(ctx context.Context) error {
 	const poll = 200 * time.Millisecond
 	backoff := r.cfg.RetryMin
-	var failedTerm uint64
+	var failedTerm, failedGen uint64
 	for {
 		select {
 		case <-ctx.Done():
@@ -187,18 +187,21 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		if st.Term == failedTerm {
+		if st.Term == failedTerm && r.gen() == failedGen {
 			continue
 		}
 		err = r.whileLeader(ctx, st.Term)
 		switch {
 		case ctx.Err() != nil:
 			return nil
+		case errors.Is(err, errReset):
+			backoff = r.cfg.RetryMin
+			r.log.Info("sink reset; restarting from the new offset")
 		case err == nil, errors.Is(err, errNotLeader):
 			backoff = r.cfg.RetryMin
 			r.setState(StateStandby, nil)
 		case errors.Is(err, ErrCompacted):
-			failedTerm = st.Term
+			failedTerm, failedGen = st.Term, r.gen()
 			r.setState(StateFailed, err)
 			r.log.Error("sink stopped; it is further behind than the retained log", "err", err)
 		default:
@@ -214,7 +217,16 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-var errNotLeader = errors.New("sink: no longer the leader")
+var (
+	errNotLeader = errors.New("sink: no longer the leader")
+	errReset     = errors.New("sink: reset")
+)
+
+// gen returns the sink's stored generation.
+func (r *Runner) gen() uint64 {
+	pos, _ := r.offsets.SinkPosition(r.cfg.Name)
+	return pos.Gen
+}
 
 // whileLeader runs one session and cancels it as soon as this node stops
 // being the leader of term.
@@ -251,9 +263,10 @@ func (r *Runner) session(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	offset, ok := r.offsets.SinkOffset(r.cfg.Name)
+	pos, ok := r.offsets.SinkPosition(r.cfg.Name)
+	offset, gen := pos.Offset, pos.Gen
 	if !ok && r.cfg.StartLatest {
-		if err := r.commit(ctx, idx); err != nil {
+		if err := r.commit(ctx, gen, idx); err != nil {
 			return err
 		}
 		offset = idx
@@ -263,7 +276,7 @@ func (r *Runner) session(ctx context.Context) error {
 		from = offset + 1
 	}
 	r.setState(StateRunning, nil)
-	r.log.Info("sink started", "offset", offset)
+	r.log.Info("sink started", "offset", offset, "generation", gen)
 
 	var pending uint64 // offset to store for entries without matching changes
 	lastCommit := time.Now()
@@ -277,9 +290,12 @@ func (r *Runner) session(ctx context.Context) error {
 		switch {
 		case ctx.Err() != nil:
 			return ctx.Err()
+		case r.gen() != gen:
+			// Reset: what was read belongs to the old position.
+			return errReset
 		case errors.Is(err, context.DeadlineExceeded):
 			// Idle with skipped entries: store how far we got.
-			if err := r.commit(ctx, pending); err != nil {
+			if err := r.commit(ctx, gen, pending); err != nil {
 				return err
 			}
 			pending, lastCommit = 0, time.Now()
@@ -295,7 +311,7 @@ func (r *Runner) session(ctx context.Context) error {
 				pending = res.Next - 1
 			}
 			if pending > 0 && time.Since(lastCommit) >= r.cfg.SkipCommitInterval {
-				if err := r.commit(ctx, pending); err != nil {
+				if err := r.commit(ctx, gen, pending); err != nil {
 					return err
 				}
 				pending, lastCommit = 0, time.Now()
@@ -305,7 +321,7 @@ func (r *Runner) session(ctx context.Context) error {
 		if err := r.deliver(ctx, res.Changes); err != nil {
 			return err
 		}
-		if err := r.commit(ctx, res.Next-1); err != nil {
+		if err := r.commit(ctx, gen, res.Next-1); err != nil {
 			return err
 		}
 		pending, lastCommit = 0, time.Now()
@@ -342,9 +358,9 @@ func (r *Runner) deliver(ctx context.Context, changes []event.Change) error {
 	return nil
 }
 
-// commit stores offset through Raft.
-func (r *Runner) commit(ctx context.Context, offset uint64) error {
-	data, err := fsm.EncodeSinkOffset(r.cfg.Name, offset)
+// commit stores offset for generation gen through Raft.
+func (r *Runner) commit(ctx context.Context, gen, offset uint64) error {
+	data, err := fsm.EncodeSinkOffset(r.cfg.Name, gen, offset)
 	if err != nil {
 		return err
 	}

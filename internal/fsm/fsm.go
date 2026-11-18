@@ -38,6 +38,7 @@ const (
 	opPut        op = 1
 	opDelete     op = 2
 	opSinkOffset op = 3
+	opSinkReset  op = 4
 )
 
 const (
@@ -46,7 +47,7 @@ const (
 	// MaxValueSize is the largest allowed value in bytes.
 	MaxValueSize = 1 << 20
 
-	snapshotVersion = 3
+	snapshotVersion = 4
 )
 
 var (
@@ -109,7 +110,7 @@ type FSM struct {
 	kv      map[string][]byte
 	src     SourceState
 	schemas map[uint64]*pb.Schema
-	sinks   map[string]uint64
+	sinks   map[string]SinkPosition
 	// lastChange is the index of the last applied entry with row changes.
 	lastChange uint64
 	applied    uint64
@@ -119,7 +120,7 @@ type FSM struct {
 
 // New returns an empty state machine.
 func New() *FSM {
-	return &FSM{kv: map[string][]byte{}, schemas: map[uint64]*pb.Schema{}, sinks: map[string]uint64{},
+	return &FSM{kv: map[string][]byte{}, schemas: map[uint64]*pb.Schema{}, sinks: map[string]SinkPosition{},
 		changed: make(chan struct{})}
 }
 
@@ -184,6 +185,8 @@ func (f *FSM) applyMeta(b []byte) error {
 		delete(f.kv, string(key))
 	case opSinkOffset:
 		return f.applySinkOffset(key, rest)
+	case opSinkReset:
+		return f.applySinkReset(key, rest)
 	default:
 		return fmt.Errorf("%w: unknown meta op %d", ErrCorrupt, b[0])
 	}
@@ -223,11 +226,13 @@ func (f *FSM) AppliedIndex() uint64 {
 //	| version u8 | applied u64 | count uvarint | (key, value)* |
 //	| commit_lsn u64 | end_lsn u64 | partial_lsn u64 | partial_next_seq u32 |
 //	| anomalies u64 | schema count uvarint | schema* |
-//	| sink count uvarint | (sink name, offset u64)* | last change index u64 |
+//	| sink count uvarint | (sink name, offset u64, generation u64)* |
+//	| last change index u64 |
 //
 // with keys in sorted order, schemas in id order, sinks in name order, and
-// each key, value, schema (protobuf) and sink name length-prefixed. Version 2
-// (without the sink section) is still restored.
+// each key, value, schema (protobuf) and sink name length-prefixed. Version 3
+// (sinks without generation) and version 2 (without the sink section) are
+// still restored.
 func (f *FSM) Snapshot() ([]byte, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -269,14 +274,15 @@ func (f *FSM) Snapshot() ([]byte, error) {
 	b = binary.AppendUvarint(b, uint64(len(names)))
 	for _, n := range names {
 		b = appendBytes(b, []byte(n))
-		b = binary.LittleEndian.AppendUint64(b, f.sinks[n])
+		b = binary.LittleEndian.AppendUint64(b, f.sinks[n].Offset)
+		b = binary.LittleEndian.AppendUint64(b, f.sinks[n].Gen)
 	}
 	return binary.LittleEndian.AppendUint64(b, f.lastChange), nil
 }
 
 // Restore replaces the whole state with a snapshot.
 func (f *FSM) Restore(b []byte) error {
-	if len(b) < 9 || (b[0] != snapshotVersion && b[0] != 2) {
+	if len(b) < 9 || b[0] < 2 || b[0] > snapshotVersion {
 		return fmt.Errorf("%w: bad snapshot header", ErrCorrupt)
 	}
 	applied := binary.LittleEndian.Uint64(b[1:9])
@@ -327,7 +333,7 @@ func (f *FSM) Restore(b []byte) error {
 		schemas[sc.GetId()] = sc
 		rest = r
 	}
-	sinks := map[string]uint64{}
+	sinks := map[string]SinkPosition{}
 	var lastChange uint64
 	if b[0] >= 3 {
 		nk, k := binary.Uvarint(rest)
@@ -336,12 +342,20 @@ func (f *FSM) Restore(b []byte) error {
 		}
 		rest = rest[k:]
 		for range nk {
+			size := 8
+			if b[0] >= 4 {
+				size = 16
+			}
 			name, r, ok := readBytes(rest)
-			if !ok || len(r) < 8 {
+			if !ok || len(r) < size {
 				return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
 			}
-			sinks[string(name)] = binary.LittleEndian.Uint64(r[:8])
-			rest = r[8:]
+			pos := SinkPosition{Offset: binary.LittleEndian.Uint64(r[:8])}
+			if size == 16 {
+				pos.Gen = binary.LittleEndian.Uint64(r[8:16])
+			}
+			sinks[string(name)] = pos
+			rest = r[size:]
 		}
 		if len(rest) < 8 {
 			return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)

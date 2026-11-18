@@ -117,7 +117,7 @@ func TestStatusReportsHealth(t *testing.T) {
 		tb, _ := fsm.EncodeTxBatch(&pb.TxBatch{CommitLsn: uint64(i + 1), Final: true, Events: []*pb.Event{{Op: pb.Op_OP_INSERT}}})
 		n.Propose(ctx, tb)
 	}
-	b, _ := fsm.EncodeSinkOffset("ch", 3)
+	b, _ := fsm.EncodeSinkOffset("ch", 0, 3)
 	n.Propose(ctx, b) // index 6
 	a.Put(ctx, &pb.PutRequest{Key: "k", Value: []byte("v")})
 	st, err := a.Status(ctx, &pb.StatusRequest{})
