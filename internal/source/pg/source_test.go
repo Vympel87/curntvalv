@@ -64,13 +64,7 @@ func newPGEnv(t *testing.T) *pgEnv {
 	t.Cleanup(func() {
 		ctx := context.Background()
 		// The slot may still be held for a moment by a stopping reader.
-		for range 50 {
-			db.Exec(ctx, "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name = $1 AND active_pid IS NOT NULL", e.slot)
-			if _, err := db.Exec(ctx, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name = $1", e.slot); err == nil {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		dropSlot(ctx, db, e.slot)
 		db.Exec(ctx, "DROP PUBLICATION IF EXISTS "+e.pub)
 		db.Exec(ctx, "DROP TABLE IF EXISTS "+e.table)
 		db.Close(ctx)
@@ -226,11 +220,7 @@ func TestIngestChanges(t *testing.T) {
 	n := startNode(t, t.TempDir())
 	runSource(t, e.config(Limits{}), n)
 	// Wait until the slot exists, so the changes below are captured.
-	waitFor(t, "slot", 10*time.Second, func() bool {
-		var ok bool
-		e.db.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name=$1)", e.slot).Scan(&ok)
-		return ok
-	})
+	e.waitSlot()
 
 	e.exec(fmt.Sprintf("INSERT INTO %s VALUES (1, 'a'), (2, 'b')", e.table))
 	e.exec(fmt.Sprintf("UPDATE %s SET note = 'c' WHERE id = 1", e.table))
@@ -259,11 +249,19 @@ func TestIngestChanges(t *testing.T) {
 	}
 }
 
+// slotReady is true when slot $1 exists and no walsender is still creating
+// it.
+const slotReady = `SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1) AND NOT EXISTS (
+	SELECT 1 FROM pg_stat_activity WHERE backend_type = 'walsender' AND state = 'active'
+	AND query LIKE 'CREATE_REPLICATION_SLOT ' || $1 || ' %')`
+
 func (e *pgEnv) waitSlot() {
 	e.t.Helper()
 	waitFor(e.t, "slot", 10*time.Second, func() bool {
 		var ok bool
-		e.db.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name=$1)", e.slot).Scan(&ok)
+		// A logical slot is listed while it is still being created (waiting
+		// for a consistent point); stopping the source then would cancel it.
+		e.db.QueryRow(context.Background(), slotReady, e.slot).Scan(&ok)
 		return ok
 	})
 }
@@ -470,5 +468,23 @@ func TestEmptyTransactionsAdvanceTheSlot(t *testing.T) {
 	}
 	if n.fsm.Source().EndLSN == 0 {
 		t.Fatal("source position did not advance")
+	}
+}
+
+// dropSlot removes a test slot. A walsender of a stopped reader may still
+// hold it, or still be creating it (it does not notice that its client is
+// gone while it waits for a consistent point), so those are terminated too.
+func dropSlot(ctx context.Context, db *pgx.Conn, slot string) {
+	for range 50 {
+		db.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'walsender'
+			AND (query LIKE 'CREATE_REPLICATION_SLOT ' || $1 || ' %' OR query LIKE 'START_REPLICATION SLOT ' || $1 || ' %')`, slot)
+		db.Exec(ctx, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name = $1 AND NOT active", slot)
+		var left bool
+		if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1) OR EXISTS (
+			SELECT 1 FROM pg_stat_activity WHERE backend_type = 'walsender' AND query LIKE 'CREATE_REPLICATION_SLOT ' || $1 || ' %')`,
+			slot).Scan(&left); err == nil && !left {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
