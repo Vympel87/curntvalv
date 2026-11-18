@@ -1,4 +1,4 @@
-.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-ext
+.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-ext chaos
 
 test:
 	go vet ./...
@@ -48,3 +48,10 @@ test-ch: ch-up
 # Everything, with both Postgres and ClickHouse.
 test-ext: pg-up ch-up
 	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_TEST_CH_URL='$(CH_TEST_URL)' $(MAKE) test
+
+# Random fault injection against a real cluster and Postgres (design §5).
+# CHAOS_SEED=N repeats a run's fault schedule.
+CHAOS_TIME ?= 2m
+chaos: pg-up
+	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_CHAOS='$(CHAOS_TIME)' CURNTVALV_CHAOS_SEED='$(CHAOS_SEED)' \
+		go test -count=1 -timeout 60m -run 'TestChaos$$' -v ./cmd/curntvalv/

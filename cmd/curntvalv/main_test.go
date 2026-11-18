@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -196,6 +197,7 @@ func newE2EWith(t *testing.T, env []string, args ...string) *e2eCluster {
 	t.Cleanup(func() {
 		for _, p := range c.procs {
 			if p != nil {
+				p.cmd.Process.Signal(syscall.SIGCONT) // in case a chaos test paused it
 				p.cmd.Process.Signal(os.Interrupt)
 				p.cmd.Wait()
 			}
@@ -232,6 +234,14 @@ func (c *e2eCluster) start(i int) {
 func (c *e2eCluster) kill(i int) {
 	p := c.procs[i]
 	p.cmd.Process.Kill()
+	p.cmd.Wait()
+	c.procs[i] = nil
+}
+
+// stop shuts node i down cleanly.
+func (c *e2eCluster) stop(i int) {
+	p := c.procs[i]
+	p.cmd.Process.Signal(os.Interrupt)
 	p.cmd.Wait()
 	c.procs[i] = nil
 }
@@ -355,35 +365,13 @@ func sameApplied(table, want string) bool {
 // in five, a subscriber, and ClickHouse if CURNTVALV_TEST_CH_URL is set) must
 // each have every row, and after de-duplication by event id exactly once.
 func TestEndToEndPostgresNoLossNoDuplicates(t *testing.T) {
-	pgURL := os.Getenv("CURNTVALV_TEST_PG_URL")
-	if pgURL == "" {
-		t.Skip("CURNTVALV_TEST_PG_URL not set; run `make test-pg`")
-	}
-	ctx := context.Background()
-	db, err := pgx.Connect(ctx, pgURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close(ctx)
-	n := fmt.Sprintf("e2e_%d", time.Now().UnixNano()%1_000_000_000)
-	table, slot := "rows_"+n, "slot_"+n
-	mustExec := func(sql string) {
-		if _, err := db.Exec(ctx, sql); err != nil {
-			t.Fatalf("%s: %v", sql, err)
-		}
-	}
-	mustExec(fmt.Sprintf("CREATE TABLE %s (id int PRIMARY KEY)", table))
-	mustExec(fmt.Sprintf("CREATE PUBLICATION pub_%s FOR TABLE %s", n, table))
-	t.Cleanup(func() {
-		// Runs after the cluster's cleanup (registered later, runs first).
-		db.Exec(ctx, "SELECT pg_drop_replication_slot($1)", slot)
-		db.Exec(ctx, "DROP PUBLICATION pub_"+n)
-		db.Exec(ctx, "DROP TABLE "+table)
-	})
+	f := newPGFixture(t)
+	ctx, table := context.Background(), f.table
+	var err error
 
 	hook := newHookReceiver(t)
-	args := []string{"--pg-slot", slot, "--pg-publication", "pub_" + n, "--snapshot-entries", "50",
-		"--sink", "name=hook,type=webhook,url=" + hook.url + ",table=" + table}
+	args := append(f.args(), "--snapshot-entries", "50",
+		"--sink", "name=hook,type=webhook,url="+hook.url+",table="+table)
 	chURL := os.Getenv("CURNTVALV_TEST_CH_URL")
 	var ch *sink.ClickHouse
 	if chURL != "" {
@@ -393,20 +381,15 @@ func TestEndToEndPostgresNoLossNoDuplicates(t *testing.T) {
 		}
 		t.Cleanup(func() { ch.Query(context.Background(), "DROP TABLE IF EXISTS "+table) })
 	}
-	c := newE2EWith(t, []string{"CURNTVALV_PG_URL=" + pgURL}, args...)
+	c := newE2EWith(t, f.env(), args...)
 	sub := c.subscribe("--table", table)
-
 	// Wait for the slot so the first rows are captured.
-	waitE2E(t, "slot", 30*time.Second, func() bool {
-		var ok bool
-		db.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name=$1)", slot).Scan(&ok)
-		return ok
-	})
+	f.waitSlot()
 
 	const rows = 3000
 	writer := make(chan error, 1)
 	go func() {
-		w, err := pgx.Connect(ctx, pgURL)
+		w, err := pgx.Connect(ctx, f.url)
 		if err != nil {
 			writer <- err
 			return
@@ -565,22 +548,27 @@ func lsnLess(a, b string) bool {
 	return pa < pb
 }
 
-// hookReceiver is a webhook endpoint that fails every fifth request.
+// hookReceiver is a webhook endpoint that fails every failEvery-th request
+// (0: never) and all requests while it is down.
 type hookReceiver struct {
 	url        string
+	failEvery  int
 	mu         sync.Mutex
+	down       bool
 	got        map[string]string // event id -> row id
 	requests   int
 	deliveries int
 }
 
-func newHookReceiver(t *testing.T) *hookReceiver {
-	h := &hookReceiver{got: map[string]string{}}
+func newHookReceiver(t *testing.T) *hookReceiver { return newHookReceiverWith(t, 5) }
+
+func newHookReceiverWith(t *testing.T, failEvery int) *hookReceiver {
+	h := &hookReceiver{got: map[string]string{}, failEvery: failEvery}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.requests++
-		if h.requests%5 == 0 {
+		if h.down || (h.failEvery > 0 && h.requests%h.failEvery == 0) {
 			http.Error(w, "injected failure", http.StatusInternalServerError)
 			return
 		}
@@ -606,6 +594,19 @@ func (h *hookReceiver) ids() (map[string]string, int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return maps.Clone(h.got), h.deliveries
+}
+
+func (h *hookReceiver) setDown(down bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.down = down
+}
+
+// forget drops what was received so far.
+func (h *hookReceiver) forget() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.got, h.deliveries = map[string]string{}, 0
 }
 
 // subscriber is a running `curntvalv subscribe` process.
