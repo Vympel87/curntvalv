@@ -75,7 +75,8 @@ and are ready to take over.
 | `internal/retention`   | How much log to keep: age, size and block-sink limits (D5) |
 | `internal/transport`   | Raft messages between nodes over gRPC (D10) |
 | `internal/pb`          | Generated protobuf/gRPC code (from `proto/`) |
-| `internal/server`      | Client-facing gRPC (admin, subscribe); later HTTP (dashboard, metrics) |
+| `internal/server`      | Client-facing gRPC (admin, subscribe) |
+| `internal/web`         | HTTP: health, Prometheus metrics, cluster view, change feed, dashboard (D13) |
 | `cmd/curntvalv`             | Single binary: `curntvalv server`, `curntvalv status`, `curntvalv subscribe`, ... |
 
 ## 3. Key design decisions
@@ -396,6 +397,39 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   process and (with `CURNTVALV_TEST_CH_URL`, `make test-ch`) a ClickHouse
   sink; after de-duplication by event id each must hold every row exactly
   once.
+
+### D13. HTTP: health, metrics, dashboard, change feed
+
+- **One read-only HTTP server per node** (`internal/web`), on
+  `--http-listen` (default `127.0.0.1:8080`, empty turns it off). It has no
+  authentication, so the default binds to localhost only; changes go
+  through the gRPC admin API, never through HTTP.
+- **Health.** `/healthz` answers 200 while the node's Raft loop answers;
+  `/readyz` also needs a known leader, so a node cut off from the majority
+  is not ready.
+- **Metrics.** `/metrics` in the Prometheus text format (0.0.4), written
+  with the standard library (no client library dependency). Values are
+  read at scrape time from the local admin status plus counters kept by
+  Raft (elections, snapshots), the source (entries, transactions, changes)
+  and the sink runners (failures). Per-sink values come from the node that
+  runs the sinks, i.e. the leader; scrape every node. Names start with
+  `curntvalv_`; counters end in `_total`.
+- **Cluster view.** `/api/status` asks every node for its admin status in
+  parallel (2s timeout; an unreachable node is shown as such) and returns
+  JSON: the nodes in `--peers` order and the leader's view of source, sinks
+  and retention. Any node can serve it.
+- **Change feed.** `/api/events[?table=T][&from=INDEX]` streams row changes
+  of applied entries as server-sent events: the log index is the event id,
+  the data is the shared JSON form (D12). Without `from` it starts with the
+  next change; a reconnecting browser sends `Last-Event-ID`, which resends
+  that whole entry, so clients de-duplicate on the change's `id`. A feed
+  that falls behind retention continues with the oldest entry. At most 16
+  feeds per node; idle feeds get a comment every 15s.
+- **Dashboard.** Static HTML, CSS and plain JavaScript embedded in the
+  binary (no build step, no CDN). It polls `/api/status` every 2s and
+  follows the change feed.
+- **Shutdown.** Requests use the node's context, so open feeds end when the
+  node stops.
 
 ## 4. Data model
 

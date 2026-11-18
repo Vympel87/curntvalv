@@ -28,7 +28,7 @@ To move changes out of Postgres you usually pick one of two paths:
 
 curntValv aims for the first set of features with the operating cost of the second.
 
-## What it will do (v0.1 target)
+## What it does
 
 - **Replay** — add a new sink and it receives history from the oldest retained
   change. No re-reading of tables.
@@ -56,7 +56,19 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Postgres source (exactly-once into the log, tested with leader kills) | ✅ implemented |
 | Sinks (ClickHouse, webhook) with stored offsets, subscribe API | ✅ implemented |
 | Retention, sink policies, replay (`sink reset`), chaos test | ✅ implemented |
-| Dashboard, metrics | planned |
+| Dashboard, Prometheus metrics, health checks, live change feed | ✅ implemented |
+
+## Install
+
+Each [release](https://github.com/Vympel87/curntvalv/releases) has binaries
+for Linux and macOS (amd64, arm64) with a `SHA256SUMS` file, and a
+multi-arch image:
+
+```bash
+docker pull ghcr.io/vympel87/curntvalv:latest
+```
+
+Or build from source with Go 1.25+: `make build` (writes `bin/curntvalv`).
 
 ## Try it: a 3-node cluster with Postgres and ClickHouse
 
@@ -80,6 +92,9 @@ docker compose start node1           # it recovers from its volume
 docker compose down -v               # remove everything, data included
 ```
 
+While it runs, the dashboard of each node is at http://127.0.0.1:8081,
+:8082 and :8083 (see [Dashboard and metrics](#dashboard-and-metrics)).
+
 `bin/curntvalv log` prints the raw log; `subscribe` filters by table and
 resumes with `--from` (the last printed `index` + 1).
 
@@ -98,6 +113,22 @@ bin/curntvalv server --id 1 --peers $P --data-dir data/1   # on each node
 The leader creates the replication slot `curntvalv` on first start. The
 user needs the `REPLICATION` attribute (or superuser) and must be able to
 terminate the slot's previous reader.
+
+Without Docker, start three processes:
+
+```bash
+make build
+P=1=127.0.0.1:7001,2=127.0.0.1:7002,3=127.0.0.1:7003
+bin/curntvalv server --id 1 --peers $P --data-dir data/1 --http-listen 127.0.0.1:8081 &
+bin/curntvalv server --id 2 --peers $P --data-dir data/2 --http-listen 127.0.0.1:8082 &
+bin/curntvalv server --id 3 --peers $P --data-dir data/3 --http-listen 127.0.0.1:8083 &
+bin/curntvalv status
+bin/curntvalv kv put hello world     # metadata KV, works without Postgres
+```
+
+The key-value store holds cluster metadata; it is how M3 shows that the
+replicated state machine works. It is not meant for application data. There
+is no TLS yet, so run it on a trusted network only.
 
 ## Sinks
 
@@ -152,21 +183,37 @@ curntvalv sink reset hook --to 1200       # continue after log index 1200
 A sink added later starts with the oldest retained entry (or with
 `start=latest`).
 
-Without Docker, start three processes:
+## Dashboard and metrics
 
-```bash
-make build
-P=1=127.0.0.1:7001,2=127.0.0.1:7002,3=127.0.0.1:7003
-bin/curntvalv server --id 1 --peers $P --data-dir data/1 &
-bin/curntvalv server --id 2 --peers $P --data-dir data/2 &
-bin/curntvalv server --id 3 --peers $P --data-dir data/3 &
-bin/curntvalv status
-bin/curntvalv kv put hello world     # metadata KV, works without Postgres
+Every node serves HTTP on `--http-listen` (default `127.0.0.1:8080`; an
+empty value turns it off). There is no authentication: bind it to a
+trusted network only.
+
+| Path | |
+|---|---|
+| `/` | Dashboard: nodes, source, retention, sinks and a live change feed |
+| `/healthz` | 200 while the node runs |
+| `/readyz` | 200 when the node also knows a leader |
+| `/metrics` | Prometheus metrics (`curntvalv_*`, `go_*`) |
+| `/api/status` | The whole cluster as JSON, from any node |
+| `/api/events` | Changes as server-sent events; `?table=orders`, `&from=INDEX` |
+
+Scrape every node; sinks and the source report from the leader:
+
+```yaml
+scrape_configs:
+  - job_name: curntvalv
+    static_configs:
+      - targets: ["node1:8080", "node2:8080", "node3:8080"]
 ```
 
-The key-value store holds cluster metadata; it is how M3 shows that the
-replicated state machine works. It is not meant for application data. There
-is no TLS yet, so run it on a trusted network only.
+Useful series: `curntvalv_sink_lag_entries`, `curntvalv_sink_state`,
+`curntvalv_raft_leader_known`, `curntvalv_log_bytes`,
+`curntvalv_raft_became_leader_total`.
+
+```bash
+curl -N 'http://127.0.0.1:8081/api/events?table=orders'   # follow changes
+```
 
 ## Development
 
