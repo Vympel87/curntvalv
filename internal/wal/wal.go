@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -63,8 +64,9 @@ type segment struct {
 	first   uint64 // index of the first entry in this segment
 	path    string
 	f       *os.File
-	offsets []int64 // offsets[i] is the file offset of entry first+i
-	size    int64   // bytes of valid data in the file
+	offsets []int64   // offsets[i] is the file offset of entry first+i
+	size    int64     // bytes of valid data in the file
+	written time.Time // last write (file modification time after Open)
 }
 
 // last returns the index of the last entry, or first-1 if the segment is empty.
@@ -197,6 +199,7 @@ func openSegment(path string, first uint64, repair, sync bool) (*segment, error)
 		}
 	}
 	s.size = off
+	s.written = st.ModTime()
 	return s, nil
 }
 
@@ -277,6 +280,7 @@ func (l *Log) Append(entries ...[]byte) (uint64, error) {
 		}
 		a.offsets = append(a.offsets, offs...)
 		a.size += int64(len(buf))
+		a.written = time.Now()
 		buf, offs = buf[:0], offs[:0]
 		return nil
 	}
@@ -314,6 +318,25 @@ func (l *Log) Append(entries ...[]byte) (uint64, error) {
 		}
 	}
 	return l.lastIndex(), nil
+}
+
+// SegmentInfo describes one segment file.
+type SegmentInfo struct {
+	First, Last uint64 // Last is First-1 for an empty segment
+	Bytes       int64
+	Written     time.Time // time of the last write to the segment
+}
+
+// Segments describes the segments of the log, oldest first. The last one is
+// the active segment, which CompactBefore never deletes.
+func (l *Log) Segments() []SegmentInfo {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]SegmentInfo, len(l.segs))
+	for i, s := range l.segs {
+		out[i] = SegmentInfo{First: s.first, Last: s.last(), Bytes: s.size, Written: s.written}
+	}
+	return out
 }
 
 // Read returns the entry at index. It returns ErrCompacted if the entry was

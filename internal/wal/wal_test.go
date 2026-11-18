@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func entry(i uint64) []byte { return []byte(fmt.Sprintf("entry-%06d", i)) }
@@ -321,4 +322,54 @@ func TestConcurrentReadersAndWriter(t *testing.T) {
 	}
 	appendN(t, l, 1, total)
 	wg.Wait()
+}
+
+func TestSegments(t *testing.T) {
+	dir := t.TempDir()
+	l := mustOpen(t, dir, 200)
+	before := time.Now().Add(-time.Second)
+	appendN(t, l, 1, 40)
+	segs := l.Segments()
+	if len(segs) < 3 || segs[0].First != 1 || segs[len(segs)-1].Last != 40 {
+		t.Fatalf("segments %+v", segs)
+	}
+	var total int64
+	for i, s := range segs {
+		if i > 0 && s.First != segs[i-1].Last+1 {
+			t.Fatalf("gap in %+v", segs)
+		}
+		if s.Bytes <= 0 || s.Written.Before(before) {
+			t.Fatalf("segment %+v", s)
+		}
+		total += s.Bytes
+	}
+	files := segmentFiles(t, dir)
+	var onDisk int64
+	for _, f := range files {
+		st, err := os.Stat(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		onDisk += st.Size()
+	}
+	if total != onDisk {
+		t.Fatalf("bytes %d, on disk %d", total, onDisk)
+	}
+
+	// After reopening, the write time comes from the file.
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(files[0], old, old); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	l = mustOpen(t, dir, 200)
+	if got := l.Segments()[0].Written; !got.Equal(old) {
+		t.Fatalf("written %v, want %v", got, old)
+	}
+	if err := l.CompactBefore(segs[1].First); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.Segments(); len(got) != len(segs)-1 || got[0].First != segs[1].First {
+		t.Fatalf("after compaction %+v", got)
+	}
 }
