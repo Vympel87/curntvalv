@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light dark;
   --bg: #f6f7f5;
   --panel: #ffffff;
   --text: #1d2321;
@@ -48,6 +49,7 @@ th, td { padding: 8px 10px; text-align: left; white-space: nowrap; border-bottom
 tbody tr:last-child td { border-bottom: none; }
 th { font-size: 12px; color: var(--muted); font-weight: 600; }
 .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 13px; }
+th.num { font-family: inherit; font-size: 12px; }
 td.err { white-space: normal; color: var(--bad); font-size: 12px; max-width: 360px; }
 tr.self td:first-child::after { content: " (this node)"; color: var(--muted); font-size: 12px; }
 .badge {
