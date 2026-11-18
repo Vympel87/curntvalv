@@ -27,6 +27,7 @@ type readResult struct {
 // scriptedReader returns the queued results in order and records the
 // arguments it was called with.
 type scriptedReader struct {
+	svc     *Subscribe // the service using this reader
 	results chan readResult
 	calls   chan readCall
 }
@@ -51,7 +52,8 @@ func subscribeClient(t *testing.T) (pb.SubscribeServiceClient, *scriptedReader) 
 	r := &scriptedReader{results: make(chan readResult, 10), calls: make(chan readCall, 100)}
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()
-	pb.RegisterSubscribeServiceServer(gs, NewSubscribe(r))
+	r.svc = NewSubscribe(r)
+	pb.RegisterSubscribeServiceServer(gs, r.svc)
 	go gs.Serve(lis)
 	t.Cleanup(gs.Stop)
 	conn, err := grpc.NewClient("passthrough:///bufnet",
@@ -117,6 +119,17 @@ func TestSubscribeStreamsChanges(t *testing.T) {
 	r.results <- readResult{res: event.Result{Changes: []event.Change{change(12, 0x300, 0)}, Next: 13}}
 	if resp, err = stream.Recv(); err != nil || resp.NextIndex != 13 {
 		t.Fatalf("after skipped entries: %+v %v", resp, err)
+	}
+	if st := r.svc.Stats(); st.Active != 1 || st.Sent != 4 {
+		t.Fatalf("stats %+v", st)
+	}
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for r.svc.Stats().Active != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("stream still counted after the client left")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/Vympel87/curntvalv/internal/fsm"
+	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
 )
 
@@ -71,6 +72,33 @@ type Source struct {
 	mu      sync.Mutex
 	health  string // standby, running, retrying, failed
 	lastErr string
+	stats   Stats
+}
+
+// Stats count what this node proposed to the log since it started. After a
+// leader change Postgres resends unacknowledged transactions; the state
+// machine drops copies (design D3), but they are counted here again.
+type Stats struct {
+	Batches      uint64 // log entries proposed, including position-only ones
+	Transactions uint64 // transactions with changes, counted at their last batch
+	Events       uint64 // row changes
+}
+
+// Stats returns the counters.
+func (s *Source) Stats() Stats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stats
+}
+
+func (s *Source) count(b *pb.TxBatch) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stats.Batches++
+	s.stats.Events += uint64(len(b.GetEvents()))
+	if b.GetFinal() && (len(b.GetEvents()) > 0 || b.GetFirstSeq() > 0) {
+		s.stats.Transactions++
+	}
 }
 
 // Health reports what the source is doing on this node: "standby" (not the
@@ -346,9 +374,16 @@ func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceSt
 		nextStatus = time.Now().Add(s.cfg.StatusInterval)
 		return nil
 	}
-	propose := func(b []byte) error {
-		_, err := s.node.Propose(ctx, b)
-		return err
+	propose := func(tb *pb.TxBatch) error {
+		data, err := fsm.EncodeTxBatch(tb)
+		if err != nil {
+			return err
+		}
+		if _, err := s.node.Propose(ctx, data); err != nil {
+			return err
+		}
+		s.count(tb)
+		return nil
 	}
 
 	for {
@@ -357,11 +392,7 @@ func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceSt
 			// forward, so Postgres can free WAL. Store the newest one first:
 			// we only ever acknowledge what the cluster has stored.
 			if e := dec.takeEmpty(); e != nil {
-				data, err := fsm.EncodeTxBatch(e)
-				if err != nil {
-					return err
-				}
-				if err := propose(data); err != nil {
+				if err := propose(e); err != nil {
 					return err
 				}
 				ack = e.EndLsn
@@ -414,11 +445,7 @@ func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceSt
 					return err
 				}
 				for _, b := range batches {
-					data, err := fsm.EncodeTxBatch(b)
-					if err != nil {
-						return err
-					}
-					if err := propose(data); err != nil {
+					if err := propose(b); err != nil {
 						return err
 					}
 					if b.Final {

@@ -91,6 +91,7 @@ type Status struct {
 	Type      string
 	State     State
 	Delivered uint64 // changes delivered by this node since it started
+	Failures  uint64 // failed Deliver calls on this node since it started
 	LastError string
 }
 
@@ -153,6 +154,12 @@ func (r *Runner) setState(s State, err error) {
 	} else if s == StateRunning {
 		r.status.LastError = ""
 	}
+}
+
+func (r *Runner) addFailure() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status.Failures++
 }
 
 func (r *Runner) addDelivered(n int) {
@@ -343,6 +350,7 @@ func (r *Runner) deliver(ctx context.Context, changes []event.Change) error {
 				return ctx.Err()
 			}
 			r.setState(StateRetrying, err)
+			r.addFailure()
 			r.log.Warn("delivery failed, retrying", "err", err, "first", batch[0].ID(), "changes", len(batch), "retry_in", backoff)
 			select {
 			case <-ctx.Done():

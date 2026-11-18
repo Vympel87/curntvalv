@@ -141,6 +141,12 @@ func (nopTransport) Send(raft.Message) {}
 // runSource runs a Source until the returned stop function is called.
 func runSource(t *testing.T, cfg Config, n *testNode) (stop func()) {
 	t.Helper()
+	_, stop = runSourceGet(t, cfg, n)
+	return stop
+}
+
+func runSourceGet(t *testing.T, cfg Config, n *testNode) (*Source, func()) {
+	t.Helper()
 	src, err := New(cfg, n.node, n.fsm)
 	if err != nil {
 		t.Fatal(err)
@@ -149,9 +155,9 @@ func runSource(t *testing.T, cfg Config, n *testNode) (stop func()) {
 	done := make(chan struct{})
 	go func() { defer close(done); src.Run(ctx) }()
 	var once sync.Once
-	stop = func() { once.Do(func() { cancel(); <-done }) }
+	stop := func() { once.Do(func() { cancel(); <-done }) }
 	t.Cleanup(stop)
-	return stop
+	return src, stop
 }
 
 type storedEvent struct {
@@ -269,7 +275,7 @@ func (e *pgEnv) waitSlot() {
 func TestLargeTransactionIsSplitInLog(t *testing.T) {
 	e := newPGEnv(t)
 	n := startNode(t, t.TempDir())
-	runSource(t, e.config(Limits{MaxEvents: 100}), n)
+	src, _ := runSourceGet(t, e.config(Limits{MaxEvents: 100}), n)
 	e.waitSlot()
 	e.exec(fmt.Sprintf("INSERT INTO %s SELECT g, 'x' FROM generate_series(1, 250) g", e.table))
 	waitFor(t, "250 events", 10*time.Second, func() bool { return len(n.events()) == 250 })
@@ -280,6 +286,10 @@ func TestLargeTransactionIsSplitInLog(t *testing.T) {
 	}
 	if s := n.fsm.Source(); s.PartialLSN != 0 || s.Anomalies != 0 {
 		t.Fatalf("source %+v", s)
+	}
+	// One transaction in three batches.
+	if st := src.Stats(); st.Events != 250 || st.Transactions != 1 || st.Batches < 3 {
+		t.Fatalf("stats %+v", st)
 	}
 }
 

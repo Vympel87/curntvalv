@@ -377,5 +377,11 @@ func TestRetentionLimitsCompaction(t *testing.T) {
 	if c.net.delivered[MsgSnap] == before {
 		t.Fatal("restarted follower did not receive a snapshot")
 	}
+	if st := c.rafts[f].status(); st.Counters.SnapshotsInstalled == 0 {
+		t.Fatalf("follower counters %+v", st.Counters)
+	}
+	if st := c.rafts[l].status(); st.Counters.SnapshotsTaken == 0 || st.Counters.BecameLeader == 0 || st.Counters.Elections == 0 {
+		t.Fatalf("leader counters %+v", st.Counters)
+	}
 	c.checkLogMatching()
 }

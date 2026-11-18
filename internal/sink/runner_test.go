@@ -256,7 +256,7 @@ func TestRunnerRetriesFailedDeliveries(t *testing.T) {
 	}
 	h.sink.mu.Unlock()
 	waitFor(t, "running", func() bool { return r.Status().State == StateRunning })
-	if st := r.Status(); st.LastError != "" || st.Delivered != 1 {
+	if st := r.Status(); st.LastError != "" || st.Delivered != 1 || st.Failures != 3 {
 		t.Fatalf("status %+v", st)
 	}
 

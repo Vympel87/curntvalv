@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -24,6 +25,19 @@ type ChangeReader interface {
 type Subscribe struct {
 	pb.UnimplementedSubscribeServiceServer
 	reader ChangeReader
+	active atomic.Int64
+	sent   atomic.Uint64
+}
+
+// SubscribeStats are the subscribe service's counters on this node.
+type SubscribeStats struct {
+	Active int64  // open streams
+	Sent   uint64 // changes sent since start
+}
+
+// Stats returns the counters.
+func (s *Subscribe) Stats() SubscribeStats {
+	return SubscribeStats{Active: s.active.Load(), Sent: s.sent.Load()}
 }
 
 // NewSubscribe returns the subscribe service of one node.
@@ -49,6 +63,8 @@ func (s *Subscribe) Subscribe(req *pb.SubscribeRequest, stream pb.SubscribeServi
 			return status.Error(codes.InvalidArgument, "empty table name")
 		}
 	}
+	s.active.Add(1)
+	defer s.active.Add(-1)
 	ctx := stream.Context()
 	filter := event.Filter(req.GetTables())
 	sentSchemas := map[uint64]bool{}
@@ -73,6 +89,7 @@ func (s *Subscribe) Subscribe(req *pb.SubscribeRequest, stream pb.SubscribeServi
 		if err := sendChanges(stream, res, sentSchemas); err != nil {
 			return err
 		}
+		s.sent.Add(uint64(len(res.Changes)))
 		lastSend = time.Now()
 	}
 }

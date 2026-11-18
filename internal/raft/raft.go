@@ -138,6 +138,15 @@ type Status struct {
 	CommitIndex   uint64
 	LastApplied   uint64
 	SnapshotIndex uint64 // latest snapshot, 0 if none
+	Counters      Counters
+}
+
+// Counters count events on this node since Run started (for metrics).
+type Counters struct {
+	Elections          uint64 // elections this node started
+	BecameLeader       uint64 // times this node won an election
+	SnapshotsTaken     uint64
+	SnapshotsInstalled uint64 // received from a leader, replacing the state
 }
 
 var (
@@ -182,6 +191,7 @@ type raft struct {
 	lastApplied uint64
 	// Ticks since compaction was last checked (with Retention).
 	compactElapsed int
+	counters       Counters
 	state          StateType
 	leader         uint64
 
@@ -301,6 +311,7 @@ func (r *raft) status() Status {
 		LastIndex:   r.lastIndex,
 		CommitIndex: r.commitIndex,
 		LastApplied: r.lastApplied,
+		Counters:    r.counters,
 	}
 	if n := len(r.snapshots); n > 0 {
 		s.SnapshotIndex = r.snapshots[n-1].Index
@@ -418,6 +429,7 @@ func (r *raft) becomeFollower(term, leader uint64) error {
 
 // campaign starts an election (§5.2).
 func (r *raft) campaign() error {
+	r.counters.Elections++
 	r.term++
 	r.votedFor = r.id
 	if err := r.persist(); err != nil {
@@ -441,6 +453,7 @@ func (r *raft) campaign() error {
 }
 
 func (r *raft) becomeLeader() error {
+	r.counters.BecameLeader++
 	r.state = StateLeader
 	r.leader = r.id
 	r.votes = nil
@@ -747,6 +760,7 @@ func (r *raft) handleSnapshot(m Message) error {
 		return fmt.Errorf("raft: save snapshot %d: %w", s.Meta.Index, err)
 	}
 	r.snapshots = append(r.snapshots, s.Meta)
+	r.counters.SnapshotsInstalled++
 	if err := r.log.Reset(s.Meta.Index + 1); err != nil {
 		return fmt.Errorf("raft: reset log to %d: %w", s.Meta.Index+1, err)
 	}
@@ -870,6 +884,7 @@ func (r *raft) maybeSnapshot() error {
 		return fmt.Errorf("raft: save snapshot %d: %w", meta.Index, err)
 	}
 	r.snapshots = append(r.snapshots, meta)
+	r.counters.SnapshotsTaken++
 	return r.compact()
 }
 
