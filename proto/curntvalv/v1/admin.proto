@@ -77,6 +77,8 @@ message SinkStatus {
   string policy = 8;
   // Number of resets (replicated).
   uint64 generation = 9;
+  // Failed deliveries on this node since it started.
+  uint64 failures = 10;
 }
 
 message ResetSinkRequest {

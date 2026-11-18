@@ -413,7 +413,9 @@ type SinkStatus struct {
 	// "block" (the log keeps what the sink has not delivered) or "drop".
 	Policy string `protobuf:"bytes,8,opt,name=policy,proto3" json:"policy,omitempty"`
 	// Number of resets (replicated).
-	Generation    uint64 `protobuf:"varint,9,opt,name=generation,proto3" json:"generation,omitempty"`
+	Generation uint64 `protobuf:"varint,9,opt,name=generation,proto3" json:"generation,omitempty"`
+	// Failed deliveries on this node since it started.
+	Failures      uint64 `protobuf:"varint,10,opt,name=failures,proto3" json:"failures,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -507,6 +509,13 @@ func (x *SinkStatus) GetPolicy() string {
 func (x *SinkStatus) GetGeneration() uint64 {
 	if x != nil {
 		return x.Generation
+	}
+	return 0
+}
+
+func (x *SinkStatus) GetFailures() uint64 {
+	if x != nil {
+		return x.Failures
 	}
 	return 0
 }
@@ -1149,7 +1158,7 @@ const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\tlog_bytes\x18\x03 \x01(\x03R\blogBytes\x12#\n" +
 	"\rcompact_limit\x18\x04 \x01(\x04R\fcompactLimit\x12\x1d\n" +
 	"\n" +
-	"blocked_by\x18\x05 \x01(\tR\tblockedBy\"\xe9\x01\n" +
+	"blocked_by\x18\x05 \x01(\tR\tblockedBy\"\x85\x02\n" +
 	"\n" +
 	"SinkStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
@@ -1163,7 +1172,9 @@ const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\x06policy\x18\b \x01(\tR\x06policy\x12\x1e\n" +
 	"\n" +
 	"generation\x18\t \x01(\x04R\n" +
-	"generation\"u\n" +
+	"generation\x12\x1a\n" +
+	"\bfailures\x18\n" +
+	" \x01(\x04R\bfailures\"u\n" +
 	"\x10ResetSinkRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x127\n" +
 	"\bposition\x18\x02 \x01(\x0e2\x1b.curntvalv.v1.ResetPositionR\bposition\x12\x14\n" +

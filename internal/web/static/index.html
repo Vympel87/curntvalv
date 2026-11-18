@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>curntValv</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%232f7d6d'/%3E%3C/svg%3E">
+</head>
+<body>
+<header>
+  <div class="brand">curnt<span>Valv</span></div>
+  <div class="meta" id="meta">connecting…</div>
+</header>
+
+<main>
+  <section>
+    <h2>Cluster</h2>
+    <div class="scroll">
+      <table id="nodes">
+        <thead><tr><th>Node</th><th>Address</th><th>State</th><th class="num">Term</th><th class="num">First</th><th class="num">Last</th><th class="num">Commit</th><th class="num">Applied</th><th class="num">Snapshot</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Pipeline</h2>
+    <div class="cards">
+      <div class="card"><div class="label">Postgres source</div><div class="value" id="source">–</div><div class="sub" id="source-error"></div></div>
+      <div class="card"><div class="label">Retention</div><div class="value" id="retention">–</div><div class="sub" id="retention-sub"></div></div>
+    </div>
+    <div class="scroll">
+      <table id="sinks">
+        <thead><tr><th>Sink</th><th>Type</th><th>Policy</th><th>State</th><th class="num">Offset</th><th class="num">Lag</th><th class="num">Delivered</th><th class="num">Failures</th><th>Last error</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="feed-head">
+      <h2>Live changes</h2>
+      <form id="feed-form">
+        <input id="feed-table" placeholder="table filter, e.g. orders" autocomplete="off">
+        <button type="submit">Apply</button>
+        <button type="button" id="feed-pause">Pause</button>
+      </form>
+    </div>
+    <div class="sub" id="feed-state">not connected</div>
+    <ol id="feed"></ol>
+  </section>
+</main>
+
+<footer>Read-only view of this node and its peers · <a href="metrics">/metrics</a> · <a href="api/status">/api/status</a></footer>
+<script src="app.js"></script>
+</body>
+</html>
