@@ -10,6 +10,8 @@ curntValv reads changes from Postgres (logical replication), stores them in an
 ordered log replicated across a small cluster with Raft, and delivers them to
 sinks or directly to your application.
 
+![Demo: a 3-node cluster keeps capturing changes after its leader is killed](docs/demo.gif)
+
 ```
 Postgres ──► curntValv cluster (3 nodes, one binary) ──► ClickHouse
                     │                           ├──► Webhook
