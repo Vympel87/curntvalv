@@ -232,6 +232,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	election := fs.Int("election-ticks", 10, "minimum election timeout in ticks")
 	heartbeat := fs.Int("heartbeat-ticks", 1, "heartbeat interval in ticks")
 	snapEvery := fs.Int("snapshot-entries", 1024, "take a snapshot every N applied entries")
+	preVote := fs.Bool("pre-vote", true, "ask the other nodes before starting an election, so a node that was cut off does not force one when it returns")
 	retAge := fs.String("retention-age", "0", "remove log segments older than this, e.g. 7d or 36h (0 = no age limit)")
 	retBytes := fs.String("retention-bytes", "0", "remove the oldest log segments while the log is larger than this, e.g. 10GB (0 = no size limit)")
 	segBytes := fs.String("wal-segment-bytes", "64MB", "size at which a new log segment is started; retention removes whole segments")
@@ -276,6 +277,7 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 			HeartbeatTicks:  *heartbeat,
 			TickInterval:    *tick,
 			SnapshotEntries: *snapEvery,
+			PreVote:         *preVote,
 		},
 		peers:      peers,
 		dataDir:    *dataDir,

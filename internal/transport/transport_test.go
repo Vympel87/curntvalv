@@ -193,6 +193,32 @@ func TestReconnectAfterLongOutage(t *testing.T) {
 	}
 }
 
+// A message type from a newer version is dropped; the stream stays up and
+// the messages after it arrive.
+func TestUnknownMessageTypeIsDropped(t *testing.T) {
+	lis := listen(t, "127.0.0.1:0")
+	addr := lis.Addr().String()
+	peers := map[uint64]string{1: "unused", 2: addr}
+	rec := &recorder{}
+	gs := serve(t, lis, NewServer(2, peers, rec))
+	defer gs.Stop()
+	tr := New(1, peers, Options{MinBackoff: time.Second, MaxBackoff: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go tr.Run(ctx)
+	tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2, Term: 1})
+	waitFor(t, "first message", func() bool { return len(rec.terms()) == 1 })
+	tr.Send(raft.Message{Type: raft.MessageType(200), From: 1, To: 2, Term: 2})
+	for i := uint64(3); i <= 6; i++ {
+		tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2, Term: i})
+	}
+	// A closed stream would lose these, and reconnecting takes a second.
+	waitFor(t, "messages after the unknown one", func() bool { return len(rec.terms()) == 5 })
+	if fmt.Sprint(rec.terms()) != "[1 3 4 5 6]" {
+		t.Fatalf("got %v", rec.terms())
+	}
+}
+
 func TestSendNeverBlocks(t *testing.T) {
 	lis := listen(t, "127.0.0.1:0")
 	addr := lis.Addr().String()

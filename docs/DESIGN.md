@@ -255,9 +255,24 @@ removing nodes at runtime (Raft single-server membership change) comes later.
 - **Rejection hint.** A rejected AppendEntries reply carries the follower's
   last index; the leader sets `nextIndex = min(nextIndex-1, hint+1)`. This is
   still "decrement and retry" (§5.3), it only skips indexes the follower
-  cannot have. No other optimizations: no PreVote, no CheckQuorum, no
-  pipelining of AppendEntries, no leader leases. Without PreVote a node rejoining after a
-  partition bumps the term and forces a new election; that is expected.
+  cannot have. No other optimizations: no CheckQuorum, no pipelining of
+  AppendEntries, no leader leases.
+- **PreVote** (Ongaro's thesis §9.6, on by default, `--pre-vote=false`
+  turns it off). When its election timeout fires, a node (also a candidate
+  whose election failed, which first steps back to follower of its term)
+  sends `MsgPreVote` with the term it would campaign in and its last log
+  entry, without changing its own term or vote. A node grants it if that
+  term is ahead of its own, the log is up to date (§5.4.1), and it has not
+  heard from a leader for `ElectionTicks`; granting changes nothing on the
+  granting node. Only with a majority of grants does the node start a real
+  election. A refusal carrying a higher term makes the asker a follower of
+  that term. So a node that was cut off keeps its term and rejoins without
+  deposing a working leader. Pre-votes travel as two more message types
+  over the same transport. A v0.1 node closes the stream when it gets one
+  (the sender reconnects); during a rolling upgrade from v0.1, elections
+  still succeed through the old nodes, which campaign directly, or turn
+  PreVote off until every node is upgraded. From v0.2 on the transport
+  drops message types it does not know and keeps the stream.
 - **Broken invariants are fatal.** Two leaders in one term, truncating below
   `commitIndex`, or a log term above the current term stop the node with an
   error (`errSafety`) instead of continuing.

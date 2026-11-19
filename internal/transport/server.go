@@ -28,6 +28,10 @@ type Server struct {
 	node  Stepper
 }
 
+// ErrUnknownMessageType is returned by FromPB for a message type this
+// version does not know. A server drops such messages.
+var ErrUnknownMessageType = errors.New("transport: unknown message type")
+
 // NewServer returns the receiving side for node self. Messages from ids not
 // in peers, or addressed to another node, are dropped.
 func NewServer(self uint64, peers map[uint64]string, node Stepper) *Server {
@@ -52,6 +56,11 @@ func (s *Server) Stream(stream pb.RaftService_StreamServer) error {
 			return err
 		}
 		m, err := FromPB(req.GetMessage())
+		if errors.Is(err, ErrUnknownMessageType) {
+			// From a newer version. Raft tolerates lost messages, and
+			// closing the stream would also lose the ones after it.
+			continue
+		}
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
@@ -104,9 +113,9 @@ func FromPB(p *pb.RaftMessage) (raft.Message, error) {
 	}
 	t := raft.MessageType(p.GetType())
 	switch t {
-	case raft.MsgVote, raft.MsgVoteResp, raft.MsgApp, raft.MsgAppResp, raft.MsgSnap:
+	case raft.MsgVote, raft.MsgVoteResp, raft.MsgApp, raft.MsgAppResp, raft.MsgSnap, raft.MsgPreVote, raft.MsgPreVoteResp:
 	default:
-		return raft.Message{}, fmt.Errorf("transport: unknown message type %d", p.GetType())
+		return raft.Message{}, fmt.Errorf("%w %d", ErrUnknownMessageType, p.GetType())
 	}
 	m := raft.Message{
 		Type:         t,

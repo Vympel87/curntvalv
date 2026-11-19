@@ -65,6 +65,13 @@ type Config struct {
 	// CompactTicks is how often (in ticks) Retention is asked again while no
 	// snapshot is taken. Default 100.
 	CompactTicks int
+	// PreVote makes a node whose election timeout fires first ask the
+	// others whether it could win (thesis §9.6) and start a real election,
+	// with a higher term, only if a majority agrees. A node that was cut off
+	// then rejoins without forcing a new election. A node agrees only if
+	// the candidate's log is up to date and it has not heard from a leader
+	// for ElectionTicks.
+	PreVote bool
 	// Seed seeds the election timeout randomness. 0 picks a random seed.
 	Seed uint64
 }
@@ -201,6 +208,9 @@ type raft struct {
 
 	// Candidate state.
 	votes map[uint64]bool
+	// Pre-candidate state (PreVote): granted pre-votes for term+1 while a
+	// follower asks; nil otherwise.
+	preVotes map[uint64]bool
 
 	// Leader state, reinitialized after election.
 	next  map[uint64]uint64
@@ -422,8 +432,34 @@ func (r *raft) becomeFollower(term, leader uint64) error {
 	r.state = StateFollower
 	r.leader = leader
 	r.votes = nil
+	r.preVotes = nil
 	r.reads = nil
 	r.resetElectionTimer()
+	return nil
+}
+
+// preCampaign asks for pre-votes for term+1 (thesis §9.6). The node stays a
+// follower of its term and changes no persistent state.
+func (r *raft) preCampaign() error {
+	if r.state == StateCandidate {
+		// The election failed. Asking again first keeps a candidate that
+		// was cut off from raising its term over and over.
+		if err := r.becomeFollower(r.term, 0); err != nil {
+			return err
+		}
+	}
+	r.leader = 0
+	r.preVotes = map[uint64]bool{r.id: true}
+	r.resetElectionTimer()
+	if len(r.preVotes) >= r.quorum() {
+		return r.campaign()
+	}
+	for _, p := range r.peers {
+		if p == r.id {
+			continue
+		}
+		r.sendTerm(Message{Type: MsgPreVote, To: p, LastLogIndex: r.lastIndex, LastLogTerm: r.lastTerm}, r.term+1)
+	}
 	return nil
 }
 
@@ -438,6 +474,7 @@ func (r *raft) campaign() error {
 	r.state = StateCandidate
 	r.leader = 0
 	r.reads = nil
+	r.preVotes = nil
 	r.votes = map[uint64]bool{r.id: true}
 	r.resetElectionTimer()
 	if len(r.votes) >= r.quorum() {
@@ -499,6 +536,9 @@ func (r *raft) tick() error {
 	}
 	r.electionElapsed++
 	if r.electionElapsed >= r.electionTimeout {
+		if r.cfg.PreVote {
+			return r.preCampaign()
+		}
 		return r.campaign()
 	}
 	return nil
@@ -573,6 +613,15 @@ func (r *raft) step(m Message) error {
 	if m.To != r.id {
 		return nil
 	}
+	// Pre-votes carry the term of an election that has not started; they
+	// must not move this node's term (thesis §9.6).
+	switch m.Type {
+	case MsgPreVote:
+		r.handlePreVote(m)
+		return nil
+	case MsgPreVoteResp:
+		return r.handlePreVoteResp(m)
+	}
 	switch {
 	case m.Term > r.term:
 		// Rule for all servers: discover a higher term → follower.
@@ -631,6 +680,35 @@ func (r *raft) handleVote(m Message) error {
 	return nil
 }
 
+// handlePreVote grants a pre-vote if an election in m.Term could happen now:
+// the term is ahead, the candidate's log is up to date, and this node has
+// not heard from a leader for a minimum election timeout.
+func (r *raft) handlePreVote(m Message) {
+	recentLeader := r.state == StateLeader || (r.leader != 0 && r.electionElapsed < r.cfg.ElectionTicks)
+	if m.Term > r.term && !recentLeader && r.isUpToDate(m.LastLogIndex, m.LastLogTerm) {
+		r.sendTerm(Message{Type: MsgPreVoteResp, To: m.From, VoteGranted: true}, m.Term)
+		return
+	}
+	r.send(Message{Type: MsgPreVoteResp, To: m.From})
+}
+
+func (r *raft) handlePreVoteResp(m Message) error {
+	if !m.VoteGranted {
+		if m.Term > r.term {
+			return r.becomeFollower(m.Term, 0)
+		}
+		return nil
+	}
+	if r.preVotes == nil || r.state != StateFollower || m.Term != r.term+1 {
+		return nil // stale
+	}
+	r.preVotes[m.From] = true
+	if len(r.preVotes) >= r.quorum() {
+		return r.campaign()
+	}
+	return nil
+}
+
 func (r *raft) handleVoteResp(m Message) error {
 	if r.state != StateCandidate || !m.VoteGranted {
 		return nil
@@ -654,6 +732,7 @@ func (r *raft) acceptLeader(m Message) error {
 		}
 	}
 	r.leader = m.From
+	r.preVotes = nil
 	r.resetElectionTimer()
 	return nil
 }
@@ -966,9 +1045,13 @@ func (r *raft) dropSnapshotsBefore(index uint64) error {
 
 // --- outputs ------------------------------------------------------------------
 
-func (r *raft) send(m Message) {
+func (r *raft) send(m Message) { r.sendTerm(m, r.term) }
+
+// sendTerm sends m with another term than the current one; only pre-votes
+// do that.
+func (r *raft) sendTerm(m Message, term uint64) {
 	m.From = r.id
-	m.Term = r.term
+	m.Term = term
 	r.tr.Send(m)
 }
 

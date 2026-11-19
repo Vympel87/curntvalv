@@ -129,8 +129,11 @@ func TestParseSinkSpec(t *testing.T) {
 	}
 	base := []string{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d"}
 	cfg, err := parseServerFlags(append(base, "--sink", "name=a,type=webhook,url=http://x", "--sink", "name=b,type=webhook,url=http://y"), io.Discard)
-	if err != nil || len(cfg.sinks) != 2 || cfg.sinks[1].url != "http://y" {
-		t.Fatalf("%+v %v", cfg.sinks, err)
+	if err != nil || len(cfg.sinks) != 2 || cfg.sinks[1].url != "http://y" || !cfg.raft.PreVote {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	if cfg, _ := parseServerFlags(append(base, "--pre-vote=false"), io.Discard); cfg.raft.PreVote {
+		t.Fatal("--pre-vote=false ignored")
 	}
 	_, err = parseServerFlags(append(base, "--sink", "name=a,type=webhook,url=http://x", "--sink", "name=a,type=webhook,url=http://y"), io.Discard)
 	if !errors.Is(err, errUsage) {

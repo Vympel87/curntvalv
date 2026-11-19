@@ -219,6 +219,7 @@ func TestRandomFaults(t *testing.T) {
 	modes := map[string]func(*Config){
 		"plain":   nil,
 		"compact": snapCfg(7, 12), // frequent snapshots, aggressive log cuts
+		"prevote": func(c *Config) { c.PreVote = true },
 	}
 	for mode, tweak := range modes {
 		for _, size := range []int{3, 5} {

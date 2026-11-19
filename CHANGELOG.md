@@ -13,6 +13,9 @@ break compatibility.
   failover between nodes. `curntvalv subscribe` uses it.
 - `curntvalv dev`: one local node with the dashboard opened in a browser;
   checks the Postgres setup first and prints the SQL to fix it.
+- Raft PreVote (thesis §9.6), on by default (`--pre-vote=false` turns it
+  off): a node that was cut off no longer forces an election when it
+  returns.
 - `curntvalv version` reports the module version when installed with
   `go install` or run with `go tool`.
 

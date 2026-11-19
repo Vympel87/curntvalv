@@ -17,6 +17,13 @@ const (
 	// MsgSnap is the InstallSnapshot RPC (§7). Snapshots hold only metadata
 	// (design D5), so they are sent in one piece (offset 0, done = true).
 	MsgSnap
+	// MsgPreVote asks whether the sender would win an election (PreVote,
+	// Ongaro's thesis §9.6). Its Term is the term the sender would campaign
+	// in; it changes no state on the receiver.
+	MsgPreVote
+	// MsgPreVoteResp is the reply to MsgPreVote. When granted its Term is
+	// the request's term, otherwise the receiver's current term.
+	MsgPreVoteResp
 )
 
 func (t MessageType) String() string {
@@ -31,6 +38,10 @@ func (t MessageType) String() string {
 		return "MsgAppResp"
 	case MsgSnap:
 		return "MsgSnap"
+	case MsgPreVote:
+		return "MsgPreVote"
+	case MsgPreVoteResp:
+		return "MsgPreVoteResp"
 	default:
 		return fmt.Sprintf("MessageType(%d)", uint8(t))
 	}
@@ -45,8 +56,9 @@ type Message struct {
 	To   uint64
 	Term uint64 // sender's current term
 
-	// MsgVote: the candidate's last log entry. MsgAppResp (rejected): the
-	// follower's last index, which lets the leader skip back faster.
+	// MsgVote, MsgPreVote: the candidate's last log entry. MsgAppResp
+	// (rejected): the follower's last index, which lets the leader skip
+	// back faster.
 	LastLogIndex uint64
 	LastLogTerm  uint64
 
@@ -57,7 +69,7 @@ type Message struct {
 	Entries      []Entry
 	LeaderCommit uint64
 
-	// MsgVoteResp.
+	// MsgVoteResp, MsgPreVoteResp.
 	VoteGranted bool
 
 	// MsgAppResp. On success MatchIndex is the index of the last entry the
