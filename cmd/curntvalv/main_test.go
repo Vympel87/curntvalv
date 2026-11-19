@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -422,7 +423,7 @@ func checkHTTP(t *testing.T, c *e2eCluster) {
 		})
 		code, metrics := httpGet(base + "/metrics")
 		if code != 200 || !strings.Contains(metrics, "curntvalv_raft_commit_index ") ||
-			!strings.Contains(metrics, fmt.Sprintf(`curntvalv_info{version="0.0.0-dev",node="%d"} 1`, i+1)) {
+			!regexp.MustCompile(fmt.Sprintf(`(?m)^curntvalv_info\{version="[^"]+",node="%d"\} 1$`, i+1)).MatchString(metrics) {
 			t.Fatalf("node %d metrics: %d\n%.500s", i+1, code, metrics)
 		}
 		if code, page := httpGet(base + "/"); code != 200 || !strings.Contains(page, "curntValv") {

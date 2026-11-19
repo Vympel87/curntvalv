@@ -11,6 +11,8 @@ break compatibility.
 
 - Public Go package `client`: `Subscribe` as an iterator of changes, with
   failover between nodes. `curntvalv subscribe` uses it.
+- `curntvalv version` reports the module version when installed with
+  `go install` or run with `go tool`.
 
 ## [0.1.0]
 

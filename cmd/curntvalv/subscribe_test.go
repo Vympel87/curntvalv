@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -157,5 +158,26 @@ func TestPrintPipeline(t *testing.T) {
 	printPipeline(&out, &pb.StatusResponse{Retention: &pb.RetentionStatus{LogBytes: 100}})
 	if want := "\nRETENTION keep everything; log 100 B\n"; out.String() != want {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestVersionFrom(t *testing.T) {
+	info := func(v string) func() (*debug.BuildInfo, bool) {
+		return func() (*debug.BuildInfo, bool) { return &debug.BuildInfo{Main: debug.Module{Version: v}}, true }
+	}
+	none := func() (*debug.BuildInfo, bool) { return nil, false }
+	for _, tc := range []struct {
+		ldflags string
+		info    func() (*debug.BuildInfo, bool)
+		want    string
+	}{
+		{"0.1.0", info("v0.2.0"), "0.1.0"}, // a release build wins
+		{devVersion, info("v0.2.0"), "0.2.0"},
+		{devVersion, info("(devel)"), devVersion},
+		{devVersion, none, devVersion},
+	} {
+		if got := versionFrom(tc.ldflags, tc.info); got != tc.want {
+			t.Errorf("versionFrom(%q) = %q, want %q", tc.ldflags, got, tc.want)
+		}
 	}
 }

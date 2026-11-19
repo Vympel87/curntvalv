@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,7 +44,24 @@ import (
 	"github.com/Vympel87/curntvalv/internal/web"
 )
 
-var version = "0.0.0-dev"
+// version is set by release builds (-ldflags "-X main.version=...").
+var version = devVersion
+
+const devVersion = "0.0.0-dev"
+
+// appVersion is the release build's version, else the module version that
+// `go install ...@v0.2.0` or `go tool` records, else devVersion.
+func appVersion() string { return versionFrom(version, debug.ReadBuildInfo) }
+
+func versionFrom(ldflags string, buildInfo func() (*debug.BuildInfo, bool)) string {
+	if ldflags != devVersion {
+		return ldflags
+	}
+	if bi, ok := buildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return strings.TrimPrefix(bi.Main.Version, "v")
+	}
+	return devVersion
+}
 
 const usage = `usage:
   curntvalv server --id N --peers ID=HOST:PORT,... --data-dir DIR [flags]
@@ -75,7 +93,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var err error
 	switch args[0] {
 	case "version":
-		fmt.Fprintln(stdout, "curntvalv", version)
+		fmt.Fprintln(stdout, "curntvalv", appVersion())
 		return 0
 	case "server":
 		err = serverCmd(ctx, args[1:], stderr)
@@ -388,7 +406,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		for _, id := range cfg.raft.Peers {
 			addrs = append(addrs, cfg.peers[id])
 		}
-		ws := web.New(web.Config{Version: version, Peers: addrs, Self: cfg.peers[cfg.raft.ID], Logger: logger,
+		ws := web.New(web.Config{Version: appVersion(), Peers: addrs, Self: cfg.peers[cfg.raft.ID], Logger: logger,
 			Counters: func(ctx context.Context) web.Counters { return counters(ctx, node, src, subscribe) }},
 			admin, peers, reader)
 		// Requests end with the node, so open change feeds do not delay
@@ -449,7 +467,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	for i, sp := range cfg.sinks {
 		sinkNames[i] = sp.name
 	}
-	logger.Info("curntvalv node started", "version", version, "listen", cfg.listen, "http", cfg.httpListen, "data_dir", cfg.dataDir,
+	logger.Info("curntvalv node started", "version", appVersion(), "listen", cfg.listen, "http", cfg.httpListen, "data_dir", cfg.dataDir,
 		"peers", cfg.peers, "postgres_source", src != nil, "sinks", sinkNames,
 		"retention_age", retCfg.MaxAge, "retention_bytes", retCfg.MaxBytes, "retention_block", retCfg.Block)
 
