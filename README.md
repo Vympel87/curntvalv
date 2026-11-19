@@ -156,8 +156,9 @@ bin/curntvalv kv put hello world     # metadata KV, works without Postgres
 ```
 
 The key-value store holds cluster metadata; it is how M3 shows that the
-replicated state machine works. It is not meant for application data. There
-is no TLS yet, so run it on a trusted network only.
+replicated state machine works. It is not meant for application data.
+Without TLS and a token (see [Security](#security)) run it on a trusted
+network only.
 
 ## Use it from Go
 
@@ -166,7 +167,7 @@ go get github.com/Vympel87/curntvalv/client
 ```
 
 ```go
-c, err := client.New("node1:7000", "node2:7000", "node3:7000")
+c, err := client.New([]string{"node1:7000", "node2:7000", "node3:7000"})
 if err != nil {
 	log.Fatal(err)
 }
@@ -240,8 +241,8 @@ A sink added later starts with the oldest retained entry (or with
 ## Dashboard and metrics
 
 Every node serves HTTP on `--http-listen` (default `127.0.0.1:8080`; an
-empty value turns it off). There is no authentication: bind it to a
-trusted network only.
+empty value turns it off). It is open unless a token is set (see
+[Security](#security)).
 
 | Path | |
 |---|---|
@@ -268,6 +269,27 @@ Useful series: `curntvalv_sink_lag_entries`, `curntvalv_sink_state`,
 ```bash
 curl -N 'http://127.0.0.1:8081/api/events?table=orders'   # follow changes
 ```
+
+## Security
+
+TLS and a token are off by default. To try them:
+
+```bash
+curntvalv certs --out certs node1,10.0.0.1 node2,10.0.0.2 node3,10.0.0.3
+openssl rand -hex 32 > token          # the same file on every node
+curntvalv server ... --tls-cert certs/node1.crt --tls-key certs/node1.key \
+  --tls-ca certs/ca.crt --auth-token-file token
+export CURNTVALV_TLS_CA=certs/ca.crt CURNTVALV_TOKEN=$(cat token)
+curntvalv status
+```
+
+- Nodes talk mutual TLS to each other; clients only need `ca.crt`. Each
+  node's certificate must name the host names and IPs others use for it.
+- The token protects the admin and subscribe APIs, the dashboard and
+  `/metrics` (browser: any user name, the token as password; Prometheus:
+  `authorization` with a bearer token). `/healthz` and `/readyz` stay open.
+- Go: `client.New(addrs, client.WithTLS(cfg), client.WithToken(tok))`.
+- `curntvalv certs` is for getting started; use your own CA in production.
 
 ## Development
 

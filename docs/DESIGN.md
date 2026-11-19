@@ -293,8 +293,7 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   capped at 500ms by default; gRPC's own connection backoff (up to 120s by
   default) is capped the same way. The cap must stay well below the election
   timeout: a node that comes back and does not hear from the leader in time
-  starts an election. Without PreVote (D9) that still happens sometimes after
-  a restart and costs one re-election (about a second without a leader).
+  would start an election; PreVote (D9) keeps that from deposing the leader.
 - **The receiver drops** messages that are not addressed to it or come from
   an id outside the configured peers.
 - **AdminService** (status, put/get/delete on the metadata KV) is served on
@@ -303,8 +302,8 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   the next address.
 - **SubscribeService** streams row changes to applications from any node
   (D12).
-- **No TLS or authentication yet.** Clusters must run on a trusted network
-  until a later milestone adds TLS.
+- **TLS and tokens** are optional (D15); without them a cluster must run on
+  a trusted network.
 - Maximum gRPC message size is 64 MiB (revisit with large transactions, M4).
 
 ### D11. Postgres ingest
@@ -438,8 +437,8 @@ removing nodes at runtime (Raft single-server membership change) comes later.
 ### D13. HTTP: health, metrics, dashboard, change feed
 
 - **One read-only HTTP server per node** (`internal/web`), on
-  `--http-listen` (default `127.0.0.1:8080`, empty turns it off). It has no
-  authentication, so the default binds to localhost only; changes go
+  `--http-listen` (default `127.0.0.1:8080`, empty turns it off). Without a
+  token (D15) it is open, so the default binds to localhost only; changes go
   through the gRPC admin API, never through HTTP.
 - **Health.** `/healthz` answers 200 while the node's Raft loop answers;
   `/readyz` also needs a known leader, so a node cut off from the majority
@@ -484,6 +483,40 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   platform's opener (`open`, `xdg-open`, `rundll32`); `--no-open` skips it.
 - **Install.** `go install …/cmd/curntvalv@VERSION` or `go get -tool` (Go
   1.24+); without release `-ldflags` the version comes from the build info.
+
+### D15. Security: TLS and tokens
+
+- **Off by default**, so `dev` and the compose demo stay simple. Both are
+  standard library plus grpc's `credentials` package; no new dependency
+  (`internal/security`).
+- **TLS** (`--tls-cert`, `--tls-key`, `--tls-ca`, all or none) covers the
+  gRPC port and the HTTP port. On gRPC it is mutual between nodes: the
+  listener asks for a client certificate and verifies it against the CA if
+  one is presented (`VerifyClientCertIfGiven`), and Raft streams are
+  accepted only with a verified one. Applications and the CLI connect
+  without a certificate, so one port serves both. Any certificate the CA
+  signed may join Raft traffic; peer ids are not bound to certificates.
+  Clients verify the server's name against the certificate's SANs, so a
+  node's certificate must list the names and IPs others use for it.
+  Certificates are read at start; rotating them needs a restart.
+- **Token** (`--auth-token-file` or `CURNTVALV_AUTH_TOKEN`, the same on
+  every node; not a flag value, which `ps` would show). gRPC calls carry
+  `authorization: Bearer TOKEN`; admin and subscribe calls need it. Raft
+  streams need it too unless they come with a verified certificate, so a
+  token without TLS still guards every port (in plain text: the node warns).
+  HTTP accepts Basic (any user, the token as password: browsers ask for it
+  and their EventSource sends it) or Bearer; `/healthz` and `/readyz` stay
+  open for load balancers. Tokens are compared in constant time.
+- **Clients.** The CLI takes `--tls-ca` / `CURNTVALV_TLS_CA` and
+  `--token-file` / `CURNTVALV_TOKEN`; the Go client `client.WithTLS` and
+  `client.WithToken`.
+- **`curntvalv certs NODE...`** writes a CA and ECDSA P-256 node
+  certificates (server and client use) for trying TLS; production setups
+  should use their own CA.
+- **Testing.** `internal/security` tests every combination (node and
+  application certificates, wrong CA, missing or wrong token, plain text);
+  an end-to-end test runs a 3-node cluster with TLS and a token through a
+  leader kill and checks the CLI and HTTPS.
 
 ## 4. Data model
 

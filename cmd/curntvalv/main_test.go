@@ -130,9 +130,11 @@ type e2eCluster struct {
 	https []string // HTTP addresses (--http-listen)
 	peers string
 	procs map[int]*proc
-	args  []string            // server flags besides id, peers, data dir
-	env   []string            // extra environment for servers
-	logs  map[int]*syncBuffer // kept across restarts
+	args  []string // server flags besides id, peers, data dir
+	env   []string // extra environment for servers
+	// cliEnv is extra environment for client commands (TLS CA, token).
+	cliEnv []string
+	logs   map[int]*syncBuffer // kept across restarts
 }
 
 // syncBuffer is a bytes.Buffer that can be read while a process writes it.
@@ -254,7 +256,9 @@ func (c *e2eCluster) stop(i int) {
 // cli runs a client command and returns stdout.
 func (c *e2eCluster) cli(args ...string) (string, error) {
 	args = append(args, "--addr", strings.Join(c.addrs, ","), "--timeout", "15s")
-	out, err := exec.Command(c.bin, args...).Output()
+	cmd := exec.Command(c.bin, args...)
+	cmd.Env = append(os.Environ(), c.cliEnv...)
+	out, err := cmd.Output()
 	if ee, ok := err.(*exec.ExitError); ok {
 		err = fmt.Errorf("%v: %s", err, ee.Stderr)
 	}
@@ -725,6 +729,7 @@ func (c *e2eCluster) subscribe(args ...string) *subscriber {
 	c.t.Helper()
 	s := &subscriber{out: &syncBuffer{}}
 	cmd := exec.Command(c.bin, append([]string{"subscribe", "--addr", strings.Join(c.addrs, ",")}, args...)...)
+	cmd.Env = append(os.Environ(), c.cliEnv...)
 	cmd.Stdout = s.out
 	if err := cmd.Start(); err != nil {
 		c.t.Fatal(err)

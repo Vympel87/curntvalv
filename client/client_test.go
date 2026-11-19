@@ -14,6 +14,7 @@ import (
 	"github.com/Vympel87/curntvalv/internal/event"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
+	"github.com/Vympel87/curntvalv/internal/security"
 	"github.com/Vympel87/curntvalv/internal/server"
 )
 
@@ -111,7 +112,7 @@ func TestSubscribeFiltersAndSkipsDeadNode(t *testing.T) {
 	l := newLog(change(3, orders, "a"), change(4, items, "x"), change(6, orders, "b"), change(9, orders, "c"))
 	addr, _ := serve(t, l)
 	dead := deadAddr(t)
-	c, err := New(dead + ", " + addr)
+	c, err := New([]string{dead + ", " + addr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func TestSubscribeContinuesOnAnotherNode(t *testing.T) {
 	l := newLog(change(1, orders, "a"), change(2, orders, "b"))
 	a, stopA := serve(t, l)
 	b, _ := serve(t, l)
-	c, _ := New(a, b)
+	c, _ := New([]string{a, b})
 	var resumed []uint64
 	opts := Options{OnRetry: func(_ string, _ error, next uint64) { resumed = append(resumed, next) }}
 	var got []string
@@ -179,7 +180,7 @@ func TestSubscribeCompacted(t *testing.T) {
 	l := newLog(change(10, orders, "a"))
 	l.compacted = 10
 	addr, _ := serve(t, l)
-	c, _ := New(addr)
+	c, _ := New([]string{addr})
 	n := 0
 	for _, err := range c.Subscribe(ctxT(t), Options{From: 5}) {
 		n++
@@ -199,7 +200,7 @@ func TestSubscribeCompacted(t *testing.T) {
 
 func TestSubscribeEndsWithContext(t *testing.T) {
 	addr, _ := serve(t, newLog())
-	c, _ := New(addr)
+	c, _ := New([]string{addr})
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(100*time.Millisecond, cancel)
 	done := make(chan struct{})
@@ -234,7 +235,34 @@ func TestChangeJSONMatchesSharedForm(t *testing.T) {
 }
 
 func TestNewNeedsAnAddress(t *testing.T) {
-	if _, err := New(" , "); err == nil {
+	if _, err := New([]string{" , "}); err == nil {
 		t.Fatal("no error")
+	}
+}
+
+func TestSubscribeWithToken(t *testing.T) {
+	l := newLog(change(1, orders, "a"))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := grpc.NewServer(security.Guard{Token: "s3cret"}.ServerOptions(nil)...)
+	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(l))
+	go gs.Serve(lis)
+	t.Cleanup(gs.Stop)
+	addr := lis.Addr().String()
+
+	c, _ := New([]string{addr})
+	for _, err := range c.Subscribe(ctxT(t), Options{}) {
+		if !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("without token: %v", err)
+		}
+	}
+	c, _ = New([]string{addr}, WithToken("s3cret"))
+	for ch, err := range c.Subscribe(ctxT(t), Options{}) {
+		if err != nil || *ch.After["id"] != "a" {
+			t.Fatalf("with token: %+v %v", ch, err)
+		}
+		break
 	}
 }

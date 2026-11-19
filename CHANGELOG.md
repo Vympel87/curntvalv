@@ -9,10 +9,15 @@ break compatibility.
 
 ### Added
 
-- Public Go package `client`: `Subscribe` as an iterator of changes, with
-  failover between nodes. `curntvalv subscribe` uses it.
+- Public Go package `client`: `client.New(addrs, opts...)` and
+  `Subscribe` as an iterator of changes, with failover between nodes,
+  `WithTLS` and `WithToken`. `curntvalv subscribe` uses it.
 - `curntvalv dev`: one local node with the dashboard opened in a browser;
   checks the Postgres setup first and prints the SQL to fix it.
+- TLS (mutual between nodes) and a token for the gRPC and HTTP APIs
+  (`--tls-cert`, `--tls-key`, `--tls-ca`, `--auth-token-file`), CLI
+  `--tls-ca` and `--token-file`, and `curntvalv certs` to create a CA and
+  node certificates.
 - Raft PreVote (thesis §9.6), on by default (`--pre-vote=false` turns it
   off): a node that was cut off no longer forces an election when it
   returns.

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +39,9 @@ type Options struct {
 	MinBackoff, MaxBackoff time.Duration
 	// Logger receives connection errors. Default: discard.
 	Logger *slog.Logger
+	// DialOptions set the credentials for the connections to peers (TLS,
+	// token; see package security). Default: plaintext.
+	DialOptions []grpc.DialOption
 }
 
 // Transport sends Raft messages to peers. It implements raft.Transport.
@@ -102,8 +106,11 @@ func (t *Transport) Run(ctx context.Context) error {
 	}
 	var wg sync.WaitGroup
 	for id, addr := range t.peers {
-		conn, err := grpc.NewClient(addr,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		creds := t.opts.DialOptions
+		if len(creds) == 0 {
+			creds = []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+		}
+		conn, err := grpc.NewClient(addr, append(slices.Clone(creds),
 			grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(MaxMessageSize)),
 			// gRPC's own reconnect backoff grows to 120s by default. A peer
 			// that comes back must hear from the leader well within an
@@ -118,7 +125,7 @@ func (t *Transport) Run(ctx context.Context) error {
 				},
 				MinConnectTimeout: max(t.opts.MaxBackoff, time.Second),
 			}),
-		)
+		)...)
 		if err != nil {
 			return fmt.Errorf("transport: client for node %d (%s): %w", id, addr, err)
 		}

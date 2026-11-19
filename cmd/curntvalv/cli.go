@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,12 +16,12 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	"github.com/Vympel87/curntvalv/client"
 	"github.com/Vympel87/curntvalv/internal/event"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
+	"github.com/Vympel87/curntvalv/internal/security"
 )
 
 const defaultAddrs = "127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003"
@@ -29,6 +30,56 @@ const defaultAddrs = "127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003"
 type clientFlags struct {
 	addrs   []string
 	timeout time.Duration
+	conn    connFlags
+}
+
+// connFlags are the TLS and token settings of a client command.
+type connFlags struct {
+	caFile, tokenFile *string
+	tls               *tls.Config
+	token             string
+	dial              []grpc.DialOption
+}
+
+// addConnFlags adds --tls-ca and --token-file to fs; load reads the files
+// after fs.Parse.
+func addConnFlags(fs *flag.FlagSet) *connFlags {
+	return &connFlags{
+		caFile:    fs.String("tls-ca", os.Getenv("CURNTVALV_TLS_CA"), "connect with TLS, trusting this CA certificate (env CURNTVALV_TLS_CA)"),
+		tokenFile: fs.String("token-file", "", "file with the cluster's token (or env CURNTVALV_TOKEN)"),
+	}
+}
+
+func (c *connFlags) load() error {
+	if *c.caFile != "" {
+		cfg, err := security.ClientTLS(*c.caFile, "", "")
+		if err != nil {
+			return usageErr("--tls-ca: %v", err)
+		}
+		c.tls = cfg
+	}
+	c.token = os.Getenv("CURNTVALV_TOKEN")
+	if *c.tokenFile != "" {
+		tok, err := security.ReadToken(*c.tokenFile)
+		if err != nil {
+			return usageErr("--token-file: %v", err)
+		}
+		c.token = tok
+	}
+	c.dial = security.DialOptions(c.tls, c.token)
+	return nil
+}
+
+// clientOptions are the client package options for c.
+func (c *connFlags) clientOptions() []client.Option {
+	var opts []client.Option
+	if c.tls != nil {
+		opts = append(opts, client.WithTLS(c.tls))
+	}
+	if c.token != "" {
+		opts = append(opts, client.WithToken(c.token))
+	}
+	return opts
 }
 
 // parseClientFlags parses the shared client flags; extra adds a command's
@@ -45,6 +96,7 @@ func parseClientFlags(name string, args []string, stderr io.Writer, extra ...fun
 	}
 	addr := fs.String("addr", def, "node addresses, comma separated (env CURNTVALV_ADDR)")
 	timeout := fs.Duration("timeout", 5*time.Second, "overall timeout")
+	conn := addConnFlags(fs)
 	// Allow flags after positional arguments: "kv get KEY --addr x".
 	var pos []string
 	for {
@@ -66,11 +118,14 @@ func parseClientFlags(name string, args []string, stderr io.Writer, extra ...fun
 	if len(addrs) == 0 {
 		return clientFlags{}, nil, usageErr("--addr is empty")
 	}
-	return clientFlags{addrs: addrs, timeout: *timeout}, pos, nil
+	if err := conn.load(); err != nil {
+		return clientFlags{}, nil, err
+	}
+	return clientFlags{addrs: addrs, timeout: *timeout, conn: *conn}, pos, nil
 }
 
-func dial(addr string) (*grpc.ClientConn, pb.AdminServiceClient, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func dial(opts []grpc.DialOption, addr string) (*grpc.ClientConn, pb.AdminServiceClient, error) {
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -93,7 +148,7 @@ func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	reachable := 0
 	var leader *pb.StatusResponse
 	for _, addr := range cf.addrs {
-		st, err := nodeStatus(ctx, addr)
+		st, err := nodeStatus(ctx, cf.conn.dial, addr)
 		if err != nil {
 			fmt.Fprintf(w, "%s\t-\tunreachable\t-\t-\t-\t-\t-\t-\t-\n", addr)
 			continue
@@ -211,7 +266,7 @@ func sinkCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 	ctx, cancel := context.WithTimeout(ctx, cf.timeout)
 	defer cancel()
-	return onLeader(ctx, cf.addrs, func(ctx context.Context, c pb.AdminServiceClient) error {
+	return onLeader(ctx, cf, func(ctx context.Context, c pb.AdminServiceClient) error {
 		r, err := c.ResetSink(ctx, req)
 		if err == nil {
 			fmt.Fprintf(stdout, "sink %s reset to offset %d, generation %d (index %d)\n", req.Name, r.GetOffset(), r.GetGeneration(), r.GetIndex())
@@ -220,8 +275,8 @@ func sinkCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	})
 }
 
-func nodeStatus(ctx context.Context, addr string) (*pb.StatusResponse, error) {
-	conn, client, err := dial(addr)
+func nodeStatus(ctx context.Context, opts []grpc.DialOption, addr string) (*pb.StatusResponse, error) {
+	conn, client, err := dial(opts, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +330,7 @@ func kvCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, cf.timeout)
 	defer cancel()
-	return onLeader(ctx, cf.addrs, call)
+	return onLeader(ctx, cf, call)
 }
 
 var errNotFound = errors.New("key not found")
@@ -283,11 +338,11 @@ var errNotFound = errors.New("key not found")
 // onLeader runs call against the nodes in turn until one that is the leader
 // answers. Followers answer FAILED_PRECONDITION and unreachable nodes
 // UNAVAILABLE; while no leader is known it keeps retrying until ctx expires.
-func onLeader(ctx context.Context, addrs []string, call func(context.Context, pb.AdminServiceClient) error) error {
+func onLeader(ctx context.Context, cf clientFlags, call func(context.Context, pb.AdminServiceClient) error) error {
 	var last error
 	for {
-		for _, addr := range addrs {
-			conn, client, err := dial(addr)
+		for _, addr := range cf.addrs {
+			conn, client, err := dial(cf.conn.dial, addr)
 			if err != nil {
 				last = err
 				continue
@@ -331,13 +386,17 @@ func logCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		def = defaultAddrs
 	}
 	addr := fs.String("addr", def, "node addresses, comma separated; the first reachable one is used")
+	cf := addConnFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return usageErr("log takes no arguments")
 	}
-	client, closeFn, err := firstReachable(ctx, strings.Split(*addr, ","))
+	if err := cf.load(); err != nil {
+		return err
+	}
+	client, closeFn, err := firstReachable(ctx, cf.dial, strings.Split(*addr, ","))
 	if err != nil {
 		return err
 	}
@@ -388,16 +447,16 @@ func logCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	}
 }
 
-func firstReachable(ctx context.Context, addrs []string) (pb.AdminServiceClient, func(), error) {
+func firstReachable(ctx context.Context, opts []grpc.DialOption, addrs []string) (pb.AdminServiceClient, func(), error) {
 	for _, a := range addrs {
 		a = strings.TrimSpace(a)
 		if a == "" {
 			continue
 		}
-		if _, err := nodeStatus(ctx, a); err != nil {
+		if _, err := nodeStatus(ctx, opts, a); err != nil {
 			continue
 		}
-		conn, client, err := dial(a)
+		conn, client, err := dial(opts, a)
 		if err != nil {
 			continue
 		}
@@ -433,13 +492,17 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		def = defaultAddrs
 	}
 	addr := fs.String("addr", def, "node addresses, comma separated; on failure the next one is used")
+	cf := addConnFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
 		return usageErr("subscribe takes no arguments")
 	}
-	c, err := client.New(*addr)
+	if err := cf.load(); err != nil {
+		return err
+	}
+	c, err := client.New([]string{*addr}, cf.clientOptions()...)
 	if err != nil {
 		return usageErr("--addr is empty")
 	}

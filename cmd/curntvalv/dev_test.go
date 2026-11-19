@@ -84,7 +84,7 @@ func TestDevCommand(t *testing.T) {
 	f.waitSlot()
 	f.insert(1, 3, 3)
 
-	c, err := client.New(grpcAddr)
+	c, err := client.New([]string{grpcAddr})
 	if err != nil {
 		t.Fatal(err)
 	}

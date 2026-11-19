@@ -1,7 +1,7 @@
 // Package client streams row changes from a curntValv cluster into a Go
 // program.
 //
-//	c, err := client.New("node1:7000", "node2:7000", "node3:7000")
+//	c, err := client.New([]string{"node1:7000", "node2:7000", "node3:7000"})
 //	if err != nil { ... }
 //	defer c.Close()
 //	for ch, err := range c.Subscribe(ctx, client.Options{Tables: []string{"orders"}}) {
@@ -15,11 +15,12 @@
 // the program: to resume later, subscribe From the Index of the last change
 // it has fully processed (that entry's changes arrive again).
 //
-// There is no TLS yet; connect over a trusted network only.
+// A cluster that uses TLS or a token needs WithTLS and WithToken.
 package client
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"iter"
@@ -28,11 +29,11 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	"github.com/Vympel87/curntvalv/internal/event"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
+	"github.com/Vympel87/curntvalv/internal/security"
 )
 
 var (
@@ -42,6 +43,9 @@ var (
 	// ErrInvalid means the server rejected the request, e.g. an empty table
 	// name.
 	ErrInvalid = errors.New("client: invalid request")
+	// ErrUnauthenticated means the cluster wants a token (WithToken) or
+	// the token is wrong.
+	ErrUnauthenticated = errors.New("client: missing or wrong token")
 )
 
 // Op is the kind of a row change.
@@ -97,24 +101,40 @@ type Options struct {
 // use.
 type Client struct {
 	addrs []string
+	tls   *tls.Config
+	token string
 }
 
+// Option configures a Client.
+type Option func(*Client)
+
+// WithTLS connects with TLS. cfg.RootCAs should hold the cluster's CA
+// (curntvalv server --tls-ca); nil RootCAs means the system roots.
+func WithTLS(cfg *tls.Config) Option { return func(c *Client) { c.tls = cfg } }
+
+// WithToken sends the cluster's token (curntvalv server --auth-token-file)
+// with every call.
+func WithToken(token string) Option { return func(c *Client) { c.token = token } }
+
 // New returns a client for the nodes at addrs ("host:port", the nodes'
-// --listen addresses; comma-separated lists are split). It does not
+// --listen addresses; comma-separated entries are split). It does not
 // connect yet.
-func New(addrs ...string) (*Client, error) {
-	var list []string
+func New(addrs []string, opts ...Option) (*Client, error) {
+	c := &Client{}
 	for _, a := range addrs {
 		for _, s := range strings.Split(a, ",") {
 			if s = strings.TrimSpace(s); s != "" {
-				list = append(list, s)
+				c.addrs = append(c.addrs, s)
 			}
 		}
 	}
-	if len(list) == 0 {
+	if len(c.addrs) == 0 {
 		return nil, errors.New("client: no node address")
 	}
-	return &Client{addrs: list}, nil
+	for _, o := range opts {
+		o(c)
+	}
+	return c, nil
 }
 
 // Close releases the client. Streams are closed when their loop ends.
@@ -152,6 +172,9 @@ func (c *Client) Subscribe(ctx context.Context, opts Options) iter.Seq2[Change, 
 				return
 			}
 			switch status.Code(err) {
+			case codes.Unauthenticated:
+				yield(Change{}, fmt.Errorf("%w: %s", ErrUnauthenticated, status.Convert(err).Message()))
+				return
 			case codes.OutOfRange:
 				yield(Change{}, fmt.Errorf("%w: %s", ErrCompacted, status.Convert(err).Message()))
 				return
@@ -183,8 +206,8 @@ func (c *Client) Subscribe(ctx context.Context, opts Options) iter.Seq2[Change, 
 // when handle returned false.
 func (c *Client) stream(ctx context.Context, addr string, req *pb.SubscribeRequest,
 	handle func(*pb.SubscribeResponse, map[uint64]*pb.Schema) bool) (stop bool, err error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64<<20)))
+	conn, err := grpc.NewClient(addr, append(security.DialOptions(c.tls, c.token),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64<<20)))...)
 	if err != nil {
 		return false, err
 	}

@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -37,6 +38,7 @@ import (
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
 	"github.com/Vympel87/curntvalv/internal/retention"
+	"github.com/Vympel87/curntvalv/internal/security"
 	"github.com/Vympel87/curntvalv/internal/server"
 	"github.com/Vympel87/curntvalv/internal/sink"
 	pgsource "github.com/Vympel87/curntvalv/internal/source/pg"
@@ -74,6 +76,7 @@ const usage = `usage:
   curntvalv log [--from N] [--follow] [--addr HOST:PORT,...]
   curntvalv subscribe [--table NAME]... [--from N] [--addr HOST:PORT,...]
   curntvalv sink reset NAME --to earliest|latest|INDEX [--addr HOST:PORT,...]
+  curntvalv certs [--out DIR] NODE...           a CA and node certificates for TLS
   curntvalv version
 
 Run "curntvalv COMMAND -h" for the flags of a command.
@@ -111,6 +114,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = subscribeCmd(ctx, args[1:], stdout, stderr)
 	case "sink":
 		err = sinkCmd(ctx, args[1:], stdout, stderr)
+	case "certs":
+		err = certsCmd(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -219,6 +224,9 @@ type serverConfig struct {
 	retention    retention.Config
 	segmentBytes int64
 	httpListen   string // empty: no HTTP server
+	// TLS files, all set or all empty (design D15), and the token.
+	tlsCert, tlsKey, tlsCA string
+	token                  string
 }
 
 func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
@@ -242,6 +250,10 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	pgURL := fs.String("pg-url", os.Getenv("CURNTVALV_PG_URL"), "Postgres connection URL to capture changes from (env CURNTVALV_PG_URL; empty = no source)")
 	pgSlot := fs.String("pg-slot", "curntvalv", "logical replication slot (created on a new cluster)")
 	pgPub := fs.String("pg-publication", "curntvalv", "Postgres publication to read (must exist)")
+	tlsCert := fs.String("tls-cert", "", "this node's TLS certificate (PEM); with --tls-key and --tls-ca enables TLS, mutual between nodes")
+	tlsKey := fs.String("tls-key", "", "key of --tls-cert (PEM)")
+	tlsCA := fs.String("tls-ca", "", "CA certificate that signed every node's certificate (PEM)")
+	tokenFile := fs.String("auth-token-file", "", "file with a token that clients must send (or env CURNTVALV_AUTH_TOKEN); the same on every node")
 	var sinkFlags repeatFlag
 	fs.Var(&sinkFlags, "sink", "deliver changes to a sink, repeatable; give every node the same sinks:\n"+sinkUsage)
 	if err := fs.Parse(args); err != nil {
@@ -286,6 +298,18 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 		logLevel:   level,
 		pg:         pgsource.Config{URL: *pgURL, Slot: *pgSlot, Publication: *pgPub},
 		httpListen: *httpListen,
+		tlsCert:    *tlsCert,
+		tlsKey:     *tlsKey,
+		tlsCA:      *tlsCA,
+		token:      os.Getenv("CURNTVALV_AUTH_TOKEN"),
+	}
+	if n := countSet(*tlsCert, *tlsKey, *tlsCA); n != 0 && n != 3 {
+		return serverConfig{}, usageErr("--tls-cert, --tls-key and --tls-ca go together")
+	}
+	if *tokenFile != "" {
+		if cfg.token, err = security.ReadToken(*tokenFile); err != nil {
+			return serverConfig{}, usageErr("--auth-token-file: %v", err)
+		}
 	}
 	if cfg.listen == "" {
 		cfg.listen = peers[*id]
@@ -312,6 +336,16 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 		cfg.sinks = append(cfg.sinks, sp)
 	}
 	return cfg, nil
+}
+
+func countSet(vals ...string) int {
+	n := 0
+	for _, v := range vals {
+		if v != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func serverCmd(ctx context.Context, args []string, stderr io.Writer) error {
@@ -353,7 +387,23 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	if retCfg.MaxAge > 0 || retCfg.MaxBytes > 0 {
 		raftCfg.Retention = ret
 	}
-	tr := transport.New(cfg.raft.ID, cfg.peers, transport.Options{Logger: logger})
+	// Credentials (design D15). Nodes present their certificate to each
+	// other; the listener asks for one and Raft streams need it.
+	var srvTLS, peerTLS *tls.Config
+	if cfg.tlsCert != "" {
+		if srvTLS, err = security.ServerTLS(cfg.tlsCert, cfg.tlsKey, cfg.tlsCA); err != nil {
+			return err
+		}
+		if peerTLS, err = security.ClientTLS(cfg.tlsCA, cfg.tlsCert, cfg.tlsKey); err != nil {
+			return err
+		}
+	} else if cfg.token != "" {
+		logger.Warn("a token without TLS travels in plain text; use it on a trusted network only")
+	}
+	guard := security.Guard{Token: cfg.token, MutualTLS: srvTLS != nil}
+	peerDial := security.DialOptions(peerTLS, cfg.token)
+
+	tr := transport.New(cfg.raft.ID, cfg.peers, transport.Options{Logger: logger, DialOptions: peerDial})
 	node, err := raft.NewNode(raftCfg, storage, tr, meta)
 	if err != nil {
 		return err
@@ -383,7 +433,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		runners = append(runners, r)
 	}
 
-	gs := grpc.NewServer(grpc.MaxRecvMsgSize(transport.MaxMessageSize))
+	gs := grpc.NewServer(append(guard.ServerOptions(srvTLS), grpc.MaxRecvMsgSize(transport.MaxMessageSize))...)
 	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
 	health := nodeHealth{src: src, runners: runners, specs: cfg.sinks, ret: ret, retCfg: retCfg, log: log}
 	admin := server.NewAdmin(node, node, meta, health, cfg.peers)
@@ -406,7 +456,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 			lis.Close()
 			return fmt.Errorf("listen on %s: %w", cfg.httpListen, err)
 		}
-		peers := web.NewGRPCPeers()
+		peers := web.NewGRPCPeers(peerDial...)
 		defer peers.Close()
 		addrs := make([]string, 0, len(cfg.raft.Peers))
 		for _, id := range cfg.raft.Peers {
@@ -417,7 +467,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 			admin, peers, reader)
 		// Requests end with the node, so open change feeds do not delay
 		// the shutdown.
-		hs = &http.Server{Handler: ws.Handler(), ReadHeaderTimeout: 10 * time.Second,
+		hs = &http.Server{Handler: security.HTTP(cfg.token, ws.Handler(), "/healthz", "/readyz"), ReadHeaderTimeout: 10 * time.Second,
 			BaseContext: func(net.Listener) context.Context { return ctx }}
 	}
 
@@ -427,7 +477,15 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := hs.Serve(hlis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			var err error
+			if srvTLS != nil {
+				// Browsers have no client certificate; do not ask for one.
+				hs.TLSConfig = &tls.Config{Certificates: srvTLS.Certificates, MinVersion: tls.VersionTLS12}
+				err = hs.ServeTLS(hlis, "", "")
+			} else {
+				err = hs.Serve(hlis)
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errc <- fmt.Errorf("http server: %w", err)
 			}
 		}()
@@ -475,7 +533,8 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	}
 	logger.Info("curntvalv node started", "version", appVersion(), "listen", cfg.listen, "http", cfg.httpListen, "data_dir", cfg.dataDir,
 		"peers", cfg.peers, "postgres_source", src != nil, "sinks", sinkNames,
-		"retention_age", retCfg.MaxAge, "retention_bytes", retCfg.MaxBytes, "retention_block", retCfg.Block)
+		"retention_age", retCfg.MaxAge, "retention_bytes", retCfg.MaxBytes, "retention_block", retCfg.Block,
+		"tls", srvTLS != nil, "auth_token", cfg.token != "")
 
 	var runErr error
 	select {

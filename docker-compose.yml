@@ -10,7 +10,7 @@
 #   docker compose kill node1             # kill a node (maybe the leader)
 #   docker compose start node1            # it recovers from its volume
 #
-# No TLS: only for a trusted local network (design D10).
+# No TLS or token: only for a trusted local network (design D15).
 
 x-node: &node
   build: .
