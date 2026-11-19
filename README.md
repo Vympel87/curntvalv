@@ -132,6 +132,31 @@ The key-value store holds cluster metadata; it is how M3 shows that the
 replicated state machine works. It is not meant for application data. There
 is no TLS yet, so run it on a trusted network only.
 
+## Use it from Go
+
+```bash
+go get github.com/Vympel87/curntvalv/client
+```
+
+```go
+c, err := client.New("node1:7000", "node2:7000", "node3:7000")
+if err != nil {
+	log.Fatal(err)
+}
+defer c.Close()
+for ch, err := range c.Subscribe(ctx, client.Options{Tables: []string{"orders"}}) {
+	if err != nil {
+		log.Fatal(err) // client.ErrCompacted: start again From 0
+	}
+	fmt.Println(ch.Op, ch.Table, ch.After) // after: map of column -> *string (nil = NULL)
+}
+```
+
+`Subscribe` moves to another node when one fails, so changes can arrive
+again around a failure: de-duplicate on `ch.ID`. To resume after a restart,
+subscribe with `From` set to the `Index` of the last change you fully
+processed.
+
 ## Sinks
 
 Add `--sink` (repeatable) to every node, with the same values everywhere:

@@ -77,6 +77,7 @@ and are ready to take over.
 | `internal/pb`          | Generated protobuf/gRPC code (from `proto/`) |
 | `internal/server`      | Client-facing gRPC (admin, subscribe) |
 | `internal/web`         | HTTP: health, Prometheus metrics, cluster view, change feed, dashboard (D13) |
+| `client`               | Public Go package: subscribe to changes with failover (the only public API) |
 | `cmd/curntvalv`             | Single binary: `curntvalv server`, `curntvalv status`, `curntvalv subscribe`, ... |
 
 ## 3. Key design decisions
@@ -401,8 +402,13 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   entries through a notification from the state machine instead of
   polling. Offsets are managed by the client: `next_index` in each response
   is where to resume. Server-side named consumers may follow later.
-  `curntvalv subscribe` prints changes as JSON lines and resumes on another
-  node when its node fails.
+  The public Go package `client` wraps it: `Subscribe` returns an
+  iterator of changes, moves to the next node when a stream fails and
+  continues from the last `next_index`, and ends with `ErrCompacted` or
+  `ErrInvalid` when retrying cannot help. Its `Change` marshals to the
+  shared JSON form. It is the only package outside `internal/`, so it is
+  the one API kept stable. `curntvalv subscribe` uses it and prints changes
+  as JSON lines.
 - **Status.** `curntvalv status` shows the source state and, per sink, its
   state on the leader, stored offset, lag (log entries between the offset and
   the newest entry with row changes, so 0 when nothing is left to deliver),

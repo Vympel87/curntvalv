@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/Vympel87/curntvalv/client"
 	"github.com/Vympel87/curntvalv/internal/event"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 )
@@ -438,83 +439,27 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if fs.NArg() > 0 {
 		return usageErr("subscribe takes no arguments")
 	}
-	var addrs []string
-	for _, a := range strings.Split(*addr, ",") {
-		if a = strings.TrimSpace(a); a != "" {
-			addrs = append(addrs, a)
-		}
-	}
-	if len(addrs) == 0 {
+	c, err := client.New(*addr)
+	if err != nil {
 		return usageErr("--addr is empty")
 	}
+	defer c.Close()
 
 	enc := json.NewEncoder(stdout)
-	next, printed := *from, 0
-	for attempt := 0; ; attempt++ {
-		a := addrs[attempt%len(addrs)]
-		err := subscribeOnce(ctx, a, &pb.SubscribeRequest{FromIndex: next, Tables: tables}, func(resp *pb.SubscribeResponse, schemas map[uint64]*pb.Schema) error {
-			for _, ce := range resp.GetEvents() {
-				if *limit > 0 && printed >= *limit {
-					return errLimit
-				}
-				c := event.Change{Index: ce.GetIndex(), CommitLSN: ce.GetCommitLsn(), Seq: ce.GetSeq(), Xid: ce.GetXid(),
-					CommitTimeUs: ce.GetCommitTimeUs(), Event: ce.GetEvent(), Schema: schemas[ce.GetEvent().GetSchemaId()]}
-				if err := enc.Encode(c.JSON()); err != nil {
-					return err
-				}
-				printed++
-			}
-			next = resp.GetNextIndex()
-			if *limit > 0 && printed >= *limit {
-				return errLimit
-			}
-			return nil
-		})
-		switch code := status.Code(err); {
-		case errors.Is(err, errLimit), ctx.Err() != nil:
-			return nil
-		case code == codes.OutOfRange, code == codes.InvalidArgument:
-			return errors.New(status.Convert(err).Message())
-		case err != nil && code == codes.Unknown:
-			return err // e.g. writing stdout failed
-		}
-		fmt.Fprintf(stderr, "subscribe: %s: %s; retrying from index %d\n", a, status.Convert(err).Message(), next)
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-}
-
-var errLimit = errors.New("limit reached")
-
-// subscribeOnce runs one Subscribe stream against addr and calls handle for
-// every response, with all schemas received on the stream so far.
-func subscribeOnce(ctx context.Context, addr string, req *pb.SubscribeRequest, handle func(*pb.SubscribeResponse, map[uint64]*pb.Schema) error) error {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64<<20)))
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stream, err := pb.NewSubscribeServiceClient(conn).Subscribe(ctx, req)
-	if err != nil {
-		return err
-	}
-	schemas := map[uint64]*pb.Schema{}
-	for {
-		resp, err := stream.Recv()
+	printed := 0
+	opts := client.Options{From: *from, Tables: tables, OnRetry: func(addr string, err error, next uint64) {
+		fmt.Fprintf(stderr, "subscribe: %s: %s; retrying from index %d\n", addr, status.Convert(err).Message(), next)
+	}}
+	for ch, err := range c.Subscribe(ctx, opts) {
 		if err != nil {
 			return err
 		}
-		for id, sc := range resp.GetSchemas() {
-			schemas[id] = sc
-		}
-		if err := handle(resp, schemas); err != nil {
+		if err := enc.Encode(ch); err != nil {
 			return err
 		}
+		if printed++; *limit > 0 && printed >= *limit {
+			return nil
+		}
 	}
+	return nil
 }

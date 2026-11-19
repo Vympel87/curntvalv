@@ -5,6 +5,13 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- Public Go package `client`: `Subscribe` as an iterator of changes, with
+  failover between nodes. `curntvalv subscribe` uses it.
+
 ## [0.1.0]
 
 First release. Early development: not ready for production.
