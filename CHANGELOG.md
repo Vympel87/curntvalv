@@ -18,7 +18,8 @@ First release. Early development: not ready for production.
 - Postgres source (logical replication, pgoutput): runs on the leader,
   stores every transaction exactly once in the log across leader changes,
   fences the previous reader of the slot, and acknowledges Postgres only
-  what is stored.
+  what is stored. Proposals are pipelined (hundreds of transactions a
+  second on a laptop).
 - Sinks with replicated offsets and retries: ClickHouse (changelog table,
   `ReplacingMergeTree`) and webhook. Delivery is at-least-once with a stable
   event `id`.

@@ -2,7 +2,7 @@
 
 Each milestone ends with something that can be run and shown.
 
-Done: M0, M1, M2, M3, M4, M5, M6.
+Done: M0, M1, M2, M3, M4, M5, M6, M7 (v0.1.0).
 
 | # | Milestone | Done when |
 |---|---|---|
