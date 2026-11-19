@@ -342,17 +342,20 @@ func TestChaos(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 	defer cancel()
-	written := make(chan int, 1)
+	type writeResult struct{ rows, txs int }
+	written := make(chan writeResult, 1)
 	go func() {
 		w, err := pgx.Connect(context.Background(), f.url)
 		if err != nil {
 			t.Error(err)
-			written <- 0
+			written <- writeResult{}
 			return
 		}
 		defer w.Close(context.Background())
 		wr := rand.New(rand.NewPCG(seed+1, seed+1))
-		last := 0
+		last, txs := 0, 0
+		// As fast as one connection can commit: ingest must keep up, apart
+		// from the backlog that builds up during faults (design D11).
 		for ctx.Err() == nil {
 			size := 1 + wr.IntN(40)
 			if _, err := w.Exec(context.Background(), fmt.Sprintf("INSERT INTO %s SELECT generate_series(%d, %d)",
@@ -361,12 +364,9 @@ func TestChaos(t *testing.T) {
 				break
 			}
 			last += size
-			// About 20 transactions a second: around what one Raft round
-			// with two fsyncs allows on a laptop, so a backlog builds up
-			// during faults and is worked off afterwards.
-			time.Sleep(time.Duration(20+wr.IntN(40)) * time.Millisecond)
+			txs++
 		}
-		written <- last
+		written <- writeResult{last, txs}
 	}()
 
 	faults := map[string]int{}
@@ -423,8 +423,11 @@ func TestChaos(t *testing.T) {
 		}
 	}
 	hook.setDown(false)
-	rows := <-written
-	t.Logf("faults: %v; %d rows written", faults, rows)
+	wres := <-written
+	rows := wres.rows
+	stopped := time.Now()
+	t.Logf("faults: %v; %d rows in %d transactions written (%.0f transactions/s)",
+		faults, rows, wres.txs, float64(wres.txs)/dur.Seconds())
 	if rows == 0 || t.Failed() {
 		t.Fatal("writer failed")
 	}
@@ -433,7 +436,8 @@ func TestChaos(t *testing.T) {
 		ids := waitRows(t, name, get, rows)
 		rowRange(t, name, ids, 1, rows)
 		_, n := get()
-		t.Logf("%s: %d deliveries for %d rows", name, n, rows)
+		t.Logf("%s: %d deliveries for %d rows, complete %s after the writer stopped",
+			name, n, rows, time.Since(stopped).Round(time.Second))
 	}
 
 	// Every node holds the same log. Compaction can move while the logs are

@@ -35,6 +35,7 @@ func (e *NotLeaderError) Is(target error) bool { return target == ErrNotLeader }
 
 type proposal struct {
 	data   []byte
+	term   uint64             // 0: any term
 	result chan proposeResult // buffered, size 1
 }
 
@@ -174,11 +175,20 @@ func (n *Node) propose(r *raft, w *waitingApplier, p proposal) error {
 		return nil
 	}
 	// Register waiters first: a single-node cluster commits inside propose.
-	data := make([][]byte, len(batch))
+	data := make([][]byte, 0, len(batch))
 	first := r.lastIndex + 1
-	for i, q := range batch {
-		data[i] = q.data
-		w.waiters[first+uint64(i)] = waiter{term: r.term, result: q.result}
+	for _, q := range batch {
+		if q.term != 0 && q.term != r.term {
+			// Made for an earlier term: appending it now could leave a gap
+			// after proposals of that term that were lost.
+			q.result <- proposeResult{err: ErrLeadershipLost}
+			continue
+		}
+		w.waiters[first+uint64(len(data))] = waiter{term: r.term, result: q.result}
+		data = append(data, q.data)
+	}
+	if len(data) == 0 {
+		return nil
 	}
 	_, err := r.propose(data)
 	return err
@@ -189,26 +199,84 @@ func (n *Node) propose(r *raft, w *waitingApplier, p proposal) error {
 // ErrLeadershipLost if leadership changes first (the entry may still be
 // committed later). The caller must not modify data afterwards.
 func (n *Node) Propose(ctx context.Context, data []byte) (uint64, error) {
-	p := proposal{data: data, result: make(chan proposeResult, 1)}
+	p, err := n.ProposeAsync(ctx, 0, data)
+	if err != nil {
+		return 0, err
+	}
+	return p.Wait(ctx)
+}
+
+// ProposeAsync queues data for replication and returns without waiting for
+// the commit. Proposals queued by one goroutine are appended to the log in
+// the order of the calls, so several can be in flight at once (one append
+// and one round trip for all of them) while their order is kept.
+//
+// With term != 0 the proposal is only appended while this node is the
+// leader of that term, and fails with ErrLeadershipLost otherwise. Within
+// one term a leader's entries are never lost from its own log, so if a
+// proposal of a term is committed, all earlier proposals of that term
+// (queued by the same goroutine) are committed too.
+//
+// It blocks only while the queue is full. The caller must not modify data
+// afterwards.
+func (n *Node) ProposeAsync(ctx context.Context, term uint64, data []byte) (*Proposal, error) {
+	p := proposal{data: data, term: term, result: make(chan proposeResult, 1)}
 	select {
 	case n.propc <- p:
+		return &Proposal{result: p.result, stopped: n.done}, nil
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return nil, ctx.Err()
 	case <-n.done:
-		return 0, ErrStopped
+		return nil, ErrStopped
+	}
+}
+
+// Proposal is a queued proposal (see ProposeAsync). Its methods must be
+// called from one goroutine.
+type Proposal struct {
+	result  chan proposeResult
+	stopped <-chan struct{}
+	res     *proposeResult // once known
+}
+
+// Wait blocks until the proposal is committed and returns its log index, or
+// returns the error that ended it: *NotLeaderError, ErrLeadershipLost (the
+// entry may still be committed later), ErrStopped or ctx's error. After ctx
+// ends, Wait may be called again.
+func (p *Proposal) Wait(ctx context.Context) (uint64, error) {
+	if p.res == nil {
+		select {
+		case res := <-p.result:
+			p.res = &res
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-p.stopped:
+			select {
+			case res := <-p.result:
+				p.res = &res
+			default:
+				p.res = &proposeResult{err: ErrStopped}
+			}
+		}
+	}
+	return p.res.index, p.res.err
+}
+
+// Done reports, without blocking, whether the outcome is known; Wait then
+// returns it at once.
+func (p *Proposal) Done() bool {
+	if p.res != nil {
+		return true
 	}
 	select {
 	case res := <-p.result:
-		return res.index, res.err
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case <-n.done:
-		select {
-		case res := <-p.result:
-			return res.index, res.err
-		default:
-			return 0, ErrStopped
-		}
+		p.res = &res
+		return true
+	case <-p.stopped:
+		p.Wait(context.Background())
+		return true
+	default:
+		return false
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 
 // Node is what the source needs from Raft. *raft.Node implements it.
 type Node interface {
-	Propose(ctx context.Context, data []byte) (uint64, error)
+	ProposeAsync(ctx context.Context, term uint64, data []byte) (*raft.Proposal, error)
 	ReadIndex(ctx context.Context) (uint64, error)
 	Status(ctx context.Context) (raft.Status, error)
 }
@@ -210,7 +210,7 @@ func (s *Source) whileLeader(ctx context.Context, term uint64) error {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- s.session(sctx) }()
+	go func() { done <- s.session(sctx, term) }()
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -231,9 +231,9 @@ func (s *Source) whileLeader(ctx context.Context, term uint64) error {
 	}
 }
 
-// session connects to Postgres and streams changes into the log until an
-// error happens or ctx is cancelled.
-func (s *Source) session(ctx context.Context) error {
+// session connects to Postgres and streams changes into the log, as leader
+// of term, until an error happens or ctx is cancelled.
+func (s *Source) session(ctx context.Context, term uint64) error {
 	// Make sure the state machine reflects everything committed so far, and
 	// that we are still the leader, before reading the source position.
 	if _, err := s.node.ReadIndex(ctx); err != nil {
@@ -282,7 +282,7 @@ func (s *Source) session(ctx context.Context) error {
 	s.setHealth("running", nil)
 	s.log.Info("ingest started", "slot", s.cfg.Slot, "from", start,
 		"stored_commit_lsn", pglogrepl.LSN(pos.CommitLSN), "partial_lsn", pglogrepl.LSN(pos.PartialLSN))
-	return s.stream(ctx, rc, pos)
+	return s.stream(ctx, rc, pos, term)
 }
 
 // prepare checks the Postgres setup, fences off a previous leader's
@@ -354,8 +354,41 @@ func (s *Source) prepare(ctx context.Context, conn *pgx.Conn, pos fsm.SourceStat
 	}
 }
 
+// Limits of the proposals a session keeps in flight (design D11).
+const (
+	maxInFlight      = 128
+	maxInFlightBytes = 8 << 20
+)
+
+type inFlight struct {
+	p    *raft.Proposal
+	tb   *pb.TxBatch
+	size int
+}
+
 // stream reads the replication stream and stores batches until an error.
-func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceState) error {
+//
+// Batches are proposed without waiting for each commit, up to maxInFlight
+// entries or maxInFlightBytes. All proposals are for term, so they form one
+// contiguous run in the log: when one is committed, so are all before it.
+// Postgres is acknowledged only up to the last transaction in the committed
+// prefix. Any failed proposal ends the session; the next one starts from
+// the stored position and the state machine drops what is already stored
+// (design D3).
+func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceState, term uint64) error {
+	var queue []inFlight
+	queued := 0
+	// Before another session starts in the same term, every proposal of this
+	// one must have an outcome; otherwise the next session could read a
+	// position that misses entries still on their way into the log.
+	// Proposals always end: committed, failed when leadership is lost, or
+	// failed when the node stops.
+	defer func() {
+		for _, f := range queue {
+			f.p.Wait(context.WithoutCancel(ctx))
+		}
+	}()
+
 	dec := newDecoder(s.state, s.cfg.Limits, pos)
 	ack := pos.EndLSN
 	sentAck := uint64(0)
@@ -374,19 +407,46 @@ func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceSt
 		nextStatus = time.Now().Add(s.cfg.StatusInterval)
 		return nil
 	}
+	// settle takes finished proposals off the front of the queue, in
+	// order. It waits while the queue is over its limits, and with all
+	// until the queue is empty.
+	settle := func(all bool) error {
+		for len(queue) > 0 {
+			f := queue[0]
+			over := len(queue) > maxInFlight || queued > maxInFlightBytes
+			if !all && !over && !f.p.Done() {
+				return nil
+			}
+			if _, err := f.p.Wait(ctx); err != nil {
+				return err
+			}
+			queue = queue[1:]
+			queued -= f.size
+			if f.tb.GetFinal() {
+				ack = f.tb.GetEndLsn()
+			}
+		}
+		return nil
+	}
 	propose := func(tb *pb.TxBatch) error {
 		data, err := fsm.EncodeTxBatch(tb)
 		if err != nil {
 			return err
 		}
-		if _, err := s.node.Propose(ctx, data); err != nil {
+		p, err := s.node.ProposeAsync(ctx, term, data)
+		if err != nil {
 			return err
 		}
 		s.count(tb)
-		return nil
+		queue = append(queue, inFlight{p: p, tb: tb, size: len(data)})
+		queued += len(data)
+		return settle(false)
 	}
 
 	for {
+		if err := settle(false); err != nil {
+			return err
+		}
 		if time.Now().After(nextStatus) || (ack > sentAck && time.Until(nextStatus) < s.cfg.StatusInterval-time.Second) {
 			// Transactions without published changes still move the slot
 			// forward, so Postgres can free WAL. Store the newest one first:
@@ -395,14 +455,22 @@ func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceSt
 				if err := propose(e); err != nil {
 					return err
 				}
-				ack = e.EndLsn
+				if err := settle(true); err != nil {
+					return err
+				}
 			}
 			if err := sendStatus(); err != nil {
 				return err
 			}
 		}
 
-		rctx, cancel := context.WithDeadline(ctx, nextStatus)
+		// While proposals are in flight, look at them again soon so the
+		// acknowledgement follows the commits.
+		deadline := nextStatus
+		if soon := time.Now().Add(20 * time.Millisecond); len(queue) > 0 && soon.Before(deadline) {
+			deadline = soon
+		}
+		rctx, cancel := context.WithDeadline(ctx, deadline)
 		raw, err := rc.ReceiveMessage(rctx)
 		cancel()
 		if err != nil {
@@ -447,9 +515,6 @@ func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceSt
 				for _, b := range batches {
 					if err := propose(b); err != nil {
 						return err
-					}
-					if b.Final {
-						ack = b.EndLsn
 					}
 				}
 			}

@@ -219,6 +219,13 @@ removing nodes at runtime (Raft single-server membership change) comes later.
 - **Propose blocks until commit** and returns the index. It fails with
   `NotLeaderError` (carries the known leader) or `ErrLeadershipLost` (the
   entry may still commit later; D3's LSN de-duplication covers the retry).
+  `ProposeAsync(term, data)` queues a proposal and returns a handle to wait
+  on; proposals from one caller are appended in call order, and queued
+  proposals are appended together (one fsync, one round of
+  AppendEntries). With a term set, a proposal is appended only while the
+  node is leader of that term, so one caller's proposals of a term form a
+  gap-free run in the log. This changes only how clients queue entries,
+  not the protocol.
 - **Persistence order.** Term/vote are saved and entries appended (fsync)
   before any message that depends on them is sent.
 - **Restart.** `commitIndex` and `lastApplied` are volatile (Figure 2). A
@@ -248,7 +255,7 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   last index; the leader sets `nextIndex = min(nextIndex-1, hint+1)`. This is
   still "decrement and retry" (§5.3), it only skips indexes the follower
   cannot have. No other optimizations: no PreVote, no CheckQuorum, no
-  pipelining, no leader leases. Without PreVote a node rejoining after a
+  pipelining of AppendEntries, no leader leases. Without PreVote a node rejoining after a
   partition bumps the term and forces a new election; that is expected.
 - **Broken invariants are fatal.** Two leaders in one term, truncating below
   `commitIndex`, or a log term above the current term stop the node with an
@@ -302,8 +309,12 @@ removing nodes at runtime (Raft single-server membership change) comes later.
 - **Streaming.** pgoutput protocol version 1: Postgres sends a transaction
   only after it committed, and BEGIN already carries the commit LSN, so
   batches can be stored while the transaction is still arriving. A batch is
-  closed at 1000 events or 1 MiB. Batches are proposed one after the other,
-  each waiting for its commit.
+  closed at 1000 events or 1 MiB. Batches are proposed in order without
+  waiting for each commit (`ProposeAsync` with the session's term), with
+  at most 128 entries or 8 MiB in flight. Any failed proposal ends the
+  session, and a session waits for the outcome of all its proposals before
+  it ends, so the next session in the same term reads a position that
+  includes them.
 - **Exactly-once storage.** The state machine holds the last fully stored
   transaction (`commit_lsn`, `end_lsn`) and, while a large transaction is
   stored only in part, its LSN and next event sequence number. A new leader
@@ -313,7 +324,8 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   is ignored on every node and counted as an anomaly (never seen in tests);
   failing instead would make a poison entry that stops the cluster forever.
 - **Acknowledgement.** Postgres is told `flush = end_lsn` of the last stored
-  transaction, never more. Since Postgres 15, transactions without published
+  transaction, never more: the last final batch in the committed prefix of
+  the proposals in flight. Since Postgres 15, transactions without published
   changes are not sent at all, so when idle the source also stores the WAL
   position from Postgres keepalives (as an empty batch, at most once per
   status interval, default 10s) and then acknowledges it. Without this, a
@@ -324,9 +336,13 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   17 in Docker, and CI runs a Postgres service. The end-to-end checker writes
   3000 numbered rows while killing the leader three times and verifies every
   row is stored exactly once, in commit order.
-- **Throughput.** One Raft round trip per batch. Pipelining proposals is a
-  possible optimization if the target (thousands of changes per second)
-  needs it.
+- **Throughput.** Proposals in flight share appends, fsyncs and
+  AppendEntries rounds. Before pipelining, ingest managed about 25
+  transactions a second on a laptop (macOS full fsync); in the chaos test
+  an unpaced writer on one connection commits about 700 small transactions
+  a second (20 rows each on average) and ingest keeps up, apart from the
+  backlog built up during faults. Delivery to a webhook (about 750 entries
+  a second there) is now the slower part.
 
 ### D12. Delivery: sinks and subscribe
 
@@ -499,7 +515,6 @@ The checker runs in two forms (`cmd/curntvalv`, with Postgres):
   payloads is decided in M4.
 - In-memory offset index in `wal` costs 8 bytes per entry; switch to a sparse
   index if logs get very large.
-- Ingest throughput: the source proposes one transaction at a time and
-  waits for its commit (two fsyncs in a row), about 25 transactions a second
-  on a laptop with macOS's full fsync. Batching several transactions per
-  proposal (keeping D3's ordering) is the obvious next step; measure in M7.
+- Delivery throughput: sinks read 100 entries at a time and small
+  transactions are one entry each. Larger reads or merging small
+  transactions into one entry may follow if needed.

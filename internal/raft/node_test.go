@@ -432,3 +432,144 @@ func TestNodeReadCommitted(t *testing.T) {
 		t.Fatalf("read past commit index: %d > %d", last, st2.CommitIndex)
 	}
 }
+
+// leader returns a node that reports itself as leader, after c.propose has
+// made sure one exists.
+func (c *liveCluster) leader(ctx context.Context) (uint64, Status) {
+	c.t.Helper()
+	for _, id := range c.ids {
+		if c.nodes[id] == nil {
+			continue
+		}
+		st, err := c.nodes[id].node.Status(ctx)
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		if st.State == StateLeader {
+			return id, st
+		}
+	}
+	c.t.Skip("leadership moved during the test")
+	return 0, Status{}
+}
+
+// Many proposals in flight at once are committed in the order they were
+// queued, on every node.
+func TestProposeAsyncKeepsOrder(t *testing.T) {
+	c := newLiveCluster(t, 3)
+	c.propose("first")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	id, st := c.leader(ctx)
+	const n = 500
+	props := make([]*Proposal, n)
+	for i := range props {
+		p, err := c.nodes[id].node.ProposeAsync(ctx, st.Term, fmt.Appendf(nil, "v%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		props[i] = p
+	}
+	var last uint64
+	for i, p := range props {
+		idx, err := p.Wait(ctx)
+		if errors.Is(err, ErrLeadershipLost) {
+			t.Skip("leadership moved during the test")
+		}
+		if err != nil {
+			t.Fatalf("proposal %d: %v", i, err)
+		}
+		if idx <= last {
+			t.Fatalf("proposal %d at index %d, after %d", i, idx, last)
+		}
+		last = idx
+		if !p.Done() {
+			t.Fatal("Done false after Wait")
+		}
+	}
+	for _, nid := range c.ids {
+		got := c.waitApplied(nid, n+1)
+		if len(got) < n+1 {
+			t.Fatalf("node %d applied %d values", nid, len(got))
+		}
+		for i := range n {
+			if want := fmt.Sprintf("v%d", i); got[i+1] != want {
+				t.Fatalf("node %d: value %d is %q, want %q", nid, i+1, got[i+1], want)
+			}
+		}
+	}
+}
+
+// A proposal for another term is never appended.
+func TestProposeAsyncTermGuard(t *testing.T) {
+	c := newLiveCluster(t, 3)
+	c.propose("x")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, st := c.leader(ctx)
+	node := c.nodes[id].node
+	others := []uint64{st.Term + 1} // 0 means any term
+	if st.Term > 1 {
+		others = append(others, st.Term-1)
+	}
+	for _, term := range others {
+		p, err := node.ProposeAsync(ctx, term, []byte("stale"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Wait(ctx); !errors.Is(err, ErrLeadershipLost) {
+			t.Fatalf("term %d (current %d): got %v, want ErrLeadershipLost", term, st.Term, err)
+		}
+	}
+	p, err := node.ProposeAsync(ctx, st.Term, []byte("ok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Wait(ctx); err != nil && !errors.Is(err, ErrLeadershipLost) {
+		t.Fatal(err)
+	}
+	for _, v := range c.waitApplied(id, 2) {
+		if v == "stale" {
+			t.Fatal("a proposal for another term was applied")
+		}
+	}
+}
+
+// Proposals that cannot commit stay pending and fail with ErrStopped when
+// the node stops; Wait with an ended context can be retried.
+func TestProposeAsyncPendingFailOnStop(t *testing.T) {
+	c := newLiveCluster(t, 3)
+	c.propose("x")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	leader, st := c.leader(ctx)
+	for _, id := range c.ids {
+		if id != leader {
+			c.stop(id)
+		}
+	}
+	var props []*Proposal
+	for range 3 {
+		p, err := c.nodes[leader].node.ProposeAsync(ctx, st.Term, []byte("never"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		props = append(props, p)
+	}
+	short, cancelShort := context.WithTimeout(ctx, 30*time.Millisecond)
+	defer cancelShort()
+	if _, err := props[0].Wait(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("wait without quorum: %v", err)
+	}
+	for _, p := range props {
+		if p.Done() {
+			t.Fatal("Done true without quorum")
+		}
+	}
+	c.stop(leader)
+	for i, p := range props {
+		if _, err := p.Wait(ctx); !errors.Is(err, ErrStopped) {
+			t.Fatalf("proposal %d: got %v, want ErrStopped", i, err)
+		}
+	}
+}

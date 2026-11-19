@@ -357,11 +357,13 @@ func sessionErr(t *testing.T, cfg Config, n *testNode) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	var term uint64
 	waitFor(t, "leader", 5*time.Second, func() bool {
 		st, _ := n.node.Status(ctx)
+		term = st.Term
 		return st.State == raft.StateLeader
 	})
-	return src.session(ctx)
+	return src.session(ctx, term)
 }
 
 func TestMissingPublicationIsAConfigError(t *testing.T) {
