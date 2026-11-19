@@ -374,6 +374,14 @@ func TestMissingPublicationIsAConfigError(t *testing.T) {
 	if err := sessionErr(t, cfg, n); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "CREATE PUBLICATION") {
 		t.Fatalf("got %v", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := Check(ctx, e.url, "does_not_exist"); !errors.Is(err, ErrConfig) {
+		t.Fatalf("Check: got %v", err)
+	}
+	if err := Check(ctx, e.url, e.pub); err != nil {
+		t.Fatalf("Check of a good setup: %v", err)
+	}
 }
 
 // Design D7: if the slot disappears after changes were stored, refuse to

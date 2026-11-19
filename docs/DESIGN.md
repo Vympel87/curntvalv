@@ -453,6 +453,23 @@ removing nodes at runtime (Raft single-server membership change) comes later.
 - **Shutdown.** Requests use the node's context, so open feeds end when the
   node stops.
 
+### D14. Local development: `curntvalv dev`
+
+- **One node, same code.** `dev` builds an ordinary server configuration
+  (node 1 of a one-node cluster) and runs it; there is no separate code
+  path. Defaults are for a laptop: data in `./.curntvalv`, gRPC on
+  `127.0.0.1:7001` (the CLI's first default address), dashboard on
+  `127.0.0.1:8080`, Postgres from `--pg-url`, `CURNTVALV_PG_URL` or
+  `DATABASE_URL`.
+- **Fail early with the fix.** Before starting, `dev` checks `wal_level`
+  and the publication (`pgsource.Check`, the same check a session runs)
+  and prints the SQL to fix them, instead of retrying in the background
+  like a server does.
+- **Browser.** Once `/healthz` answers, the dashboard is opened with the
+  platform's opener (`open`, `xdg-open`, `rundll32`); `--no-open` skips it.
+- **Install.** `go install …/cmd/curntvalv@VERSION` or `go get -tool` (Go
+  1.24+); without release `-ldflags` the version comes from the build info.
+
 ## 4. Data model
 
 ```

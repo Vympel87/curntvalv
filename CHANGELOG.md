@@ -11,6 +11,8 @@ break compatibility.
 
 - Public Go package `client`: `Subscribe` as an iterator of changes, with
   failover between nodes. `curntvalv subscribe` uses it.
+- `curntvalv dev`: one local node with the dashboard opened in a browser;
+  checks the Postgres setup first and prints the SQL to fix it.
 - `curntvalv version` reports the module version when installed with
   `go install` or run with `go tool`.
 

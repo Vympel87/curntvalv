@@ -70,7 +70,34 @@ multi-arch image:
 docker pull ghcr.io/vympel87/curntvalv:latest
 ```
 
-Or build from source with Go 1.25+: `make build` (writes `bin/curntvalv`).
+Or with Go 1.25+:
+
+```bash
+go install github.com/Vympel87/curntvalv/cmd/curntvalv@latest
+```
+
+## Local development: `curntvalv dev`
+
+One node on your machine, reading your development database, with the
+dashboard opened in the browser:
+
+```bash
+curntvalv dev --pg-url postgres://user:pass@localhost:5432/app   # or set DATABASE_URL
+```
+
+It keeps its log in `./.curntvalv/` (add it to `.gitignore`), serves gRPC
+on `127.0.0.1:7001` (so `curntvalv status`, `curntvalv subscribe` and the
+Go client work without flags) and the dashboard on `127.0.0.1:8080`.
+Postgres needs `wal_level = logical` and a publication; `dev` checks both
+first and prints the SQL if something is missing. `--no-open` skips the
+browser; `--sink` works as for `server`.
+
+In a Go project you can pin it as a tool instead of installing it:
+
+```bash
+go get -tool github.com/Vympel87/curntvalv/cmd/curntvalv
+go tool curntvalv dev
+```
 
 ## Try it: a 3-node cluster with Postgres and ClickHouse
 

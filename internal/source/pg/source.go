@@ -285,22 +285,42 @@ func (s *Source) session(ctx context.Context, term uint64) error {
 	return s.stream(ctx, rc, pos, term)
 }
 
+// Check connects to Postgres and checks that it is set up for curntValv:
+// wal_level is logical and the publication exists. A setup problem matches
+// ErrConfig and says how to fix it.
+func Check(ctx context.Context, url, publication string) error {
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		return fmt.Errorf("pg: connect: %w", err)
+	}
+	defer conn.Close(context.Background())
+	return checkSetup(ctx, conn, publication)
+}
+
+func checkSetup(ctx context.Context, conn *pgx.Conn, publication string) error {
+	var walLevel string
+	if err := conn.QueryRow(ctx, "SHOW wal_level").Scan(&walLevel); err != nil {
+		return fmt.Errorf("pg: read wal_level: %w", err)
+	}
+	if walLevel != "logical" {
+		return fmt.Errorf("%w: wal_level is %q, need logical (ALTER SYSTEM SET wal_level = logical; then restart Postgres)", ErrConfig, walLevel)
+	}
+	var pubExists bool
+	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)", publication).Scan(&pubExists); err != nil {
+		return fmt.Errorf("pg: check publication: %w", err)
+	}
+	if !pubExists {
+		return fmt.Errorf("%w: publication %q does not exist (CREATE PUBLICATION %s FOR TABLE orders, ...; or FOR ALL TABLES)",
+			ErrConfig, publication, publication)
+	}
+	return nil
+}
+
 // prepare checks the Postgres setup, fences off a previous leader's
 // connection and decides whether the slot must be created.
 func (s *Source) prepare(ctx context.Context, conn *pgx.Conn, pos fsm.SourceState) (create bool, err error) {
-	var walLevel string
-	if err := conn.QueryRow(ctx, "SHOW wal_level").Scan(&walLevel); err != nil {
-		return false, fmt.Errorf("pg: read wal_level: %w", err)
-	}
-	if walLevel != "logical" {
-		return false, fmt.Errorf("%w: wal_level is %q, need logical", ErrConfig, walLevel)
-	}
-	var pubExists bool
-	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)", s.cfg.Publication).Scan(&pubExists); err != nil {
-		return false, fmt.Errorf("pg: check publication: %w", err)
-	}
-	if !pubExists {
-		return false, fmt.Errorf("%w: publication %q does not exist (CREATE PUBLICATION %s FOR TABLE ...)", ErrConfig, s.cfg.Publication, s.cfg.Publication)
+	if err := checkSetup(ctx, conn, s.cfg.Publication); err != nil {
+		return false, err
 	}
 
 	fresh := pos.CommitLSN == 0 && pos.PartialLSN == 0

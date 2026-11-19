@@ -1,5 +1,6 @@
 // Command curntvalv is the single binary for the curntValv server and CLI.
 //
+//	curntvalv dev --pg-url postgres://...   (one local node and its dashboard)
 //	curntvalv server --id 1 --peers 1=127.0.0.1:7001,2=127.0.0.1:7002,3=127.0.0.1:7003 --data-dir ./data/1
 //	curntvalv status [--addr ...]
 //	curntvalv kv put|get|del KEY [VALUE] [--addr ...]
@@ -64,6 +65,7 @@ func versionFrom(ldflags string, buildInfo func() (*debug.BuildInfo, bool)) stri
 }
 
 const usage = `usage:
+  curntvalv dev [--pg-url URL]                  one local node and its dashboard
   curntvalv server --id N --peers ID=HOST:PORT,... --data-dir DIR [flags]
   curntvalv status [--addr HOST:PORT,...]
   curntvalv kv put KEY VALUE [--addr HOST:PORT,...]
@@ -95,6 +97,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintln(stdout, "curntvalv", appVersion())
 		return 0
+	case "dev":
+		err = devCmd(ctx, args[1:], stderr)
 	case "server":
 		err = serverCmd(ctx, args[1:], stderr)
 	case "status":
