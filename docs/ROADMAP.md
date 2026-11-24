@@ -2,7 +2,7 @@
 
 Each milestone ends with something that can be run and shown.
 
-Done: M0, M1, M2, M3, M4, M5, M6, M7 (v0.1.0).
+Done: M0–M7 (v0.1.0), v0.2.0.
 
 | # | Milestone | Done when |
 |---|---|---|
@@ -15,8 +15,17 @@ Done: M0, M1, M2, M3, M4, M5, M6, M7 (v0.1.0).
 | M6 | Retention, replay, chaos end-to-end test | New sink replays history; numbered-rows checker passes under fault injection |
 | M7 | Dashboard, metrics, release | Embedded dashboard, Prometheus metrics, Docker image, demo GIF, **v0.1.0** |
 
-## After v0.1
+## v0.2 (done)
 
+- Public Go package `client` (subscribe with failover, TLS, token)
+- `curntvalv dev` for local development; install with `go install` or
+  `go get -tool`
+- Raft PreVote
+- TLS (mutual between nodes), token authentication, `curntvalv certs`
+
+## Next
+
+- Config file instead of long flag lists
 - Postgres failover handling (design D7)
 - Initial table snapshot / backfill
 - Dynamic cluster membership

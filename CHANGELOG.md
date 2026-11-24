@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
-## [Unreleased]
+## [0.2.0]
 
 ### Added
 
@@ -23,6 +23,17 @@ break compatibility.
   returns.
 - `curntvalv version` reports the module version when installed with
   `go install` or run with `go tool`.
+
+### Changed
+
+- Node-to-node transport drops message types it does not know instead of
+  closing the stream, so later versions can add messages.
+
+### Upgrading from 0.1
+
+- PreVote adds two Raft message types that 0.1 nodes reject. For a rolling
+  upgrade start the new nodes with `--pre-vote=false`, and turn it on once
+  every node runs 0.2 (elections keep working either way).
 
 ## [0.1.0]
 
@@ -63,4 +74,5 @@ First release. Early development: not ready for production.
 - No Postgres failover handling yet (design D7), no initial table
   snapshot, static membership.
 
+[0.2.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.1.0
