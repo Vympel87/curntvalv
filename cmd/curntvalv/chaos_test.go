@@ -282,10 +282,13 @@ func TestEndToEndRetentionAndReplay(t *testing.T) {
 		t.Fatalf("replay starts at row %d, before the oldest row (%d) the late sink could get", lo, lateLo)
 	}
 
-	// 5. Block: while a is down the log is not cut past a's offset.
+	// 5. Block: while a is down the log is not cut past a's offset. Write
+	// well over --retention-bytes meanwhile, so that once a is back the size
+	// limit clearly lies past its old offset (with only a little more than
+	// 3KB the limit can stay below the next snapshot and nothing is cut).
 	a.setDown(true)
-	f.insert(401, 600, 5)
-	waitRows(t, "late", late.ids, 600)
+	f.insert(401, 1000, 5)
+	waitRows(t, "late", late.ids, 1000)
 	var aOffset uint64
 	waitE2E(t, "retention held back by a", 30*time.Second, func() bool {
 		st := c.mustCLI("status")
@@ -302,7 +305,7 @@ func TestEndToEndRetentionAndReplay(t *testing.T) {
 		}
 	}
 	a.setDown(false)
-	waitRows(t, "a", a.ids, 600)
+	waitRows(t, "a", a.ids, 1000)
 	waitE2E(t, "compaction past a's old offset", 60*time.Second, func() bool { return leaderFirst(c.mustCLI("status")) > aOffset+1 })
 	// b was failed, so only a's running session had to notice its reset.
 	if n := c.logCount("sink reset; restarting"); n < 1 {
