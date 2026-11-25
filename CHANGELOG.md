@@ -31,17 +31,23 @@ break compatibility.
 
 ### Fixed
 
-- A transaction could be lost when it stayed open across an idle period
-  (no other WAL written for one status interval, 10s by default) and its
-  commit record then landed exactly at the stored idle position: the
-  source took it as already stored. Position-only batches now store
-  commit LSN P-1 for WAL position P.
 - `--http-listen` help no longer says the HTTP port has no authentication.
 
 ### Upgrading from 0.2
 
 - Snapshots are now version 5, which v0.2 nodes cannot read: upgrade all
   nodes close together, and before any `source reset`.
+
+## [0.2.1]
+
+### Fixed
+
+- A transaction could be lost when it stayed open across an idle period
+  (no other WAL written for one status interval, 10s by default) and its
+  commit record then landed exactly at the stored idle position: the
+  source took it as already stored. Position-only batches now store
+  commit LSN P-1 for WAL position P. Also affects 0.1.0; upgrading needs
+  no other change.
 
 ## [0.2.0]
 
@@ -112,5 +118,6 @@ First release. Early development: not ready for production.
 - No Postgres failover handling yet (design D7), no initial table
   snapshot, static membership.
 
+[0.2.1]: https://github.com/Vympel87/curntvalv/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.1.0
