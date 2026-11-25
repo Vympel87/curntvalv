@@ -28,6 +28,12 @@ service AdminService {
   // sinks and subscribers see the gap. Leader only, and only while the
   // source on the leader is "failed".
   rpc ResetSource(ResetSourceRequest) returns (ResetSourceResponse);
+  // StartBackfill queues tables to be read in full into the log (design
+  // D17). Each table must have a primary key and be in the publication.
+  // Leader only.
+  rpc StartBackfill(StartBackfillRequest) returns (StartBackfillResponse);
+  // CancelBackfill stops pending backfills. Leader only.
+  rpc CancelBackfill(CancelBackfillRequest) returns (CancelBackfillResponse);
 }
 
 message StatusRequest {}
@@ -50,6 +56,8 @@ message StatusResponse {
   repeated SinkStatus sinks = 13;
   // Log retention on this node; unset on nodes without it (tests).
   RetentionStatus retention = 14;
+  // Backfills (replicated), in the order they were started.
+  repeated Backfill backfills = 15;
 }
 
 message RetentionStatus {
@@ -118,6 +126,28 @@ message ResetSourceResponse {
   // Raft index at which the reset was committed.
   uint64 index = 1;
   SourceReset source_reset = 2;
+}
+
+message StartBackfillRequest {
+  // Table names as Postgres resolves them ("orders", "sales.orders").
+  repeated string tables = 1;
+}
+
+message StartBackfillResponse {
+  // Raft index at which the command was committed.
+  uint64 index = 1;
+  // The tables as "namespace.name".
+  repeated string tables = 2;
+}
+
+message CancelBackfillRequest {
+  // "namespace.name", or just the name if only one backfill has it.
+  repeated string tables = 1;
+}
+
+message CancelBackfillResponse {
+  uint64 index = 1;
+  repeated string tables = 2;
 }
 
 message PutRequest {

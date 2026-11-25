@@ -86,7 +86,12 @@ func leaderStatus() *pb.StatusResponse {
 			{Name: "hook", Type: "webhook", Policy: "drop", State: "retrying", Offset: 30, Lag: 10, Delivered: 7, Failures: 2, LastError: `bad "quote"`},
 			{Name: "ch", Type: "clickhouse", Policy: "block", State: "running", Offset: 40, Generation: 1},
 		},
-		Retention: &pb.RetentionStatus{MaxBytes: 1 << 20, LogBytes: 4096, CompactLimit: 30, BlockedBy: "ch"}}
+		Retention: &pb.RetentionStatus{MaxBytes: 1 << 20, LogBytes: 4096, CompactLimit: 30, BlockedBy: "ch"},
+		Backfills: []*pb.Backfill{
+			{Table: "public.users", Id: 3, State: pb.BackfillState_BACKFILL_STATE_DONE, Rows: 12},
+			{Table: "public.orders", Id: 8, State: pb.BackfillState_BACKFILL_STATE_PENDING, Rows: 500, LastKey: [][]byte{[]byte("17"), []byte("a")}},
+			{Table: "s.t", Id: 9, State: pb.BackfillState_BACKFILL_STATE_PENDING},
+		}}
 }
 
 func TestMetrics(t *testing.T) {
@@ -106,6 +111,10 @@ func TestMetrics(t *testing.T) {
 		`curntvalv_sink_state{sink="hook",type="webhook",state="retrying"} 1`,
 		`curntvalv_sink_generation{sink="ch",type="clickhouse"} 1`,
 		`curntvalv_subscribe_streams 3`,
+		`curntvalv_backfill_rows{table="public.orders"} 500`,
+		`curntvalv_backfill_state{table="public.orders",state="running"} 1`,
+		`curntvalv_backfill_state{table="s.t",state="pending"} 1`,
+		`curntvalv_backfill_state{table="public.users",state="done"} 1`,
 		"# TYPE curntvalv_sink_delivered_total counter",
 	} {
 		if !strings.Contains(out, want+"\n") {
@@ -225,6 +234,10 @@ func TestAPIStatus(t *testing.T) {
 	if p == nil || p.Node != 2 || p.SourceState != "running" || len(p.Sinks) != 2 || p.Sinks[0].Failures != 2 ||
 		p.Retention == nil || p.Retention.BlockedBy != "ch" {
 		t.Fatalf("pipeline %+v", p)
+	}
+	if b := p.Backfills; len(b) != 3 || b[1] != (backfillView{Table: "public.orders", State: "running", Rows: 500, LastKey: "17,a", Started: 8}) ||
+		b[0].State != "done" || b[2].State != "pending" {
+		t.Fatalf("backfills %+v", b)
 	}
 
 	// Without a leader there is no pipeline.

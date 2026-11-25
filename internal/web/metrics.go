@@ -86,6 +86,7 @@ func boolf(b bool) float64 {
 var (
 	raftStates      = []string{"follower", "candidate", "leader"}
 	componentStates = []string{"standby", "running", "retrying", "failed"}
+	backfillStates  = []string{"pending", "running", "done", "cancelled", "failed"}
 )
 
 // writeMetrics renders all metrics of one node.
@@ -141,6 +142,14 @@ func writeMetrics(st *pb.StatusResponse, c Counters, version string) []byte {
 		for _, state := range componentStates {
 			m.gauge("curntvalv_sink_state", "State of the sink on this node (1 for the current one).",
 				boolf(s.GetState() == state), append(l, label{"state", state})...)
+		}
+	}
+
+	for _, bf := range backfills(st) {
+		l := label{"table", bf.Table}
+		m.gauge("curntvalv_backfill_rows", "Rows stored by the table's backfill (replicated).", float64(bf.Rows), l)
+		for _, state := range backfillStates {
+			m.gauge("curntvalv_backfill_state", "State of the table's backfill (1 for the current one).", boolf(bf.State == state), l, label{"state", state})
 		}
 	}
 

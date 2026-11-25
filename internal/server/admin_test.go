@@ -269,13 +269,22 @@ func TestReadLog(t *testing.T) {
 }
 
 type fakeResetter struct {
-	idx uint64
-	r   *pb.SourceReset
-	err error
+	idx    uint64
+	r      *pb.SourceReset
+	err    error
+	tables []string
 }
 
 func (f fakeResetter) Reset(context.Context) (uint64, *pb.SourceReset, error) {
 	return f.idx, f.r, f.err
+}
+
+func (f fakeResetter) StartBackfill(_ context.Context, tables []string) (uint64, []string, error) {
+	return f.idx, append([]string{"start"}, tables...), f.err
+}
+
+func (f fakeResetter) CancelBackfill(_ context.Context, tables []string) (uint64, []string, error) {
+	return f.idx, append([]string{"cancel"}, tables...), f.err
 }
 
 func TestResetSource(t *testing.T) {
@@ -304,5 +313,32 @@ func TestResetSource(t *testing.T) {
 		if status.Code(err) != tc.code || !strings.Contains(status.Convert(err).Message(), tc.msg) {
 			t.Errorf("%v: got %v", tc.err, err)
 		}
+	}
+}
+
+func TestBackfillRPCs(t *testing.T) {
+	f := fsm.New()
+	n := &fakeNode{f: f}
+	ctx := context.Background()
+	if _, err := NewAdmin(n, n, f, nil, nil, nil).StartBackfill(ctx, &pb.StartBackfillRequest{}); status.Code(err) != codes.Aborted {
+		t.Fatalf("without a source: %v", err)
+	}
+	a := NewAdmin(n, n, f, nil, fakeResetter{idx: 9}, nil)
+	if resp, err := a.StartBackfill(ctx, &pb.StartBackfillRequest{Tables: []string{"orders"}}); err != nil || resp.GetIndex() != 9 ||
+		strings.Join(resp.GetTables(), ",") != "start,orders" {
+		t.Fatalf("%v %v", resp, err)
+	}
+	if resp, err := a.CancelBackfill(ctx, &pb.CancelBackfillRequest{Tables: []string{"orders"}}); err != nil ||
+		strings.Join(resp.GetTables(), ",") != "cancel,orders" {
+		t.Fatalf("%v %v", resp, err)
+	}
+	a = NewAdmin(n, n, f, nil, fakeResetter{err: errors.New("pg: cannot backfill x: no primary key")}, nil)
+	if _, err := a.StartBackfill(ctx, &pb.StartBackfillRequest{Tables: []string{"x"}}); status.Code(err) != codes.Aborted ||
+		!strings.Contains(err.Error(), "no primary key") {
+		t.Fatalf("%v", err)
+	}
+	a = NewAdmin(n, n, f, nil, fakeResetter{err: &raft.NotLeaderError{}}, nil)
+	if _, err := a.CancelBackfill(ctx, &pb.CancelBackfillRequest{Tables: []string{"x"}}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("%v", err)
 	}
 }

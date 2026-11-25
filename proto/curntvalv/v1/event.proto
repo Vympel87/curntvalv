@@ -27,6 +27,64 @@ message TxBatch {
   // stored before v0.3.
   uint64 system_id = 9;
   uint32 timeline = 10;
+  // Set when the events are a backfill chunk (design D17): rows read from
+  // the table, stored at the position of the chunk's high watermark.
+  BackfillChunk backfill = 11;
+}
+
+// BackfillChunk is the progress a backfill batch makes. The state machine
+// applies it only if it continues the stored progress of the same backfill.
+message BackfillChunk {
+  // "namespace.name" of the table.
+  string table = 1;
+  // Backfill the chunk belongs to (Backfill.id).
+  uint64 id = 2;
+  // Primary key the chunk started after (empty for the first chunk) and
+  // the last primary key it read, as Postgres text, in key column order.
+  repeated bytes after_key = 3;
+  repeated bytes last_key = 4;
+  // The table has no rows after last_key: the backfill is complete.
+  bool done = 5;
+}
+
+enum BackfillState {
+  BACKFILL_STATE_UNSPECIFIED = 0;
+  // Queued or running; one table at a time, in id order.
+  BACKFILL_STATE_PENDING = 1;
+  BACKFILL_STATE_DONE = 2;
+  BACKFILL_STATE_CANCELLED = 3;
+  // Stopped by an error that retrying cannot fix (e.g. the table was
+  // dropped); error says why.
+  BACKFILL_STATE_FAILED = 4;
+}
+
+// Backfill is the replicated state of one table's backfill.
+message Backfill {
+  string table = 1;
+  // Raft index of the command that started it.
+  uint64 id = 2;
+  BackfillState state = 3;
+  // Last primary key stored, as Postgres text.
+  repeated bytes last_key = 4;
+  // Rows stored so far.
+  uint64 rows = 5;
+  // Raft index at which it finished (done, cancelled or failed).
+  uint64 end_index = 6;
+  string error = 7;
+}
+
+// BackfillCommand is the metadata command that starts, cancels or fails
+// backfills (design D17).
+message BackfillCommand {
+  // Tables ("namespace.name") to backfill. A table with a pending backfill
+  // keeps it; otherwise a new one starts from the beginning.
+  repeated string start = 1;
+  // Tables whose pending backfill stops.
+  repeated string cancel = 2;
+  // A pending backfill that failed: only the one with this id.
+  string fail_table = 3;
+  uint64 fail_id = 4;
+  string fail_error = 5;
 }
 
 enum Op {
@@ -39,6 +97,9 @@ enum Op {
   // source reset), so changes between the old and the new position may be
   // missing or repeated. The event has no schema and carries source_reset.
   OP_SOURCE_RESET = 5;
+  // A row read from the table by a backfill (design D17): the row as it was
+  // at the event's position. Consumers treat it as an upsert.
+  OP_BACKFILL = 6;
 }
 
 message Event {
@@ -48,7 +109,7 @@ message Event {
   // Old row image: all columns with REPLICA IDENTITY FULL, otherwise only
   // the key columns, and absent when Postgres does not send it.
   Row before = 3;
-  // New row image (insert, update).
+  // New row image (insert, update, backfill).
   Row after = 4;
   // Set with OP_SOURCE_RESET.
   SourceReset source_reset = 5;

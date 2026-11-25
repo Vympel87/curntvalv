@@ -19,13 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AdminService_Status_FullMethodName      = "/curntvalv.v1.AdminService/Status"
-	AdminService_Put_FullMethodName         = "/curntvalv.v1.AdminService/Put"
-	AdminService_Get_FullMethodName         = "/curntvalv.v1.AdminService/Get"
-	AdminService_Delete_FullMethodName      = "/curntvalv.v1.AdminService/Delete"
-	AdminService_ReadLog_FullMethodName     = "/curntvalv.v1.AdminService/ReadLog"
-	AdminService_ResetSink_FullMethodName   = "/curntvalv.v1.AdminService/ResetSink"
-	AdminService_ResetSource_FullMethodName = "/curntvalv.v1.AdminService/ResetSource"
+	AdminService_Status_FullMethodName         = "/curntvalv.v1.AdminService/Status"
+	AdminService_Put_FullMethodName            = "/curntvalv.v1.AdminService/Put"
+	AdminService_Get_FullMethodName            = "/curntvalv.v1.AdminService/Get"
+	AdminService_Delete_FullMethodName         = "/curntvalv.v1.AdminService/Delete"
+	AdminService_ReadLog_FullMethodName        = "/curntvalv.v1.AdminService/ReadLog"
+	AdminService_ResetSink_FullMethodName      = "/curntvalv.v1.AdminService/ResetSink"
+	AdminService_ResetSource_FullMethodName    = "/curntvalv.v1.AdminService/ResetSource"
+	AdminService_StartBackfill_FullMethodName  = "/curntvalv.v1.AdminService/StartBackfill"
+	AdminService_CancelBackfill_FullMethodName = "/curntvalv.v1.AdminService/CancelBackfill"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -54,6 +56,12 @@ type AdminServiceClient interface {
 	// sinks and subscribers see the gap. Leader only, and only while the
 	// source on the leader is "failed".
 	ResetSource(ctx context.Context, in *ResetSourceRequest, opts ...grpc.CallOption) (*ResetSourceResponse, error)
+	// StartBackfill queues tables to be read in full into the log (design
+	// D17). Each table must have a primary key and be in the publication.
+	// Leader only.
+	StartBackfill(ctx context.Context, in *StartBackfillRequest, opts ...grpc.CallOption) (*StartBackfillResponse, error)
+	// CancelBackfill stops pending backfills. Leader only.
+	CancelBackfill(ctx context.Context, in *CancelBackfillRequest, opts ...grpc.CallOption) (*CancelBackfillResponse, error)
 }
 
 type adminServiceClient struct {
@@ -134,6 +142,26 @@ func (c *adminServiceClient) ResetSource(ctx context.Context, in *ResetSourceReq
 	return out, nil
 }
 
+func (c *adminServiceClient) StartBackfill(ctx context.Context, in *StartBackfillRequest, opts ...grpc.CallOption) (*StartBackfillResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartBackfillResponse)
+	err := c.cc.Invoke(ctx, AdminService_StartBackfill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) CancelBackfill(ctx context.Context, in *CancelBackfillRequest, opts ...grpc.CallOption) (*CancelBackfillResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelBackfillResponse)
+	err := c.cc.Invoke(ctx, AdminService_CancelBackfill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -160,6 +188,12 @@ type AdminServiceServer interface {
 	// sinks and subscribers see the gap. Leader only, and only while the
 	// source on the leader is "failed".
 	ResetSource(context.Context, *ResetSourceRequest) (*ResetSourceResponse, error)
+	// StartBackfill queues tables to be read in full into the log (design
+	// D17). Each table must have a primary key and be in the publication.
+	// Leader only.
+	StartBackfill(context.Context, *StartBackfillRequest) (*StartBackfillResponse, error)
+	// CancelBackfill stops pending backfills. Leader only.
+	CancelBackfill(context.Context, *CancelBackfillRequest) (*CancelBackfillResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -190,6 +224,12 @@ func (UnimplementedAdminServiceServer) ResetSink(context.Context, *ResetSinkRequ
 }
 func (UnimplementedAdminServiceServer) ResetSource(context.Context, *ResetSourceRequest) (*ResetSourceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResetSource not implemented")
+}
+func (UnimplementedAdminServiceServer) StartBackfill(context.Context, *StartBackfillRequest) (*StartBackfillResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartBackfill not implemented")
+}
+func (UnimplementedAdminServiceServer) CancelBackfill(context.Context, *CancelBackfillRequest) (*CancelBackfillResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelBackfill not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -338,6 +378,42 @@ func _AdminService_ResetSource_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_StartBackfill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartBackfillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).StartBackfill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_StartBackfill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).StartBackfill(ctx, req.(*StartBackfillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_CancelBackfill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelBackfillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).CancelBackfill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_CancelBackfill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).CancelBackfill(ctx, req.(*CancelBackfillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -372,6 +448,14 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResetSource",
 			Handler:    _AdminService_ResetSource_Handler,
+		},
+		{
+			MethodName: "StartBackfill",
+			Handler:    _AdminService_StartBackfill_Handler,
+		},
+		{
+			MethodName: "CancelBackfill",
+			Handler:    _AdminService_CancelBackfill_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

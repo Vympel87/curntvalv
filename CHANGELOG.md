@@ -28,6 +28,12 @@ break compatibility.
   whatever their table filter (`"op":"source_reset"`, `client.OpSourceReset`).
 - `make test-failover`: real Postgres 17 failovers (primary, standby,
   promotion) in three scenarios; also a CI job.
+- Backfill (design D17): `curntvalv backfill start TABLE...` copies the
+  existing rows of tables into the log, in primary key order and in chunks
+  between watermarks, while ingest continues; `curntvalv backfill cancel`;
+  `--backfill-initial` backfills every published table when a new cluster
+  starts. Rows arrive as `"op":"backfill"` (`client.OpBackfill`). Progress
+  in `curntvalv status`, the dashboard and `/metrics`. Needs Postgres 14.
 
 ### Fixed
 
@@ -35,8 +41,9 @@ break compatibility.
 
 ### Upgrading from 0.2
 
-- Snapshots are now version 5, which v0.2 nodes cannot read: upgrade all
-  nodes close together, and before any `source reset`.
+- Snapshots are now version 6, which v0.2 nodes cannot read: upgrade all
+  nodes close together, and before any `source reset` or `backfill start`
+  (a v0.2 node cannot apply those entries).
 
 ## [0.2.1]
 

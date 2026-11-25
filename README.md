@@ -40,6 +40,8 @@ curntValv aims for the first set of features with the operating cost of the seco
   slot grow; the curntValv log absorbs the lag.
 - **Subscribe directly** — applications can stream changes over gRPC without
   another broker.
+- **Backfill** — copy the rows a table already has into the log, while
+  changes keep flowing, without locking or a long transaction.
 
 ## What it is not
 
@@ -59,6 +61,8 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Sinks (ClickHouse, webhook) with stored offsets, subscribe API | ✅ implemented |
 | Retention, sink policies, replay (`sink reset`), chaos test | ✅ implemented |
 | Dashboard, Prometheus metrics, health checks, live change feed | ✅ implemented |
+| Postgres failover checks, `source reset`, config file | ✅ implemented (unreleased) |
+| Backfill of existing rows | ✅ implemented (unreleased) |
 
 ## Install
 
@@ -264,6 +268,30 @@ curntvalv sink reset hook --to 1200       # continue after log index 1200
 A sink added later starts with the oldest retained entry (or with
 `start=latest`).
 
+## Backfill
+
+Logical replication only carries changes made after the slot existed. To
+copy the rows a table already has (Postgres 14 or later, a table with a
+primary key, in the publication):
+
+```bash
+curntvalv backfill start orders sales.customers
+curntvalv status                  # BACKFILL  STATE  ROWS  LAST KEY ...
+curntvalv backfill cancel orders  # stop; start again later from the beginning
+```
+
+or start the server with `--backfill-initial` to backfill every published
+table once, when a new cluster creates its slot.
+
+Rows arrive at every sink and subscriber as `"op":"backfill"` with the row
+in `after` (`client.OpBackfill` in Go); treat them as upserts. They are read
+in primary key order, 1000 at a time, interleaved with the live stream:
+there is no lock and no long transaction, a row changed meanwhile arrives
+in its newer version, and the order in the log stays correct for every row
+(design D17). A backfill survives leader changes and continues from the
+last key stored; each row is stored once. Rows inserted ahead of the
+backfill while it runs can arrive both as an insert and as a backfill row.
+
 ## Postgres failover
 
 curntValv follows a Postgres failover when it can prove nothing was lost,
@@ -333,7 +361,7 @@ scrape_configs:
 
 Useful series: `curntvalv_sink_lag_entries`, `curntvalv_sink_state`,
 `curntvalv_raft_leader_known`, `curntvalv_log_bytes`,
-`curntvalv_raft_became_leader_total`.
+`curntvalv_raft_became_leader_total`, `curntvalv_backfill_rows`.
 
 ```bash
 curl -N 'http://127.0.0.1:8081/api/events?table=orders'   # follow changes

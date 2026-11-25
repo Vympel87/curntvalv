@@ -1,6 +1,7 @@
 // Package fsm is curntValv's replicated state machine. It receives committed
 // Raft entries and keeps the cluster metadata (design D1, D5): a key-value
-// map, the Postgres source position, the schema registry and sink offsets.
+// map, the Postgres source position, the schema registry, sink offsets and
+// backfills.
 //
 // Every normal Raft entry carries an envelope:
 //
@@ -39,6 +40,7 @@ const (
 	opDelete     op = 2
 	opSinkOffset op = 3
 	opSinkReset  op = 4
+	opBackfill   op = 5
 )
 
 const (
@@ -47,7 +49,7 @@ const (
 	// MaxValueSize is the largest allowed value in bytes.
 	MaxValueSize = 1 << 20
 
-	snapshotVersion = 5
+	snapshotVersion = 6
 )
 
 var (
@@ -111,6 +113,8 @@ type FSM struct {
 	src     SourceState
 	schemas map[uint64]*pb.Schema
 	sinks   map[string]SinkPosition
+	// backfills by table ("namespace.name"), design D17.
+	backfills map[string]*pb.Backfill
 	// lastChange is the index of the last applied entry with row changes.
 	lastChange uint64
 	applied    uint64
@@ -121,7 +125,7 @@ type FSM struct {
 // New returns an empty state machine.
 func New() *FSM {
 	return &FSM{kv: map[string][]byte{}, schemas: map[uint64]*pb.Schema{}, sinks: map[string]SinkPosition{},
-		changed: make(chan struct{})}
+		backfills: map[string]*pb.Backfill{}, changed: make(chan struct{})}
 }
 
 // Applied returns the index of the last applied entry and a channel that is
@@ -159,7 +163,7 @@ func (f *FSM) applyPayload(index uint64, b []byte) error {
 	}
 	switch Kind(b[0]) {
 	case KindMeta:
-		return f.applyMeta(b[1:])
+		return f.applyMeta(index, b[1:])
 	case KindTxBatch:
 		return f.applyTxBatch(index, b[1:])
 	default:
@@ -167,7 +171,7 @@ func (f *FSM) applyPayload(index uint64, b []byte) error {
 	}
 }
 
-func (f *FSM) applyMeta(b []byte) error {
+func (f *FSM) applyMeta(index uint64, b []byte) error {
 	if len(b) == 0 {
 		return fmt.Errorf("%w: empty meta command", ErrCorrupt)
 	}
@@ -187,6 +191,11 @@ func (f *FSM) applyMeta(b []byte) error {
 		return f.applySinkOffset(key, rest)
 	case opSinkReset:
 		return f.applySinkReset(key, rest)
+	case opBackfill:
+		if string(key) != backfillKey {
+			return fmt.Errorf("%w: backfill command with key %q", ErrCorrupt, key)
+		}
+		return f.applyBackfillCommand(index, rest)
 	default:
 		return fmt.Errorf("%w: unknown meta op %d", ErrCorrupt, b[0])
 	}
@@ -229,9 +238,11 @@ func (f *FSM) AppliedIndex() uint64 {
 //	| schema count uvarint | schema* |
 //	| sink count uvarint | (sink name, offset u64, generation u64)* |
 //	| last change index u64 |
+//	| backfill count uvarint | backfill* |
 //
 // with keys in sorted order, schemas in id order, sinks in name order, and
-// each key, value, schema (protobuf) and sink name length-prefixed. Version 4
+// backfills in table order, and each key, value, schema, backfill (both
+// protobuf) and sink name length-prefixed. Version 5 (without backfills), 4
 // (without system_id and timeline), 3 (sinks without generation) and 2
 // (without the sink section) are still restored.
 func (f *FSM) Snapshot() ([]byte, error) {
@@ -280,7 +291,21 @@ func (f *FSM) Snapshot() ([]byte, error) {
 		b = binary.LittleEndian.AppendUint64(b, f.sinks[n].Offset)
 		b = binary.LittleEndian.AppendUint64(b, f.sinks[n].Gen)
 	}
-	return binary.LittleEndian.AppendUint64(b, f.lastChange), nil
+	b = binary.LittleEndian.AppendUint64(b, f.lastChange)
+	tables := make([]string, 0, len(f.backfills))
+	for t := range f.backfills {
+		tables = append(tables, t)
+	}
+	slices.Sort(tables)
+	b = binary.AppendUvarint(b, uint64(len(tables)))
+	for _, t := range tables {
+		bb, err := marshalOpts.Marshal(f.backfills[t])
+		if err != nil {
+			return nil, fmt.Errorf("fsm: snapshot backfill %s: %w", t, err)
+		}
+		b = appendBytes(b, bb)
+	}
+	return b, nil
 }
 
 // Restore replaces the whole state with a snapshot.
@@ -373,12 +398,32 @@ func (f *FSM) Restore(b []byte) error {
 		}
 		lastChange, rest = binary.LittleEndian.Uint64(rest[:8]), rest[8:]
 	}
+	backfills := map[string]*pb.Backfill{}
+	if b[0] >= 6 {
+		nb, k := binary.Uvarint(rest)
+		if k <= 0 {
+			return fmt.Errorf("%w: bad backfill count", ErrCorrupt)
+		}
+		rest = rest[k:]
+		for range nb {
+			bb, r, ok := readBytes(rest)
+			if !ok {
+				return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+			}
+			bf := &pb.Backfill{}
+			if err := proto.Unmarshal(bb, bf); err != nil {
+				return fmt.Errorf("%w: snapshot backfill: %v", ErrCorrupt, err)
+			}
+			backfills[bf.GetTable()] = bf
+			rest = r
+		}
+	}
 	if len(rest) != 0 {
 		return fmt.Errorf("%w: trailing bytes in snapshot", ErrCorrupt)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kv, f.src, f.schemas, f.sinks, f.lastChange = kv, src, schemas, sinks, lastChange
+	f.kv, f.src, f.schemas, f.sinks, f.lastChange, f.backfills = kv, src, schemas, sinks, lastChange, backfills
 	f.setApplied(applied)
 	return nil
 }

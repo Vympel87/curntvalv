@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -157,6 +158,7 @@ type pipelineView struct {
 	SourceError string         `json:"source_error"`
 	Sinks       []sinkView     `json:"sinks"`
 	Retention   *retentionView `json:"retention"`
+	Backfills   []backfillView `json:"backfills"`
 }
 
 type sinkView struct {
@@ -217,8 +219,38 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, view)
 }
 
+// backfillView is a backfill (design D17). State is pending, running (the
+// oldest pending one), done, cancelled or failed.
+type backfillView struct {
+	Table   string `json:"table"`
+	State   string `json:"state"`
+	Rows    uint64 `json:"rows"`
+	LastKey string `json:"last_key"`
+	Started uint64 `json:"started_index"`
+	Error   string `json:"error"`
+}
+
+func backfills(st *pb.StatusResponse) []backfillView {
+	out := []backfillView{}
+	running := false
+	for _, bf := range st.GetBackfills() {
+		state := strings.ToLower(strings.TrimPrefix(bf.GetState().String(), "BACKFILL_STATE_"))
+		if state == "pending" && !running {
+			state, running = "running", true
+		}
+		key := make([]string, len(bf.GetLastKey()))
+		for i, k := range bf.GetLastKey() {
+			key[i] = string(k)
+		}
+		out = append(out, backfillView{Table: bf.GetTable(), State: state, Rows: bf.GetRows(), LastKey: strings.Join(key, ","),
+			Started: bf.GetId(), Error: bf.GetError()})
+	}
+	return out
+}
+
 func pipeline(st *pb.StatusResponse) *pipelineView {
-	p := &pipelineView{Node: st.GetId(), SourceState: st.GetSourceState(), SourceError: st.GetSourceError(), Sinks: []sinkView{}}
+	p := &pipelineView{Node: st.GetId(), SourceState: st.GetSourceState(), SourceError: st.GetSourceError(), Sinks: []sinkView{},
+		Backfills: backfills(st)}
 	for _, k := range st.GetSinks() {
 		p.Sinks = append(p.Sinks, sinkView{Name: k.GetName(), Type: k.GetType(), Policy: k.GetPolicy(), State: k.GetState(),
 			Offset: k.GetOffset(), Lag: k.GetLag(), Delivered: k.GetDelivered(), Failures: k.GetFailures(),

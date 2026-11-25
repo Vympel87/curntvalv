@@ -21,6 +21,64 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type BackfillState int32
+
+const (
+	BackfillState_BACKFILL_STATE_UNSPECIFIED BackfillState = 0
+	// Queued or running; one table at a time, in id order.
+	BackfillState_BACKFILL_STATE_PENDING   BackfillState = 1
+	BackfillState_BACKFILL_STATE_DONE      BackfillState = 2
+	BackfillState_BACKFILL_STATE_CANCELLED BackfillState = 3
+	// Stopped by an error that retrying cannot fix (e.g. the table was
+	// dropped); error says why.
+	BackfillState_BACKFILL_STATE_FAILED BackfillState = 4
+)
+
+// Enum value maps for BackfillState.
+var (
+	BackfillState_name = map[int32]string{
+		0: "BACKFILL_STATE_UNSPECIFIED",
+		1: "BACKFILL_STATE_PENDING",
+		2: "BACKFILL_STATE_DONE",
+		3: "BACKFILL_STATE_CANCELLED",
+		4: "BACKFILL_STATE_FAILED",
+	}
+	BackfillState_value = map[string]int32{
+		"BACKFILL_STATE_UNSPECIFIED": 0,
+		"BACKFILL_STATE_PENDING":     1,
+		"BACKFILL_STATE_DONE":        2,
+		"BACKFILL_STATE_CANCELLED":   3,
+		"BACKFILL_STATE_FAILED":      4,
+	}
+)
+
+func (x BackfillState) Enum() *BackfillState {
+	p := new(BackfillState)
+	*p = x
+	return p
+}
+
+func (x BackfillState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (BackfillState) Descriptor() protoreflect.EnumDescriptor {
+	return file_curntvalv_v1_event_proto_enumTypes[0].Descriptor()
+}
+
+func (BackfillState) Type() protoreflect.EnumType {
+	return &file_curntvalv_v1_event_proto_enumTypes[0]
+}
+
+func (x BackfillState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use BackfillState.Descriptor instead.
+func (BackfillState) EnumDescriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{0}
+}
+
 type Op int32
 
 const (
@@ -33,6 +91,9 @@ const (
 	// source reset), so changes between the old and the new position may be
 	// missing or repeated. The event has no schema and carries source_reset.
 	Op_OP_SOURCE_RESET Op = 5
+	// A row read from the table by a backfill (design D17): the row as it was
+	// at the event's position. Consumers treat it as an upsert.
+	Op_OP_BACKFILL Op = 6
 )
 
 // Enum value maps for Op.
@@ -44,6 +105,7 @@ var (
 		3: "OP_DELETE",
 		4: "OP_TRUNCATE",
 		5: "OP_SOURCE_RESET",
+		6: "OP_BACKFILL",
 	}
 	Op_value = map[string]int32{
 		"OP_UNSPECIFIED":  0,
@@ -52,6 +114,7 @@ var (
 		"OP_DELETE":       3,
 		"OP_TRUNCATE":     4,
 		"OP_SOURCE_RESET": 5,
+		"OP_BACKFILL":     6,
 	}
 )
 
@@ -66,11 +129,11 @@ func (x Op) String() string {
 }
 
 func (Op) Descriptor() protoreflect.EnumDescriptor {
-	return file_curntvalv_v1_event_proto_enumTypes[0].Descriptor()
+	return file_curntvalv_v1_event_proto_enumTypes[1].Descriptor()
 }
 
 func (Op) Type() protoreflect.EnumType {
-	return &file_curntvalv_v1_event_proto_enumTypes[0]
+	return &file_curntvalv_v1_event_proto_enumTypes[1]
 }
 
 func (x Op) Number() protoreflect.EnumNumber {
@@ -79,7 +142,7 @@ func (x Op) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Op.Descriptor instead.
 func (Op) EnumDescriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{0}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{1}
 }
 
 type ValueKind int32
@@ -124,11 +187,11 @@ func (x ValueKind) String() string {
 }
 
 func (ValueKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_curntvalv_v1_event_proto_enumTypes[1].Descriptor()
+	return file_curntvalv_v1_event_proto_enumTypes[2].Descriptor()
 }
 
 func (ValueKind) Type() protoreflect.EnumType {
-	return &file_curntvalv_v1_event_proto_enumTypes[1]
+	return &file_curntvalv_v1_event_proto_enumTypes[2]
 }
 
 func (x ValueKind) Number() protoreflect.EnumNumber {
@@ -137,7 +200,7 @@ func (x ValueKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ValueKind.Descriptor instead.
 func (ValueKind) EnumDescriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{1}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{2}
 }
 
 // TxBatch holds the row changes of one Postgres transaction, or a part of it.
@@ -162,8 +225,11 @@ type TxBatch struct {
 	// The Postgres cluster and timeline the batch was read from (design D7):
 	// the system identifier and timeline of IDENTIFY_SYSTEM. 0 in batches
 	// stored before v0.3.
-	SystemId      uint64 `protobuf:"varint,9,opt,name=system_id,json=systemId,proto3" json:"system_id,omitempty"`
-	Timeline      uint32 `protobuf:"varint,10,opt,name=timeline,proto3" json:"timeline,omitempty"`
+	SystemId uint64 `protobuf:"varint,9,opt,name=system_id,json=systemId,proto3" json:"system_id,omitempty"`
+	Timeline uint32 `protobuf:"varint,10,opt,name=timeline,proto3" json:"timeline,omitempty"`
+	// Set when the events are a backfill chunk (design D17): rows read from
+	// the table, stored at the position of the chunk's high watermark.
+	Backfill      *BackfillChunk `protobuf:"bytes,11,opt,name=backfill,proto3" json:"backfill,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -268,6 +334,275 @@ func (x *TxBatch) GetTimeline() uint32 {
 	return 0
 }
 
+func (x *TxBatch) GetBackfill() *BackfillChunk {
+	if x != nil {
+		return x.Backfill
+	}
+	return nil
+}
+
+// BackfillChunk is the progress a backfill batch makes. The state machine
+// applies it only if it continues the stored progress of the same backfill.
+type BackfillChunk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// "namespace.name" of the table.
+	Table string `protobuf:"bytes,1,opt,name=table,proto3" json:"table,omitempty"`
+	// Backfill the chunk belongs to (Backfill.id).
+	Id uint64 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	// Primary key the chunk started after (empty for the first chunk) and
+	// the last primary key it read, as Postgres text, in key column order.
+	AfterKey [][]byte `protobuf:"bytes,3,rep,name=after_key,json=afterKey,proto3" json:"after_key,omitempty"`
+	LastKey  [][]byte `protobuf:"bytes,4,rep,name=last_key,json=lastKey,proto3" json:"last_key,omitempty"`
+	// The table has no rows after last_key: the backfill is complete.
+	Done          bool `protobuf:"varint,5,opt,name=done,proto3" json:"done,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackfillChunk) Reset() {
+	*x = BackfillChunk{}
+	mi := &file_curntvalv_v1_event_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackfillChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackfillChunk) ProtoMessage() {}
+
+func (x *BackfillChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_event_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackfillChunk.ProtoReflect.Descriptor instead.
+func (*BackfillChunk) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *BackfillChunk) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *BackfillChunk) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *BackfillChunk) GetAfterKey() [][]byte {
+	if x != nil {
+		return x.AfterKey
+	}
+	return nil
+}
+
+func (x *BackfillChunk) GetLastKey() [][]byte {
+	if x != nil {
+		return x.LastKey
+	}
+	return nil
+}
+
+func (x *BackfillChunk) GetDone() bool {
+	if x != nil {
+		return x.Done
+	}
+	return false
+}
+
+// Backfill is the replicated state of one table's backfill.
+type Backfill struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Table string                 `protobuf:"bytes,1,opt,name=table,proto3" json:"table,omitempty"`
+	// Raft index of the command that started it.
+	Id    uint64        `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	State BackfillState `protobuf:"varint,3,opt,name=state,proto3,enum=curntvalv.v1.BackfillState" json:"state,omitempty"`
+	// Last primary key stored, as Postgres text.
+	LastKey [][]byte `protobuf:"bytes,4,rep,name=last_key,json=lastKey,proto3" json:"last_key,omitempty"`
+	// Rows stored so far.
+	Rows uint64 `protobuf:"varint,5,opt,name=rows,proto3" json:"rows,omitempty"`
+	// Raft index at which it finished (done, cancelled or failed).
+	EndIndex      uint64 `protobuf:"varint,6,opt,name=end_index,json=endIndex,proto3" json:"end_index,omitempty"`
+	Error         string `protobuf:"bytes,7,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Backfill) Reset() {
+	*x = Backfill{}
+	mi := &file_curntvalv_v1_event_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Backfill) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Backfill) ProtoMessage() {}
+
+func (x *Backfill) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_event_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Backfill.ProtoReflect.Descriptor instead.
+func (*Backfill) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Backfill) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *Backfill) GetId() uint64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *Backfill) GetState() BackfillState {
+	if x != nil {
+		return x.State
+	}
+	return BackfillState_BACKFILL_STATE_UNSPECIFIED
+}
+
+func (x *Backfill) GetLastKey() [][]byte {
+	if x != nil {
+		return x.LastKey
+	}
+	return nil
+}
+
+func (x *Backfill) GetRows() uint64 {
+	if x != nil {
+		return x.Rows
+	}
+	return 0
+}
+
+func (x *Backfill) GetEndIndex() uint64 {
+	if x != nil {
+		return x.EndIndex
+	}
+	return 0
+}
+
+func (x *Backfill) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// BackfillCommand is the metadata command that starts, cancels or fails
+// backfills (design D17).
+type BackfillCommand struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Tables ("namespace.name") to backfill. A table with a pending backfill
+	// keeps it; otherwise a new one starts from the beginning.
+	Start []string `protobuf:"bytes,1,rep,name=start,proto3" json:"start,omitempty"`
+	// Tables whose pending backfill stops.
+	Cancel []string `protobuf:"bytes,2,rep,name=cancel,proto3" json:"cancel,omitempty"`
+	// A pending backfill that failed: only the one with this id.
+	FailTable     string `protobuf:"bytes,3,opt,name=fail_table,json=failTable,proto3" json:"fail_table,omitempty"`
+	FailId        uint64 `protobuf:"varint,4,opt,name=fail_id,json=failId,proto3" json:"fail_id,omitempty"`
+	FailError     string `protobuf:"bytes,5,opt,name=fail_error,json=failError,proto3" json:"fail_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackfillCommand) Reset() {
+	*x = BackfillCommand{}
+	mi := &file_curntvalv_v1_event_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackfillCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackfillCommand) ProtoMessage() {}
+
+func (x *BackfillCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_event_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackfillCommand.ProtoReflect.Descriptor instead.
+func (*BackfillCommand) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *BackfillCommand) GetStart() []string {
+	if x != nil {
+		return x.Start
+	}
+	return nil
+}
+
+func (x *BackfillCommand) GetCancel() []string {
+	if x != nil {
+		return x.Cancel
+	}
+	return nil
+}
+
+func (x *BackfillCommand) GetFailTable() string {
+	if x != nil {
+		return x.FailTable
+	}
+	return ""
+}
+
+func (x *BackfillCommand) GetFailId() uint64 {
+	if x != nil {
+		return x.FailId
+	}
+	return 0
+}
+
+func (x *BackfillCommand) GetFailError() string {
+	if x != nil {
+		return x.FailError
+	}
+	return ""
+}
+
 type Event struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Refers to a Schema stored in the state machine.
@@ -276,7 +611,7 @@ type Event struct {
 	// Old row image: all columns with REPLICA IDENTITY FULL, otherwise only
 	// the key columns, and absent when Postgres does not send it.
 	Before *Row `protobuf:"bytes,3,opt,name=before,proto3" json:"before,omitempty"`
-	// New row image (insert, update).
+	// New row image (insert, update, backfill).
 	After *Row `protobuf:"bytes,4,opt,name=after,proto3" json:"after,omitempty"`
 	// Set with OP_SOURCE_RESET.
 	SourceReset   *SourceReset `protobuf:"bytes,5,opt,name=source_reset,json=sourceReset,proto3" json:"source_reset,omitempty"`
@@ -286,7 +621,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[1]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -298,7 +633,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[1]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -311,7 +646,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{1}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Event) GetSchemaId() uint64 {
@@ -369,7 +704,7 @@ type SourceReset struct {
 
 func (x *SourceReset) Reset() {
 	*x = SourceReset{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[2]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -381,7 +716,7 @@ func (x *SourceReset) String() string {
 func (*SourceReset) ProtoMessage() {}
 
 func (x *SourceReset) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[2]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -394,7 +729,7 @@ func (x *SourceReset) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SourceReset.ProtoReflect.Descriptor instead.
 func (*SourceReset) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{2}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SourceReset) GetPreviousLsn() uint64 {
@@ -456,7 +791,7 @@ type Row struct {
 
 func (x *Row) Reset() {
 	*x = Row{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[3]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -468,7 +803,7 @@ func (x *Row) String() string {
 func (*Row) ProtoMessage() {}
 
 func (x *Row) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[3]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -481,7 +816,7 @@ func (x *Row) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Row.ProtoReflect.Descriptor instead.
 func (*Row) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{3}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Row) GetValues() []*Value {
@@ -501,7 +836,7 @@ type Value struct {
 
 func (x *Value) Reset() {
 	*x = Value{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[4]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -513,7 +848,7 @@ func (x *Value) String() string {
 func (*Value) ProtoMessage() {}
 
 func (x *Value) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[4]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -526,7 +861,7 @@ func (x *Value) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value.ProtoReflect.Descriptor instead.
 func (*Value) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{4}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Value) GetKind() ValueKind {
@@ -561,7 +896,7 @@ type Schema struct {
 
 func (x *Schema) Reset() {
 	*x = Schema{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[5]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -573,7 +908,7 @@ func (x *Schema) String() string {
 func (*Schema) ProtoMessage() {}
 
 func (x *Schema) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[5]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -586,7 +921,7 @@ func (x *Schema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Schema.ProtoReflect.Descriptor instead.
 func (*Schema) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{5}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Schema) GetId() uint64 {
@@ -644,7 +979,7 @@ type Column struct {
 
 func (x *Column) Reset() {
 	*x = Column{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[6]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -656,7 +991,7 @@ func (x *Column) String() string {
 func (*Column) ProtoMessage() {}
 
 func (x *Column) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[6]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -669,7 +1004,7 @@ func (x *Column) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Column.ProtoReflect.Descriptor instead.
 func (*Column) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{6}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Column) GetName() string {
@@ -704,7 +1039,7 @@ var File_curntvalv_v1_event_proto protoreflect.FileDescriptor
 
 const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\n" +
-	"\x18curntvalv/v1/event.proto\x12\fcurntvalv.v1\"\xc2\x02\n" +
+	"\x18curntvalv/v1/event.proto\x12\fcurntvalv.v1\"\xfb\x02\n" +
 	"\aTxBatch\x12\x1d\n" +
 	"\n" +
 	"commit_lsn\x18\x01 \x01(\x04R\tcommitLsn\x12\x17\n" +
@@ -717,7 +1052,30 @@ const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\x06events\x18\b \x03(\v2\x13.curntvalv.v1.EventR\x06events\x12\x1b\n" +
 	"\tsystem_id\x18\t \x01(\x04R\bsystemId\x12\x1a\n" +
 	"\btimeline\x18\n" +
-	" \x01(\rR\btimeline\"\xd8\x01\n" +
+	" \x01(\rR\btimeline\x127\n" +
+	"\bbackfill\x18\v \x01(\v2\x1b.curntvalv.v1.BackfillChunkR\bbackfill\"\x81\x01\n" +
+	"\rBackfillChunk\x12\x14\n" +
+	"\x05table\x18\x01 \x01(\tR\x05table\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\x04R\x02id\x12\x1b\n" +
+	"\tafter_key\x18\x03 \x03(\fR\bafterKey\x12\x19\n" +
+	"\blast_key\x18\x04 \x03(\fR\alastKey\x12\x12\n" +
+	"\x04done\x18\x05 \x01(\bR\x04done\"\xc5\x01\n" +
+	"\bBackfill\x12\x14\n" +
+	"\x05table\x18\x01 \x01(\tR\x05table\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\x04R\x02id\x121\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1b.curntvalv.v1.BackfillStateR\x05state\x12\x19\n" +
+	"\blast_key\x18\x04 \x03(\fR\alastKey\x12\x12\n" +
+	"\x04rows\x18\x05 \x01(\x04R\x04rows\x12\x1b\n" +
+	"\tend_index\x18\x06 \x01(\x04R\bendIndex\x12\x14\n" +
+	"\x05error\x18\a \x01(\tR\x05error\"\x96\x01\n" +
+	"\x0fBackfillCommand\x12\x14\n" +
+	"\x05start\x18\x01 \x03(\tR\x05start\x12\x16\n" +
+	"\x06cancel\x18\x02 \x03(\tR\x06cancel\x12\x1d\n" +
+	"\n" +
+	"fail_table\x18\x03 \x01(\tR\tfailTable\x12\x17\n" +
+	"\afail_id\x18\x04 \x01(\x04R\x06failId\x12\x1d\n" +
+	"\n" +
+	"fail_error\x18\x05 \x01(\tR\tfailError\"\xd8\x01\n" +
 	"\x05Event\x12\x1b\n" +
 	"\tschema_id\x18\x01 \x01(\x04R\bschemaId\x12 \n" +
 	"\x02op\x18\x02 \x01(\x0e2\x10.curntvalv.v1.OpR\x02op\x12)\n" +
@@ -748,14 +1106,21 @@ const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
 	"\btype_oid\x18\x02 \x01(\rR\atypeOid\x12#\n" +
 	"\rtype_modifier\x18\x03 \x01(\x05R\ftypeModifier\x12\x10\n" +
-	"\x03key\x18\x04 \x01(\bR\x03key*k\n" +
+	"\x03key\x18\x04 \x01(\bR\x03key*\x9d\x01\n" +
+	"\rBackfillState\x12\x1e\n" +
+	"\x1aBACKFILL_STATE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16BACKFILL_STATE_PENDING\x10\x01\x12\x17\n" +
+	"\x13BACKFILL_STATE_DONE\x10\x02\x12\x1c\n" +
+	"\x18BACKFILL_STATE_CANCELLED\x10\x03\x12\x19\n" +
+	"\x15BACKFILL_STATE_FAILED\x10\x04*|\n" +
 	"\x02Op\x12\x12\n" +
 	"\x0eOP_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tOP_INSERT\x10\x01\x12\r\n" +
 	"\tOP_UPDATE\x10\x02\x12\r\n" +
 	"\tOP_DELETE\x10\x03\x12\x0f\n" +
 	"\vOP_TRUNCATE\x10\x04\x12\x13\n" +
-	"\x0fOP_SOURCE_RESET\x10\x05*\x82\x01\n" +
+	"\x0fOP_SOURCE_RESET\x10\x05\x12\x0f\n" +
+	"\vOP_BACKFILL\x10\x06*\x82\x01\n" +
 	"\tValueKind\x12\x1a\n" +
 	"\x16VALUE_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fVALUE_KIND_NULL\x10\x01\x12\x13\n" +
@@ -775,34 +1140,40 @@ func file_curntvalv_v1_event_proto_rawDescGZIP() []byte {
 	return file_curntvalv_v1_event_proto_rawDescData
 }
 
-var file_curntvalv_v1_event_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_curntvalv_v1_event_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_curntvalv_v1_event_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_curntvalv_v1_event_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_curntvalv_v1_event_proto_goTypes = []any{
-	(Op)(0),             // 0: curntvalv.v1.Op
-	(ValueKind)(0),      // 1: curntvalv.v1.ValueKind
-	(*TxBatch)(nil),     // 2: curntvalv.v1.TxBatch
-	(*Event)(nil),       // 3: curntvalv.v1.Event
-	(*SourceReset)(nil), // 4: curntvalv.v1.SourceReset
-	(*Row)(nil),         // 5: curntvalv.v1.Row
-	(*Value)(nil),       // 6: curntvalv.v1.Value
-	(*Schema)(nil),      // 7: curntvalv.v1.Schema
-	(*Column)(nil),      // 8: curntvalv.v1.Column
+	(BackfillState)(0),      // 0: curntvalv.v1.BackfillState
+	(Op)(0),                 // 1: curntvalv.v1.Op
+	(ValueKind)(0),          // 2: curntvalv.v1.ValueKind
+	(*TxBatch)(nil),         // 3: curntvalv.v1.TxBatch
+	(*BackfillChunk)(nil),   // 4: curntvalv.v1.BackfillChunk
+	(*Backfill)(nil),        // 5: curntvalv.v1.Backfill
+	(*BackfillCommand)(nil), // 6: curntvalv.v1.BackfillCommand
+	(*Event)(nil),           // 7: curntvalv.v1.Event
+	(*SourceReset)(nil),     // 8: curntvalv.v1.SourceReset
+	(*Row)(nil),             // 9: curntvalv.v1.Row
+	(*Value)(nil),           // 10: curntvalv.v1.Value
+	(*Schema)(nil),          // 11: curntvalv.v1.Schema
+	(*Column)(nil),          // 12: curntvalv.v1.Column
 }
 var file_curntvalv_v1_event_proto_depIdxs = []int32{
-	7, // 0: curntvalv.v1.TxBatch.schemas:type_name -> curntvalv.v1.Schema
-	3, // 1: curntvalv.v1.TxBatch.events:type_name -> curntvalv.v1.Event
-	0, // 2: curntvalv.v1.Event.op:type_name -> curntvalv.v1.Op
-	5, // 3: curntvalv.v1.Event.before:type_name -> curntvalv.v1.Row
-	5, // 4: curntvalv.v1.Event.after:type_name -> curntvalv.v1.Row
-	4, // 5: curntvalv.v1.Event.source_reset:type_name -> curntvalv.v1.SourceReset
-	6, // 6: curntvalv.v1.Row.values:type_name -> curntvalv.v1.Value
-	1, // 7: curntvalv.v1.Value.kind:type_name -> curntvalv.v1.ValueKind
-	8, // 8: curntvalv.v1.Schema.columns:type_name -> curntvalv.v1.Column
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	11, // 0: curntvalv.v1.TxBatch.schemas:type_name -> curntvalv.v1.Schema
+	7,  // 1: curntvalv.v1.TxBatch.events:type_name -> curntvalv.v1.Event
+	4,  // 2: curntvalv.v1.TxBatch.backfill:type_name -> curntvalv.v1.BackfillChunk
+	0,  // 3: curntvalv.v1.Backfill.state:type_name -> curntvalv.v1.BackfillState
+	1,  // 4: curntvalv.v1.Event.op:type_name -> curntvalv.v1.Op
+	9,  // 5: curntvalv.v1.Event.before:type_name -> curntvalv.v1.Row
+	9,  // 6: curntvalv.v1.Event.after:type_name -> curntvalv.v1.Row
+	8,  // 7: curntvalv.v1.Event.source_reset:type_name -> curntvalv.v1.SourceReset
+	10, // 8: curntvalv.v1.Row.values:type_name -> curntvalv.v1.Value
+	2,  // 9: curntvalv.v1.Value.kind:type_name -> curntvalv.v1.ValueKind
+	12, // 10: curntvalv.v1.Schema.columns:type_name -> curntvalv.v1.Column
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_curntvalv_v1_event_proto_init() }
@@ -815,8 +1186,8 @@ func file_curntvalv_v1_event_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_curntvalv_v1_event_proto_rawDesc), len(file_curntvalv_v1_event_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   7,
+			NumEnums:      3,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -28,10 +28,11 @@ Done: M0–M7 (v0.1.0), v0.2.0.
 - Config file: `curntvalv server --config FILE`, `--check` (design D16)
 - Postgres failover: identity and timeline checks, failover slots,
   `curntvalv source reset` (design D7)
+- Backfill of existing rows: `curntvalv backfill`, `--backfill-initial`
+  (design D17)
 
 ## Next
 
-- Initial table snapshot / backfill
 - Dynamic cluster membership
 - More sinks: Meilisearch, Redis, Kafka, NATS
 - Filters and simple transforms per sink

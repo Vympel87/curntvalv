@@ -26,10 +26,12 @@ type Node interface {
 	Status(ctx context.Context) (raft.Status, error)
 }
 
-// State reads the stored source position and schemas. *fsm.FSM implements it.
+// State reads the stored source position, schemas and backfills. *fsm.FSM
+// implements it.
 type State interface {
 	Source() fsm.SourceState
 	HasSchema(id uint64) bool
+	Backfills() []*pb.Backfill
 }
 
 // Config configures the Postgres source.
@@ -43,7 +45,10 @@ type Config struct {
 	// nothing else happens. Default 10s; keep it below wal_sender_timeout.
 	StatusInterval time.Duration
 	Limits         Limits
-	Logger         *slog.Logger
+	// BackfillInitial starts a backfill of every published table with a
+	// primary key when the cluster has stored nothing yet (design D17).
+	BackfillInitial bool
+	Logger          *slog.Logger
 }
 
 var (
@@ -292,11 +297,18 @@ func (s *Source) session(ctx context.Context, term uint64) error {
 	} else {
 		s.enableFailover(ctx, conn, rc, srv, slot.failover)
 	}
+	if err := s.queueInitial(ctx, conn, pos, srv, term); err != nil {
+		return err
+	}
 
 	start := pglogrepl.LSN(pos.EndLSN)
+	args := []string{"proto_version '1'", fmt.Sprintf("publication_names '%s'", s.cfg.Publication)}
+	if srv.version >= minBackfillVersion {
+		args = append(args, "messages 'true'") // backfill watermarks
+	}
 	err = pglogrepl.StartReplication(ctx, rc, s.cfg.Slot, start, pglogrepl.StartReplicationOptions{
 		Mode:       pglogrepl.LogicalReplication,
-		PluginArgs: []string{"proto_version '1'", fmt.Sprintf("publication_names '%s'", s.cfg.Publication)},
+		PluginArgs: args,
 	})
 	if err != nil {
 		return fmt.Errorf("pg: start replication: %w", err)
@@ -455,6 +467,14 @@ func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceSt
 	}()
 
 	dec := newDecoder(s.state, s.cfg.Limits, pos)
+	if srv.version >= minBackfillVersion {
+		// Backfills run beside the stream for as long as it lasts.
+		dec.bf = &window{}
+		bctx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); s.runBackfills(bctx, dec.bf, term) }()
+		defer func() { cancel(); <-done }()
+	}
 	ack := pos.EndLSN
 	sentAck := uint64(0)
 	nextStatus := time.Now()

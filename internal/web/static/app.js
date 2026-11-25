@@ -53,6 +53,7 @@ function renderPipeline(p) {
     $("retention").textContent = "–";
     $("retention-sub").textContent = "";
     $("sinks").tBodies[0].replaceChildren();
+    $("backfills-box").hidden = true;
     return;
   }
   $("source").replaceChildren(p.source_state ? badge(p.source_state) : "not configured");
@@ -69,6 +70,13 @@ function renderPipeline(p) {
     else if (r.compact_limit) sub += " · removable up to entry " + r.compact_limit;
     $("retention-sub").textContent = sub;
   }
+
+  const bfs = p.backfills || [];
+  $("backfills-box").hidden = !bfs.length;
+  $("backfills").tBodies[0].replaceChildren(...bfs.map((b) => el("tr", {},
+    el("td", {}, b.table), el("td", {}, badge(b.state)), el("td", { class: "num" }, b.rows),
+    el("td", {}, b.last_key || "–"), el("td", { class: "num" }, b.started_index),
+    el("td", { class: "err" }, b.error || ""))));
 
   const body = $("sinks").tBodies[0];
   if (!p.sinks.length) {

@@ -244,6 +244,11 @@ func TestChangeJSONMatchesSharedForm(t *testing.T) {
 	if string(got) != string(want) {
 		t.Fatalf("reset: got  %s\nwant %s", got, want)
 	}
+	// And a backfilled row.
+	bf := &pb.ChangeEvent{Index: 10, CommitLsn: 120, Event: &pb.Event{SchemaId: 1, Op: pb.Op_OP_BACKFILL, After: ec.Event.After}}
+	if bc := convert(bf, map[uint64]*pb.Schema{1: orders}); bc.Op != OpBackfill || bc.Table != "public.orders" || bc.After["id"] == nil {
+		t.Fatalf("%+v", bc)
+	}
 }
 
 func TestNewNeedsAnAddress(t *testing.T) {

@@ -130,6 +130,9 @@ func (f *FSM) applyTxBatch(index uint64, b []byte) error {
 			f.schemas[sc.GetId()] = sc
 		}
 	}
+	if ch := tb.GetBackfill(); ch != nil && tb.GetFinal() {
+		f.applyBackfillChunk(index, ch, len(tb.GetEvents()))
+	}
 	if tb.GetFinal() {
 		s.CommitLSN, s.EndLSN = tb.GetCommitLsn(), tb.GetEndLsn()
 		s.PartialLSN, s.PartialNextSeq = 0, 0

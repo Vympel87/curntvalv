@@ -34,6 +34,7 @@ type Meta interface {
 	Schema(id uint64) (*pb.Schema, bool)
 	SinkPosition(name string) (fsm.SinkPosition, bool)
 	LastChange() uint64
+	Backfills() []*pb.Backfill
 }
 
 // Health reports this node's pipeline components for Status.
@@ -54,6 +55,19 @@ type SourceResetter interface {
 	Reset(ctx context.Context) (index uint64, r *pb.SourceReset, err error)
 }
 
+// Backfiller starts and cancels table backfills (design D17). *pg.Source
+// implements it.
+type Backfiller interface {
+	StartBackfill(ctx context.Context, tables []string) (index uint64, names []string, err error)
+	CancelBackfill(ctx context.Context, tables []string) (index uint64, names []string, err error)
+}
+
+// Source is the Postgres source as the admin service uses it.
+type Source interface {
+	SourceResetter
+	Backfiller
+}
+
 // Admin implements pb.AdminServiceServer.
 type Admin struct {
 	pb.UnimplementedAdminServiceServer
@@ -61,14 +75,14 @@ type Admin struct {
 	log    LogReader
 	meta   Meta
 	health Health
-	source SourceResetter
+	source Source
 	peers  map[uint64]string
 }
 
 // NewAdmin returns the admin service of one node. peers maps node ids to
 // addresses and is used to tell clients where the leader is. health and
 // source may be nil (no Postgres source on this node).
-func NewAdmin(node RaftNode, log LogReader, meta Meta, health Health, source SourceResetter, peers map[uint64]string) *Admin {
+func NewAdmin(node RaftNode, log LogReader, meta Meta, health Health, source Source, peers map[uint64]string) *Admin {
 	return &Admin{node: node, log: log, meta: meta, health: health, source: source, peers: peers}
 }
 
@@ -99,6 +113,7 @@ func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResp
 		resp.SourceState, resp.SourceError = a.health.Source()
 		resp.Sinks = a.health.Sinks()
 		resp.Retention = a.health.Retention()
+		resp.Backfills = a.meta.Backfills()
 		last := a.meta.LastChange()
 		for _, s := range resp.Sinks {
 			pos, _ := a.meta.SinkPosition(s.Name)
@@ -255,14 +270,46 @@ func (a *Admin) ResetSource(ctx context.Context, _ *pb.ResetSourceRequest) (*pb.
 	}
 	idx, r, err := a.source.Reset(ctx)
 	if err != nil {
-		var nl *raft.NotLeaderError
-		if errors.As(err, &nl) || errors.Is(err, raft.ErrNotLeader) || errors.Is(err, raft.ErrLeadershipLost) ||
-			errors.Is(err, raft.ErrStopped) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			return nil, a.toStatus(err)
-		}
-		return nil, status.Error(codes.Aborted, err.Error())
+		return nil, a.sourceError(err)
 	}
 	return &pb.ResetSourceResponse{Index: idx, SourceReset: r}, nil
+}
+
+// StartBackfill queues tables for a backfill. Like ResetSource, errors other
+// than not being the leader are ABORTED.
+func (a *Admin) StartBackfill(ctx context.Context, req *pb.StartBackfillRequest) (*pb.StartBackfillResponse, error) {
+	if a.source == nil {
+		return nil, status.Error(codes.Aborted, "no Postgres source is configured on this node")
+	}
+	idx, names, err := a.source.StartBackfill(ctx, req.GetTables())
+	if err != nil {
+		return nil, a.sourceError(err)
+	}
+	return &pb.StartBackfillResponse{Index: idx, Tables: names}, nil
+}
+
+// CancelBackfill stops pending backfills.
+func (a *Admin) CancelBackfill(ctx context.Context, req *pb.CancelBackfillRequest) (*pb.CancelBackfillResponse, error) {
+	if a.source == nil {
+		return nil, status.Error(codes.Aborted, "no Postgres source is configured on this node")
+	}
+	idx, names, err := a.source.CancelBackfill(ctx, req.GetTables())
+	if err != nil {
+		return nil, a.sourceError(err)
+	}
+	return &pb.CancelBackfillResponse{Index: idx, Tables: names}, nil
+}
+
+// sourceError maps an error of a source operation: Raft and context errors
+// as usual (a client may retry on the leader), anything else ABORTED with
+// the reason, so clients do not retry it elsewhere.
+func (a *Admin) sourceError(err error) error {
+	var nl *raft.NotLeaderError
+	if errors.As(err, &nl) || errors.Is(err, raft.ErrNotLeader) || errors.Is(err, raft.ErrLeadershipLost) ||
+		errors.Is(err, raft.ErrStopped) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return a.toStatus(err)
+	}
+	return status.Error(codes.Aborted, err.Error())
 }
 
 func (a *Admin) configured(name string) bool {

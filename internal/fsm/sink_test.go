@@ -238,10 +238,23 @@ func TestLastChange(t *testing.T) {
 	}
 }
 
-// asVersion4 turns a version 5 snapshot into version 4 by removing the
-// source's system_id and timeline.
+// asVersion5 turns a version 6 snapshot without backfills into version 5
+// by removing the empty backfill section.
+func asVersion5(t *testing.T, v6 []byte) []byte {
+	t.Helper()
+	if v6[0] != 6 || v6[len(v6)-1] != 0 {
+		t.Fatalf("snapshot version %d, or it has backfills", v6[0])
+	}
+	return append([]byte{5}, v6[1:len(v6)-1]...)
+}
+
+// asVersion4 turns a version 6 (without backfills) or 5 snapshot into
+// version 4 by removing the source's system_id and timeline.
 func asVersion4(t *testing.T, v5 []byte) []byte {
 	t.Helper()
+	if v5[0] == 6 {
+		v5 = asVersion5(t, v5)
+	}
 	if v5[0] != 5 {
 		t.Fatalf("snapshot version %d", v5[0])
 	}

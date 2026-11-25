@@ -173,7 +173,7 @@ func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 // printPipeline prints the source and sinks as the leader (which runs them)
 // sees them. It is separated from the node table by an empty line.
 func printPipeline(out io.Writer, st *pb.StatusResponse) {
-	if st.GetSourceState() == "" && len(st.GetSinks()) == 0 && st.GetRetention() == nil {
+	if st.GetSourceState() == "" && len(st.GetSinks()) == 0 && st.GetRetention() == nil && len(st.GetBackfills()) == 0 {
 		return
 	}
 	fmt.Fprintln(out)
@@ -194,6 +194,7 @@ func printPipeline(out io.Writer, st *pb.StatusResponse) {
 		}
 		fmt.Fprintln(out)
 	}
+	printBackfills(out, st)
 	if len(st.GetSinks()) == 0 {
 		return
 	}
@@ -208,6 +209,43 @@ func printPipeline(out io.Writer, st *pb.StatusResponse) {
 			s.GetOffset(), s.GetLag(), s.GetDelivered(), e)
 	}
 	w.Flush()
+}
+
+// printBackfills lists the backfills (design D17); the oldest pending one
+// is the one running.
+func printBackfills(out io.Writer, st *pb.StatusResponse) {
+	if len(st.GetBackfills()) == 0 {
+		return
+	}
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "BACKFILL\tSTATE\tROWS\tLAST KEY\tSTARTED\tERROR")
+	running := false
+	for _, bf := range st.GetBackfills() {
+		state := backfillState(bf.GetState())
+		if state == "pending" && !running {
+			state, running = "running", true
+		}
+		key := make([]string, len(bf.GetLastKey()))
+		for i, k := range bf.GetLastKey() {
+			key[i] = string(k)
+		}
+		last := strings.Join(key, ",")
+		if last == "" {
+			last = "-"
+		}
+		e := bf.GetError()
+		if e == "" {
+			e = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%d\t%s\n", bf.GetTable(), state, bf.GetRows(), last, bf.GetId(), e)
+	}
+	w.Flush()
+}
+
+// backfillState is a backfill's state in lower case: pending, done,
+// cancelled or failed.
+func backfillState(s pb.BackfillState) string {
+	return strings.ToLower(strings.TrimPrefix(s.String(), "BACKFILL_STATE_"))
 }
 
 func retentionLimits(r *pb.RetentionStatus) string {
@@ -305,6 +343,38 @@ func sourceCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			event.FormatLSN(r.GetLsn()), r.GetSystemId(), r.GetTimeline())
 		fmt.Fprintln(stdout, "sinks and subscribers receive a source_reset event; changes between the two positions may be missing or repeated")
 		return nil
+	})
+}
+
+// backfillCmd runs "backfill start TABLE..." and "backfill cancel TABLE..."
+// (design D17).
+func backfillCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	const want = "want: backfill start TABLE... | backfill cancel TABLE..."
+	cf, pos, err := parseClientFlags("backfill", args, stderr)
+	if err != nil {
+		return err
+	}
+	if len(pos) < 2 || (pos[0] != "start" && pos[0] != "cancel") {
+		return usageErr(want)
+	}
+	tables := pos[1:]
+	ctx, cancel := context.WithTimeout(ctx, cf.timeout)
+	defer cancel()
+	// Start connects to Postgres to check the tables.
+	return onLeaderWithin(ctx, cf, max(cf.timeout, 2*time.Second), func(ctx context.Context, c pb.AdminServiceClient) error {
+		if pos[0] == "cancel" {
+			r, err := c.CancelBackfill(ctx, &pb.CancelBackfillRequest{Tables: tables})
+			if err == nil {
+				fmt.Fprintf(stdout, "backfill cancelled (index %d): %s\n", r.GetIndex(), strings.Join(r.GetTables(), ", "))
+			}
+			return err
+		}
+		r, err := c.StartBackfill(ctx, &pb.StartBackfillRequest{Tables: tables})
+		if err == nil {
+			fmt.Fprintf(stdout, "backfill started (index %d): %s\n", r.GetIndex(), strings.Join(r.GetTables(), ", "))
+			fmt.Fprintln(stdout, "rows arrive as \"backfill\" events; see progress with `curntvalv status`")
+		}
+		return err
 	})
 }
 

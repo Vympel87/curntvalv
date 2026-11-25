@@ -51,6 +51,8 @@ var (
 type decoder struct {
 	reg    Registry
 	limits Limits
+	// bf is the backfill window (design D17); nil without backfills.
+	bf *window
 
 	relations map[uint32]*pb.Schema // latest definition per relation OID
 	sent      map[uint64]bool       // schemas already put in a batch
@@ -117,8 +119,14 @@ func (d *decoder) handle(msg pglogrepl.Message) ([]*pb.TxBatch, error) {
 			out = append(out, bs...)
 		}
 		return out, nil
+	case *pglogrepl.LogicalDecodingMessage:
+		if m.Transactional && m.Prefix == watermarkPrefix {
+			return nil, d.watermark(string(m.Content))
+		}
+		return nil, nil
 	default:
-		// Type, Origin and logical decoding messages carry nothing we store.
+		// Type and Origin messages, and other logical decoding messages,
+		// carry nothing we store.
 		return nil, nil
 	}
 }
@@ -168,6 +176,9 @@ func (d *decoder) begin(m *pglogrepl.BeginMessage) error {
 func (d *decoder) change(rel uint32, op pb.Op, before, after *pglogrepl.TupleData) ([]*pb.TxBatch, error) {
 	if !d.inTx {
 		return nil, fmt.Errorf("%w: change outside a transaction", ErrProtocol)
+	}
+	if d.bf != nil {
+		d.bf.observe(rel, d.relations[rel], op, before, after)
 	}
 	seq := d.seq
 	d.seq++
@@ -222,13 +233,48 @@ func (d *decoder) commit(m *pglogrepl.CommitMessage) ([]*pb.TxBatch, error) {
 	d.storedLSN = b.CommitLsn
 	if len(b.Events) == 0 {
 		b.FirstSeq = d.seq
-		if !d.emitted && !d.resuming {
+		if !d.emitted && !d.resuming && b.Backfill == nil {
 			d.lastEmpty = b
 			return nil, nil
 		}
 	}
 	d.lastEmpty = nil
 	return []*pb.TxBatch{b}, nil
+}
+
+// watermark handles a backfill watermark. At a chunk's high watermark its
+// rows become the events of this transaction, which holds nothing else: it
+// is the reader's own pg_logical_emit_message call. The reader keeps a chunk
+// within the batch limits, so it is never split.
+func (d *decoder) watermark(content string) error {
+	if !d.inTx {
+		return fmt.Errorf("%w: transactional message outside a transaction", ErrProtocol)
+	}
+	if d.bf == nil {
+		return nil
+	}
+	c := d.bf.watermark(content)
+	if c == nil {
+		return nil
+	}
+	if d.skip || d.resuming || d.emitted || len(d.batch.Events) > 0 {
+		c.outcome <- "high watermark in a transaction with other changes"
+		return nil
+	}
+	evs := c.events()
+	if len(evs) > 0 {
+		s := c.schema
+		if !d.sent[s.GetId()] && !d.reg.HasSchema(s.GetId()) {
+			d.batch.Schemas = append(d.batch.Schemas, s)
+			d.sent[s.GetId()] = true
+		}
+	}
+	d.batch.FirstSeq = d.seq
+	d.batch.Events = evs
+	d.seq += uint32(len(evs))
+	d.batch.Backfill = &pb.BackfillChunk{Table: c.table, Id: c.id, AfterKey: c.afterKey, LastKey: c.lastKey, Done: c.done}
+	c.outcome <- ""
+	return nil
 }
 
 // idle records the server's WAL position from a keepalive. Outside a

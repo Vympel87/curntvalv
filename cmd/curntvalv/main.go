@@ -9,6 +9,7 @@
 //	curntvalv subscribe [--table T]... [--from N] [--addr ...]
 //	curntvalv sink reset NAME --to earliest|latest|INDEX [--addr ...]
 //	curntvalv source reset --to-slot [--addr ...]
+//	curntvalv backfill start|cancel TABLE... [--addr ...]
 //	curntvalv version
 package main
 
@@ -80,6 +81,8 @@ const usage = `usage:
   curntvalv subscribe [--table NAME]... [--from N] [--addr HOST:PORT,...]
   curntvalv sink reset NAME --to earliest|latest|INDEX [--addr HOST:PORT,...]
   curntvalv source reset --to-slot [--addr HOST:PORT,...]   after a failover check stopped ingest
+  curntvalv backfill start TABLE... [--addr HOST:PORT,...]  copy existing rows into the log
+  curntvalv backfill cancel TABLE... [--addr HOST:PORT,...]
   curntvalv certs [--out DIR] NODE...           a CA and node certificates for TLS
   curntvalv version
 
@@ -120,6 +123,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = sinkCmd(ctx, args[1:], stdout, stderr)
 	case "source":
 		err = sourceCmd(ctx, args[1:], stdout, stderr)
+	case "backfill":
+		err = backfillCmd(ctx, args[1:], stdout, stderr)
 	case "certs":
 		err = certsCmd(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -262,6 +267,7 @@ func parseServerFlags(args []string, stderr io.Writer, getenv func(string) strin
 	pgURL := fs.String("pg-url", getenv("CURNTVALV_PG_URL"), "Postgres connection URL to capture changes from (env CURNTVALV_PG_URL; empty = no source)")
 	pgSlot := fs.String("pg-slot", "curntvalv", "logical replication slot (created on a new cluster)")
 	pgPub := fs.String("pg-publication", "curntvalv", "Postgres publication to read (must exist)")
+	backfillInitial := fs.Bool("backfill-initial", false, "when the cluster starts from nothing, also copy the existing rows of every published table with a primary key into the log")
 	tlsCert := fs.String("tls-cert", "", "this node's TLS certificate (PEM); with --tls-key and --tls-ca enables TLS, mutual between nodes")
 	tlsKey := fs.String("tls-key", "", "key of --tls-cert (PEM)")
 	tlsCA := fs.String("tls-ca", "", "CA certificate that signed every node's certificate (PEM)")
@@ -315,7 +321,7 @@ func parseServerFlags(args []string, stderr io.Writer, getenv func(string) strin
 		listen:     *listen,
 		noSync:     *noSync,
 		logLevel:   level,
-		pg:         pgsource.Config{URL: *pgURL, Slot: *pgSlot, Publication: *pgPub},
+		pg:         pgsource.Config{URL: *pgURL, Slot: *pgSlot, Publication: *pgPub, BackfillInitial: *backfillInitial},
 		httpListen: *httpListen,
 		tlsCert:    *tlsCert,
 		tlsKey:     *tlsKey,
@@ -477,7 +483,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	gs := grpc.NewServer(append(guard.ServerOptions(srvTLS), grpc.MaxRecvMsgSize(transport.MaxMessageSize))...)
 	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
 	health := nodeHealth{src: src, runners: runners, specs: cfg.sinks, ret: ret, retCfg: retCfg, log: log}
-	var resetter server.SourceResetter // a nil *Source must stay a nil interface
+	var resetter server.Source // a nil *Source must stay a nil interface
 	if src != nil {
 		resetter = src
 	}

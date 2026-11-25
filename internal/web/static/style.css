@@ -56,8 +56,10 @@ tr.self td:first-child::after { content: " (this node)"; color: var(--muted); fo
   display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
   border: 1px solid currentColor;
 }
-.s-leader, .s-running { color: var(--ok); }
-.s-follower, .s-standby { color: var(--idle); }
+.s-leader, .s-running, .s-done { color: var(--ok); }
+.s-follower, .s-standby, .s-pending, .s-cancelled { color: var(--idle); }
+#backfills-box { margin-top: 12px; }
+[hidden] { display: none !important; }
 .s-candidate, .s-retrying { color: var(--warn); }
 .s-unreachable, .s-failed { color: var(--bad); }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 12px; }

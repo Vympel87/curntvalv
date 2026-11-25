@@ -371,7 +371,9 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   is past the stored `end_lsn`, stops ingest with an error and is not
   retried in the same term: changes may have been lost and an operator must
   decide.
-- **Streaming.** pgoutput protocol version 1: Postgres sends a transaction
+- **Streaming.** pgoutput protocol version 1, and since Postgres 14 with
+  `messages 'true'` for the backfill watermarks (D17); other logical
+  decoding messages are ignored. Postgres sends a transaction
   only after it committed, and BEGIN already carries the commit LSN, so
   batches can be stored while the transaction is still arriving. A batch is
   closed at 1000 events or 1 MiB. Batches are proposed in order without
@@ -597,6 +599,81 @@ removing nodes at runtime (Raft single-server membership change) comes later.
 - **Not done.** `curntvalv dev` ignores `CURNTVALV_CONFIG`; there is no
   reload on SIGHUP (a restart applies changes, as with certificates).
 
+### D17. Backfill
+
+Rows that existed before the slot never pass through logical replication.
+A backfill reads them from the table into the log, next to the stream.
+
+- **Watermarks, not an exported snapshot.** Reading every table with the
+  snapshot exported at slot creation would only work once, at the very
+  first start, would hold one transaction open for the whole copy, and
+  could not be resumed. Instead (the DBLog approach) the leader reads a
+  table in primary key order, one chunk at a time, between two
+  transactional logical decoding messages (`pg_logical_emit_message`,
+  prefix `curntvalv.backfill`, sent by pgoutput with `messages 'true'`
+  since Postgres 14):
+  1. write the low watermark `low NONCE` and commit;
+  2. `SELECT` the next rows after the stored key (`ORDER BY` the primary
+     key, `LIMIT` 1000, stopping at 1 MiB), with the publication's row
+     filter and column list, in text format;
+  3. write the high watermark `high NONCE`.
+  The stream sees the watermarks in commit order with everything else.
+  Between them it remembers the primary keys of the table's changes; at the
+  high watermark it drops chunk rows with those keys and stores the rest as
+  `OP_BACKFILL` events of the watermark's transaction.
+- **Why that is correct.** A chunk row whose key did not change between
+  the watermarks had the same value at the `SELECT` (which ran between
+  them) and at the high watermark, so storing it at the high watermark puts
+  it in the right place in the log: every earlier change of the row is
+  before it, every later one after it. A row that did change is carried by
+  the stream, with its newest version, before the high watermark. A change
+  whose key cannot be known (a delete without the old key, an unchanged
+  TOASTed key, a TRUNCATE) gives the chunk up; it is read again with new
+  watermarks. A replayed consumer ends with exactly the table: the
+  end-to-end test checks this while three writers update, delete, insert
+  and move rows just ahead of the backfill.
+- **Exactly once, through the existing machinery.** The chunk is one final
+  `TxBatch` at the high watermark's commit LSN, so the de-duplication of D3
+  applies as to any transaction. The batch carries the progress
+  (`BackfillChunk`: table, backfill id, the key it started after, the last
+  key read, done), which the state machine applies only if it continues the
+  stored progress of the same pending backfill. A chunk is at most 1000 rows
+  and about 1 MiB, so it is never split. A new leader does not know the
+  previous leader's nonces: their watermarks are empty transactions, and the
+  chunk is read again from the stored key. Rows inserted ahead of the stored
+  key while the backfill runs are read too, so they arrive as an insert and
+  as a backfill row.
+- **State.** The state machine keeps one `Backfill` per table: id (index of
+  the command that started it), state (pending, done, cancelled, failed),
+  last key, rows, end index, error. A metadata command (`BackfillCommand`)
+  starts, cancels or fails backfills; starting a table with a pending
+  backfill keeps it, starting a finished one begins again. Snapshot format
+  v6 adds the backfills; v5 snapshots are still read.
+- **Running.** The oldest pending backfill runs on the leader beside the
+  stream session, with its own Postgres connection; its errors are retried
+  and never stop ingest. A table that cannot be read any more (dropped, no
+  primary key, a permission or data error) is marked failed through Raft.
+- **Requirements.** Postgres 14 or later, a plain table (partitioned tables
+  are not supported yet) with a primary key, in the publication. The rows
+  use the schema pgoutput would send, built from the catalog (same columns,
+  types and replica identity flags), so a backfilled row and the same row
+  from the stream have the same schema id and the same text values.
+- **Interface.** `curntvalv backfill start TABLE...` and `curntvalv
+  backfill cancel TABLE...` (`AdminService.StartBackfill` and
+  `CancelBackfill`, leader only); `start` checks every table first. With
+  `--backfill-initial`, a cluster that has stored nothing yet queues every
+  published table with a primary key before it starts streaming. Progress
+  is in `curntvalv status`, the dashboard and `/metrics`
+  (`curntvalv_backfill_rows`, `curntvalv_backfill_state`). Consumers see
+  `"op":"backfill"` (`client.OpBackfill`) with the row in `after`, and treat
+  it as an upsert.
+- **Testing.** Unit tests for the window logic and the state machine; with
+  Postgres, chunking, resuming after a restart, cancel and validation,
+  `--backfill-initial`, equality with stream rows for many types, and the
+  concurrent-writers replay check, which fails when the window logic is
+  disabled. End to end, the leader is killed halfway through a backfill of
+  40,000 rows: every row is backfilled exactly once.
+
 ## 4. Data model
 
 ```
@@ -604,6 +681,7 @@ Event {
   key        (commit_lsn, seq)       // idempotency key
   table      "public.orders"
   op         insert | update | delete | truncate | source_reset (D7)
+             | backfill (D17)
   before     row image (only with REPLICA IDENTITY FULL, else key columns)
   after      row image
   commit_ts  timestamp from Postgres
@@ -633,6 +711,7 @@ does not send it). Converting text to typed values is the sinks' job.
 | Sink down for hours | Postgres slot does not grow; sink resumes from its offset |
 | New sink added | Receives history from the oldest retained offset |
 | Postgres primary failover | Continue if safe, stop loudly if not (D7) |
+| Leader killed during a backfill | New leader continues from the stored key; every row backfilled once (D17) |
 
 End-to-end checker: write N numbered rows while injecting faults, then verify
 that the sink contains exactly rows 1..N.
@@ -658,8 +737,6 @@ The checker runs in two forms (`cmd/curntvalv`, with Postgres):
 
 - Subscribe API: client-managed offsets are done (D12). Server-side named
   consumers (offset stored in curntValv, like a sink) may follow.
-- Initial table snapshot (backfill of rows that existed before the slot):
-  needed for real use, planned after v0.1.
 - Entry encoding: the Raft entry header is hand-written binary (D9),
   node-to-node messages are protobuf (D10). The encoding of `TxBatch`
   payloads is decided in M4.

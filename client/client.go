@@ -57,6 +57,10 @@ const (
 	OpUpdate   Op = "update"
 	OpDelete   Op = "delete"
 	OpTruncate Op = "truncate"
+	// OpBackfill is a row read from the table by a backfill (curntvalv
+	// backfill start): the row as it was at the change's position, in After.
+	// Treat it as an upsert; a later change of the row follows it.
+	OpBackfill Op = "backfill"
 	// OpSourceReset is not a row change: an operator moved the source
 	// position after a Postgres failover check stopped ingest, so changes
 	// between Reset.PreviousLSN and Reset.LSN may be missing or repeated.
