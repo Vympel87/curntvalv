@@ -235,13 +235,23 @@ func (d *decoder) commit(m *pglogrepl.CommitMessage) ([]*pb.TxBatch, error) {
 // transaction everything before it has been sent to us already, because
 // pgoutput sends transactions in commit order before reporting a later
 // position.
+//
+// The batch's commit LSN is walEnd-1, not walEnd: a transaction still open
+// now may write its commit record exactly at walEnd, and Postgres sends it
+// after a restart from walEnd, so it must not count as stored.
 func (d *decoder) idle(walEnd uint64) {
-	if d.inTx || d.partialLSN != 0 || walEnd <= d.storedLSN {
+	if d.inTx || d.partialLSN != 0 || walEnd == 0 || walEnd-1 <= d.storedLSN {
 		return
 	}
 	if d.lastEmpty == nil || walEnd > d.lastEmpty.EndLsn {
-		d.lastEmpty = &pb.TxBatch{CommitLsn: walEnd, EndLsn: walEnd, Final: true}
+		d.lastEmpty = positionBatch(walEnd)
 	}
+}
+
+// positionBatch stores the position lsn without events. Its commit LSN is
+// lsn-1 so that a transaction committing at lsn is still taken.
+func positionBatch(lsn uint64) *pb.TxBatch {
+	return &pb.TxBatch{CommitLsn: lsn - 1, EndLsn: lsn, Final: true}
 }
 
 // takeEmpty returns the newest position recorded by an empty transaction or

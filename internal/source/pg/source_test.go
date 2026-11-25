@@ -508,3 +508,50 @@ func dropSlot(ctx context.Context, db *pgx.Conn, slot string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// TestOpenTransactionAcrossIdlePosition: while a transaction is open and
+// nothing else writes WAL, the stored position moves to the end of WAL. The
+// transaction's commit record then starts exactly there, and must still be
+// stored. Background WAL (running-xacts records, checkpoints) can get in
+// between, so it tries a few transactions until one commits at the stored
+// position.
+func TestOpenTransactionAcrossIdlePosition(t *testing.T) {
+	e := newPGEnv(t)
+	n := startNode(t, t.TempDir())
+	runSource(t, e.config(Limits{}), n)
+	e.waitSlot()
+	ctx := context.Background()
+	walEnd := func() uint64 {
+		var cur string
+		e.db.QueryRow(ctx, "SELECT pg_current_wal_insert_lsn()::text").Scan(&cur)
+		l, _ := pglogrepl.ParseLSN(cur)
+		return uint64(l)
+	}
+	for id := 1; id <= 10; id++ {
+		tx, err := pgx.Connect(ctx, e.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx.Exec(ctx, "BEGIN")
+		if _, err := tx.Exec(ctx, fmt.Sprintf("INSERT INTO %s VALUES (%d, 'open')", e.table, id)); err != nil {
+			t.Fatal(err)
+		}
+		hit := false
+		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if end := walEnd(); n.fsm.Source().EndLSN == end {
+				hit = true
+				break
+			}
+		}
+		before := walEnd()
+		if _, err := tx.Exec(ctx, "COMMIT"); err != nil {
+			t.Fatal(err)
+		}
+		tx.Close(ctx)
+		waitFor(t, fmt.Sprintf("row %d", id), 10*time.Second, func() bool { return len(n.events()) == id })
+		if hit && n.fsm.Source().CommitLSN == before {
+			return // the commit record started at the stored idle position
+		}
+	}
+	t.Skip("background WAL kept the commit away from the idle position")
+}

@@ -345,6 +345,10 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   position from Postgres keepalives (as an empty batch, at most once per
   status interval, default 10s) and then acknowledges it. Without this, a
   database whose published tables are quiet would keep WAL forever (D6).
+  Such a batch at WAL position P has commit LSN P-1 and end LSN P: a
+  transaction still open at the keepalive may write its commit record
+  exactly at P, Postgres sends it after a restart from P (it skips only
+  commits before the start), and de-duplication must not take it as stored.
 - **Errors.** Connection and Raft errors retry with backoff (1s to 30s).
 - **Testing.** Tests that need Postgres read `CURNTVALV_TEST_PG_URL` and are
   skipped without it; `make test-pg` runs them against a throwaway Postgres
