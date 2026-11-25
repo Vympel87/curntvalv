@@ -160,6 +160,32 @@ replicated state machine works. It is not meant for application data.
 Without TLS and a token (see [Security](#security)) run it on a trusted
 network only.
 
+## Configuration
+
+Every server flag can also come from a file of `KEY = VALUE` lines, the key
+being the flag name without `--`:
+
+```ini
+# /etc/curntvalv/node1.conf
+id        = 1
+peers     = 1=node1:7001,2=node2:7001,3=node3:7001
+data-dir  = /var/lib/curntvalv
+pg-url    = "postgres://cdc@db:5432/app"
+retention-age = 7d
+sink = name=ch,type=clickhouse,url=http://clickhouse:8123,table=orders
+sink = name=hook,type=webhook,url=https://example.com/hook   # sink may repeat
+```
+
+```bash
+curntvalv server --config /etc/curntvalv/node1.conf --check   # validate, then exit
+curntvalv server --config /etc/curntvalv/node1.conf           # or CURNTVALV_CONFIG=...
+```
+
+Flags beat environment variables, which beat the file; a `--sink` flag
+replaces the file's sinks. Unknown or repeated keys are errors with the
+line number. Keep passwords out of a file others can read (the node warns),
+and the token in `auth-token-file`.
+
 ## Use it from Go
 
 ```bash

@@ -2,6 +2,7 @@
 //
 //	curntvalv dev --pg-url postgres://...   (one local node and its dashboard)
 //	curntvalv server --id 1 --peers 1=127.0.0.1:7001,2=127.0.0.1:7002,3=127.0.0.1:7003 --data-dir ./data/1
+//	curntvalv server --config /etc/curntvalv/node1.conf
 //	curntvalv status [--addr ...]
 //	curntvalv kv put|get|del KEY [VALUE] [--addr ...]
 //	curntvalv log [--from N] [--follow] [--addr ...]
@@ -69,6 +70,7 @@ func versionFrom(ldflags string, buildInfo func() (*debug.BuildInfo, bool)) stri
 const usage = `usage:
   curntvalv dev [--pg-url URL]                  one local node and its dashboard
   curntvalv server --id N --peers ID=HOST:PORT,... --data-dir DIR [flags]
+  curntvalv server --config FILE [--check] [flags]
   curntvalv status [--addr HOST:PORT,...]
   curntvalv kv put KEY VALUE [--addr HOST:PORT,...]
   curntvalv kv get KEY [--addr HOST:PORT,...]
@@ -227,11 +229,17 @@ type serverConfig struct {
 	// TLS files, all set or all empty (design D15), and the token.
 	tlsCert, tlsKey, tlsCA string
 	token                  string
+	check                  bool     // --check: validate and exit
+	warnings               []string // from reading the config file
 }
 
-func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
+// parseServerFlags parses the server's flags and, with --config or
+// CURNTVALV_CONFIG, a config file for the flags left unset (design D16).
+func parseServerFlags(args []string, stderr io.Writer, getenv func(string) string) (serverConfig, error) {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	configFile := fs.String("config", getenv("CURNTVALV_CONFIG"), "read unset flags from this file of KEY = VALUE lines, KEY being a flag name (env CURNTVALV_CONFIG);\nflags beat environment variables, which beat the file")
+	check := fs.Bool("check", false, "check the flags and config file, load the TLS files, and exit")
 	id := fs.Uint64("id", 0, "id of this node (must appear in --peers)")
 	peersFlag := fs.String("peers", "", "all cluster members as ID=HOST:PORT,... (including this node)")
 	dataDir := fs.String("data-dir", "", "directory for the log, Raft state and snapshots")
@@ -244,10 +252,10 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	retAge := fs.String("retention-age", "0", "remove log segments older than this, e.g. 7d or 36h (0 = no age limit)")
 	retBytes := fs.String("retention-bytes", "0", "remove the oldest log segments while the log is larger than this, e.g. 10GB (0 = no size limit)")
 	segBytes := fs.String("wal-segment-bytes", "64MB", "size at which a new log segment is started; retention removes whole segments")
-	httpListen := fs.String("http-listen", "127.0.0.1:8080", "address for the dashboard, /metrics, /healthz and /readyz (empty = off); there is no authentication")
+	httpListen := fs.String("http-listen", "127.0.0.1:8080", "address for the dashboard, /metrics, /healthz and /readyz (empty = off); TLS and the token apply here too")
 	noSync := fs.Bool("unsafe-no-fsync", false, "skip fsync (tests and demos only: a crash can lose committed data)")
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
-	pgURL := fs.String("pg-url", os.Getenv("CURNTVALV_PG_URL"), "Postgres connection URL to capture changes from (env CURNTVALV_PG_URL; empty = no source)")
+	pgURL := fs.String("pg-url", getenv("CURNTVALV_PG_URL"), "Postgres connection URL to capture changes from (env CURNTVALV_PG_URL; empty = no source)")
 	pgSlot := fs.String("pg-slot", "curntvalv", "logical replication slot (created on a new cluster)")
 	pgPub := fs.String("pg-publication", "curntvalv", "Postgres publication to read (must exist)")
 	tlsCert := fs.String("tls-cert", "", "this node's TLS certificate (PEM); with --tls-key and --tls-ca enables TLS, mutual between nodes")
@@ -261,6 +269,13 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	}
 	if fs.NArg() > 0 {
 		return serverConfig{}, usageErr("unexpected argument %q", fs.Arg(0))
+	}
+	var warnings []string
+	if *configFile != "" {
+		var err error
+		if warnings, err = applyConfigFile(fs, *configFile, getenv); err != nil {
+			return serverConfig{}, err
+		}
 	}
 	peers, err := parsePeers(*peersFlag)
 	if err != nil {
@@ -301,7 +316,9 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 		tlsCert:    *tlsCert,
 		tlsKey:     *tlsKey,
 		tlsCA:      *tlsCA,
-		token:      os.Getenv("CURNTVALV_AUTH_TOKEN"),
+		token:      getenv("CURNTVALV_AUTH_TOKEN"),
+		check:      *check,
+		warnings:   warnings,
 	}
 	if n := countSet(*tlsCert, *tlsKey, *tlsCA); n != 0 && n != 3 {
 		return serverConfig{}, usageErr("--tls-cert, --tls-key and --tls-ca go together")
@@ -338,6 +355,20 @@ func parseServerFlags(args []string, stderr io.Writer) (serverConfig, error) {
 	return cfg, nil
 }
 
+// loadTLS reads the node's TLS files; both configs are nil without TLS.
+func loadTLS(cfg serverConfig) (srv, peer *tls.Config, err error) {
+	if cfg.tlsCert == "" {
+		return nil, nil, nil
+	}
+	if srv, err = security.ServerTLS(cfg.tlsCert, cfg.tlsKey, cfg.tlsCA); err != nil {
+		return nil, nil, err
+	}
+	if peer, err = security.ClientTLS(cfg.tlsCA, cfg.tlsCert, cfg.tlsKey); err != nil {
+		return nil, nil, err
+	}
+	return srv, peer, nil
+}
+
 func countSet(vals ...string) int {
 	n := 0
 	for _, v := range vals {
@@ -349,11 +380,21 @@ func countSet(vals ...string) int {
 }
 
 func serverCmd(ctx context.Context, args []string, stderr io.Writer) error {
-	cfg, err := parseServerFlags(args, stderr)
+	cfg, err := parseServerFlags(args, stderr, os.Getenv)
 	if err != nil {
 		return err
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: cfg.logLevel})).With("node", cfg.raft.ID)
+	for _, w := range cfg.warnings {
+		logger.Warn(w)
+	}
+	if cfg.check {
+		if _, _, err := loadTLS(cfg); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "configuration OK: node %d of %d, data in %s, %d sink(s)\n", cfg.raft.ID, len(cfg.peers), cfg.dataDir, len(cfg.sinks))
+		return nil
+	}
 	return runServer(ctx, cfg, logger)
 }
 
@@ -389,15 +430,11 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	}
 	// Credentials (design D15). Nodes present their certificate to each
 	// other; the listener asks for one and Raft streams need it.
-	var srvTLS, peerTLS *tls.Config
-	if cfg.tlsCert != "" {
-		if srvTLS, err = security.ServerTLS(cfg.tlsCert, cfg.tlsKey, cfg.tlsCA); err != nil {
-			return err
-		}
-		if peerTLS, err = security.ClientTLS(cfg.tlsCA, cfg.tlsCert, cfg.tlsKey); err != nil {
-			return err
-		}
-	} else if cfg.token != "" {
+	srvTLS, peerTLS, err := loadTLS(cfg)
+	if err != nil {
+		return err
+	}
+	if srvTLS == nil && cfg.token != "" {
 		logger.Warn("a token without TLS travels in plain text; use it on a trusted network only")
 	}
 	guard := security.Guard{Token: cfg.token, MutualTLS: srvTLS != nil}

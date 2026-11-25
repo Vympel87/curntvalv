@@ -518,6 +518,31 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   an end-to-end test runs a 3-node cluster with TLS and a token through a
   leader kill and checks the CLI and HTTPS.
 
+### D16. Configuration file
+
+- **Format: `KEY = VALUE` lines, KEY a server flag name.** Read with the
+  standard library: no YAML or TOML dependency, and nothing new to learn,
+  since every key is documented by `curntvalv server -h`. `#` starts a
+  comment line; an unquoted value ends at ` #`; a value may be double
+  quoted in Go syntax. `sink` may repeat; any other key twice, an unknown
+  key (`--id`, `colour`), or a bad value is an error naming the file and
+  line. No sections, includes or variable expansion.
+- **`--config FILE` or `CURNTVALV_CONFIG`.** The file only fills in flags
+  the command line left unset, so precedence is flag > environment > file >
+  default. The environment variables that set flags (`CURNTVALV_PG_URL`,
+  `CURNTVALV_AUTH_TOKEN` in place of `auth-token-file`) override the file.
+  A `--sink` on the command line replaces the file's sinks rather than
+  adding to them, so one flag never merges with a hidden list.
+- **All validation stays in one place.** File values go through
+  `flag.FlagSet.Set` and then the same checks as flags; there is no second
+  config struct to keep in sync.
+- **Secrets.** The token stays in its own file. A Postgres URL with a
+  password in a file others can read starts the node with a warning.
+- **`--check`** parses everything, loads the TLS files and exits: 0 if the
+  node would start, 2 on a usage error, 1 if a file cannot be loaded.
+- **Not done.** `curntvalv dev` ignores `CURNTVALV_CONFIG`; there is no
+  reload on SIGHUP (a restart applies changes, as with certificates).
+
 ## 4. Data model
 
 ```

@@ -67,7 +67,7 @@ func TestParseSizes(t *testing.T) {
 
 func TestParseServerFlags(t *testing.T) {
 	cfg, err := parseServerFlags([]string{"--id", "2", "--peers", "1=a:1,2=b:2,3=c:3", "--data-dir", "/d",
-		"--retention-age", "1d12h", "--retention-bytes", "2GB", "--wal-segment-bytes", "1MB"}, io.Discard)
+		"--retention-age", "1d12h", "--retention-bytes", "2GB", "--wal-segment-bytes", "1MB"}, io.Discard, os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,11 +85,11 @@ func TestParseServerFlags(t *testing.T) {
 		{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d", "--retention-bytes", "lots"},
 		{"--id", "1", "--peers", "1=a:1", "--data-dir", "/d", "--wal-segment-bytes", "0"},
 	} {
-		if _, err := parseServerFlags(args, io.Discard); !errors.Is(err, errUsage) {
+		if _, err := parseServerFlags(args, io.Discard, os.Getenv); !errors.Is(err, errUsage) {
 			t.Errorf("%v: got %v", args, err)
 		}
 	}
-	if _, err := parseServerFlags([]string{"-h"}, io.Discard); !errors.Is(err, flag.ErrHelp) {
+	if _, err := parseServerFlags([]string{"-h"}, io.Discard, os.Getenv); !errors.Is(err, flag.ErrHelp) {
 		t.Errorf("-h: %v", err)
 	}
 }

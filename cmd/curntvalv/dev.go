@@ -62,7 +62,14 @@ func parseDevFlags(args []string, stderr io.Writer, getenv func(string) string) 
 	for _, s := range sinkFlags {
 		sargs = append(sargs, "--sink", s)
 	}
-	cfg, err := parseServerFlags(sargs, stderr)
+	// dev takes no config file: CURNTVALV_CONFIG is meant for servers.
+	noConfig := func(k string) string {
+		if k == "CURNTVALV_CONFIG" {
+			return ""
+		}
+		return getenv(k)
+	}
+	cfg, err := parseServerFlags(sargs, stderr, noConfig)
 	if err != nil {
 		return devConfig{}, err
 	}

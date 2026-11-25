@@ -5,6 +5,20 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- `curntvalv server --config FILE` (or `CURNTVALV_CONFIG`): read unset
+  flags from a file of `KEY = VALUE` lines, KEY being a flag name. Flags
+  beat environment variables, which beat the file.
+- `curntvalv server --check`: validate the flags, the config file and the
+  TLS files, then exit.
+
+### Fixed
+
+- `--http-listen` help no longer says the HTTP port has no authentication.
+
 ## [0.2.0]
 
 ### Added
