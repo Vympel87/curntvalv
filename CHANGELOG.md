@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
-## [Unreleased]
+## [0.3.0]
 
 ### Added
 
@@ -43,6 +43,8 @@ break compatibility.
 
 ### Fixed
 
+- The idle-position data loss fixed in 0.2.1 (a transaction committing
+  exactly at the stored idle position was skipped).
 - `--http-listen` help no longer says the HTTP port has no authentication.
 
 ### Upgrading from 0.2
@@ -133,6 +135,7 @@ First release. Early development: not ready for production.
 - No Postgres failover handling yet (design D7), no initial table
   snapshot, static membership.
 
+[0.3.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Vympel87/curntvalv/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.1.0

@@ -2,7 +2,7 @@
 
 Each milestone ends with something that can be run and shown.
 
-Done: M0–M7 (v0.1.0), v0.2.0.
+Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0.
 
 | # | Milestone | Done when |
 |---|---|---|
@@ -23,7 +23,7 @@ Done: M0–M7 (v0.1.0), v0.2.0.
 - Raft PreVote
 - TLS (mutual between nodes), token authentication, `curntvalv certs`
 
-## v0.3 (in progress)
+## v0.3 (done)
 
 - Config file: `curntvalv server --config FILE`, `--check` (design D16)
 - Postgres failover: identity and timeline checks, failover slots,

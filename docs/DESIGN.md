@@ -236,8 +236,8 @@ primary, and LSN de-duplication (D3) would drop them as "already stored".
   the new primary's rows, and a reset continues; with it and the standby
   cut off, the primary holds the changes back and the failover is safe.
   Disabling the checks makes the second scenario fail.
-- **Upgrading.** v0.2 nodes cannot read snapshot version 5 and do not know
-  the reset event; upgrade all nodes before a reset.
+- **Upgrading.** v0.2 nodes cannot read snapshot version 5 or later and do
+  not know the reset event; upgrade all nodes before a reset.
 
 ### D8. Static membership first
 

@@ -61,9 +61,9 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Sinks (ClickHouse, webhook) with stored offsets, subscribe API | ✅ implemented |
 | Retention, sink policies, replay (`sink reset`), chaos test | ✅ implemented |
 | Dashboard, Prometheus metrics, health checks, live change feed | ✅ implemented |
-| Postgres failover checks, `source reset`, config file | ✅ implemented (unreleased) |
-| Backfill of existing rows | ✅ implemented (unreleased) |
-| Adding and removing nodes at runtime | ✅ implemented (unreleased) |
+| Postgres failover checks, `source reset`, config file | ✅ implemented (v0.3) |
+| Backfill of existing rows | ✅ implemented (v0.3) |
+| Adding and removing nodes at runtime | ✅ implemented (v0.3) |
 
 ## Install
 
