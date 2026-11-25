@@ -17,6 +17,11 @@ break compatibility.
 
 ### Fixed
 
+- A transaction could be lost when it stayed open across an idle period
+  (no other WAL written for one status interval, 10s by default) and its
+  commit record then landed exactly at the stored idle position: the
+  source took it as already stored. Position-only batches now store
+  commit LSN P-1 for WAL position P.
 - `--http-listen` help no longer says the HTTP port has no authentication.
 
 ## [0.2.0]
