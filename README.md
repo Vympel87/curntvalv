@@ -264,6 +264,49 @@ curntvalv sink reset hook --to 1200       # continue after log index 1200
 A sink added later starts with the oldest retained entry (or with
 `start=latest`).
 
+## Postgres failover
+
+curntValv follows a Postgres failover when it can prove nothing was lost,
+and otherwise stops ingest and says why (design D7). On Postgres 17:
+
+```ini
+# primary
+synchronized_standby_slots = 'standby1'   # the standbys' physical slots
+# standbys
+sync_replication_slots = on
+hot_standby_feedback = on
+primary_slot_name = 'standby1'            # and dbname=... in primary_conninfo
+```
+
+curntValv creates its slot as a failover slot (and converts an existing
+one), so the standby keeps a copy and the primary never sends a change the
+standby does not have. Point `--pg-url` at a virtual IP or DNS name that
+follows the primary, or list the hosts with `target_session_attrs=primary`.
+While it reaches a standby, ingest waits.
+
+Without `synchronized_standby_slots` (or with asynchronous Patroni) the
+new primary may lack changes curntValv already stored. Ingest then stops
+with an error such as
+
+```
+SOURCE postgres: failed (pg: the stored position is not in this postgres server's history;
+  refusing to continue (changes may be lost): timeline 1 ended at 0/5000A28 on this server,
+  but the cluster stored up to 0/5003F10; changes in between were lost in the failover)
+```
+
+The same happens when the slot is missing or ahead of what was stored, or
+when `--pg-url` reaches another Postgres cluster. To accept the gap and go
+on from the slot (created if missing):
+
+```bash
+curntvalv source reset --to-slot
+```
+
+Sinks and subscribers then receive one event with `"op":"source_reset"`
+and a `reset` object (old and new LSN, system id, timeline, reason), even
+with a table filter: changes between the two positions may be missing or
+repeated. In Go it is `client.OpSourceReset`.
+
 ## Dashboard and metrics
 
 Every node serves HTTP on `--http-listen` (default `127.0.0.1:8080`; an

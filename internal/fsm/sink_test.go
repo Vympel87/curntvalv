@@ -1,6 +1,7 @@
 package fsm
 
 import (
+	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -152,7 +153,8 @@ func TestRestoreVersion3Snapshot(t *testing.T) {
 	f := New()
 	applyBatch(t, f, 1, &pb.TxBatch{CommitLsn: 10, Final: true, Events: events(1)})
 	setOffset(t, f, 2, "ch", 1)
-	v4, _ := f.Snapshot()
+	v5, _ := f.Snapshot()
+	v4 := asVersion4(t, v5)
 	n := len(v4)
 	v3 := append([]byte{3}, v4[1:n-16]...) // drop the generation of the only sink
 	v3 = append(v3, v4[n-8:]...)
@@ -169,7 +171,8 @@ func TestRestoreVersion3Snapshot(t *testing.T) {
 func TestRestoreVersion2Snapshot(t *testing.T) {
 	f := New()
 	put(t, f, 1, "k", "v")
-	v3, _ := f.Snapshot()
+	v5, _ := f.Snapshot()
+	v3 := asVersion4(t, v5)
 	v2 := append([]byte{2}, v3[1:len(v3)-9]...) // drop the empty sink section and last change
 	g := New()
 	if err := g.Restore(v2); err != nil {
@@ -233,4 +236,25 @@ func TestLastChange(t *testing.T) {
 	if err := g.Restore(snap); err != nil || g.LastChange() != 1 {
 		t.Fatalf("restored last change %d %v", g.LastChange(), err)
 	}
+}
+
+// asVersion4 turns a version 5 snapshot into version 4 by removing the
+// source's system_id and timeline.
+func asVersion4(t *testing.T, v5 []byte) []byte {
+	t.Helper()
+	if v5[0] != 5 {
+		t.Fatalf("snapshot version %d", v5[0])
+	}
+	n, k := binary.Uvarint(v5[9:])
+	rest := v5[9+k:]
+	for range 2 * n {
+		_, r, ok := readBytes(rest)
+		if !ok {
+			t.Fatal("bad snapshot")
+		}
+		rest = r
+	}
+	src := len(v5) - len(rest) // start of the source position
+	out := append([]byte{4}, v5[1:src+36]...)
+	return append(out, v5[src+36+12:]...)
 }

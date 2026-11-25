@@ -57,7 +57,23 @@ const (
 	OpUpdate   Op = "update"
 	OpDelete   Op = "delete"
 	OpTruncate Op = "truncate"
+	// OpSourceReset is not a row change: an operator moved the source
+	// position after a Postgres failover check stopped ingest, so changes
+	// between Reset.PreviousLSN and Reset.LSN may be missing or repeated.
+	// It has no table and is sent whatever Options.Tables says.
+	OpSourceReset Op = "source_reset"
 )
+
+// Reset describes a source reset (OpSourceReset).
+type Reset struct {
+	PreviousLSN      string `json:"previous_lsn"`
+	PreviousSystemID uint64 `json:"previous_system_id,string"` // Postgres system identifier, 0 if unknown
+	PreviousTimeline uint32 `json:"previous_timeline"`
+	LSN              string `json:"lsn"`
+	SystemID         uint64 `json:"system_id,string"`
+	Timeline         uint32 `json:"timeline"`
+	Reason           string `json:"reason,omitempty"` // why ingest had stopped
+}
 
 // Change is one row change. Its JSON form is the one the CLI, the webhook
 // sink and the dashboard use.
@@ -71,7 +87,7 @@ type Change struct {
 	Seq        uint32    `json:"seq"` // position of the change in its transaction
 	Xid        uint32    `json:"xid"`
 	CommitTime time.Time `json:"commit_time"`
-	Table      string    `json:"table"` // "namespace.name"
+	Table      string    `json:"table"` // "namespace.name"; "" for OpSourceReset
 	Op         Op        `json:"op"`
 	// Before and After map column names to values in Postgres text format
 	// (base64 for binary values); a nil value is NULL. Before is set for
@@ -82,6 +98,8 @@ type Change struct {
 	// Unchanged lists large (TOAST) columns an update did not touch; they
 	// are missing from After.
 	Unchanged []string `json:"unchanged,omitempty"`
+	// Reset is set for OpSourceReset.
+	Reset *Reset `json:"reset,omitempty"`
 }
 
 // Options select what Subscribe sends.
@@ -239,6 +257,10 @@ func convert(ce *pb.ChangeEvent, schemas map[uint64]*pb.Schema) Change {
 	ch := Change{ID: j.ID, Index: j.Index, LSN: j.LSN, Seq: j.Seq, Xid: j.Xid,
 		CommitTime: time.UnixMicro(ce.GetCommitTimeUs()).UTC(), Table: j.Table, Op: Op(j.Op),
 		Before: row(j.Before), After: row(j.After), Unchanged: j.Unchanged}
+	if r := j.Reset; r != nil {
+		ch.Reset = &Reset{PreviousLSN: r.PreviousLSN, PreviousSystemID: r.PreviousSystemID, PreviousTimeline: r.PreviousTimeline,
+			LSN: r.LSN, SystemID: r.SystemID, Timeline: r.Timeline, Reason: r.Reason}
+	}
 	return ch
 }
 

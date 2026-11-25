@@ -275,6 +275,39 @@ func sinkCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	})
 }
 
+// sourceCmd moves the Postgres source to its replication slot's position
+// after a failover check stopped ingest (design D7).
+func sourceCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	const want = "want: source reset --to-slot"
+	var toSlot bool
+	cf, pos, err := parseClientFlags("source", args, stderr, func(fs *flag.FlagSet) {
+		fs.BoolVar(&toSlot, "to-slot", false, "continue from the replication slot's current position (created if missing), "+
+			"accepting that changes between the stored position and the slot may be missing or repeated")
+	})
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 || pos[0] != "reset" || !toSlot {
+		return usageErr(want)
+	}
+	ctx, cancel := context.WithTimeout(ctx, cf.timeout)
+	defer cancel()
+	// Connecting to Postgres and maybe creating the slot takes longer than
+	// the usual call.
+	return onLeaderWithin(ctx, cf, max(cf.timeout, 2*time.Second), func(ctx context.Context, c pb.AdminServiceClient) error {
+		resp, err := c.ResetSource(ctx, &pb.ResetSourceRequest{})
+		if err != nil {
+			return err
+		}
+		r := resp.GetSourceReset()
+		fmt.Fprintf(stdout, "source reset (index %d): from %s (system %d, timeline %d) to %s (system %d, timeline %d)\n",
+			resp.GetIndex(), event.FormatLSN(r.GetPreviousLsn()), r.GetPreviousSystemId(), r.GetPreviousTimeline(),
+			event.FormatLSN(r.GetLsn()), r.GetSystemId(), r.GetTimeline())
+		fmt.Fprintln(stdout, "sinks and subscribers receive a source_reset event; changes between the two positions may be missing or repeated")
+		return nil
+	})
+}
+
 func nodeStatus(ctx context.Context, opts []grpc.DialOption, addr string) (*pb.StatusResponse, error) {
 	conn, client, err := dial(opts, addr)
 	if err != nil {
@@ -339,6 +372,11 @@ var errNotFound = errors.New("key not found")
 // answers. Followers answer FAILED_PRECONDITION and unreachable nodes
 // UNAVAILABLE; while no leader is known it keeps retrying until ctx expires.
 func onLeader(ctx context.Context, cf clientFlags, call func(context.Context, pb.AdminServiceClient) error) error {
+	return onLeaderWithin(ctx, cf, 2*time.Second, call)
+}
+
+// onLeaderWithin is onLeader with a per-call timeout.
+func onLeaderWithin(ctx context.Context, cf clientFlags, per time.Duration, call func(context.Context, pb.AdminServiceClient) error) error {
 	var last error
 	for {
 		for _, addr := range cf.addrs {
@@ -347,7 +385,7 @@ func onLeader(ctx context.Context, cf clientFlags, call func(context.Context, pb
 				last = err
 				continue
 			}
-			actx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			actx, cancel := context.WithTimeout(ctx, per)
 			err = call(actx, client)
 			cancel()
 			conn.Close()

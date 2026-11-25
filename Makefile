@@ -1,4 +1,4 @@
-.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-ext chaos
+.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-ext chaos failover-up failover-down test-failover
 
 test:
 	go vet ./...
@@ -55,3 +55,38 @@ CHAOS_TIME ?= 2m
 chaos: pg-up
 	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_CHAOS='$(CHAOS_TIME)' CURNTVALV_CHAOS_SEED='$(CHAOS_SEED)' \
 		go test -count=1 -timeout 60m -run 'TestChaos$$' -v ./cmd/curntvalv/
+
+# Postgres failover (design D7): a Postgres 17 primary and a streaming
+# standby that syncs failover slots. A promotion cannot be undone, so every
+# scenario gets a fresh pair.
+FO_PRIMARY_URL ?= postgres://postgres:postgres@127.0.0.1:55442/postgres?sslmode=disable
+FO_STANDBY_URL ?= postgres://postgres:postgres@127.0.0.1:55443/postgres?sslmode=disable
+FO_PG = -c wal_level=logical -c max_replication_slots=20 -c max_wal_senders=20 -c hot_standby_feedback=on
+FO_SCENARIOS ?= Safe Diverged HeldBack
+
+failover-up: failover-down
+	docker network create curntvalv-fo >/dev/null
+	docker run -d --name curntvalv-fo-primary --network curntvalv-fo -p 127.0.0.1:55442:5432 \
+		-e POSTGRES_PASSWORD=postgres postgres:17 $(FO_PG) >/dev/null
+	@# The entrypoint's first server only listens on a socket; wait for TCP.
+	@until docker exec curntvalv-fo-primary psql -h 127.0.0.1 -U postgres -c 'SELECT 1' >/dev/null 2>&1; do sleep 1; done
+	docker exec curntvalv-fo-primary bash -c 'echo "host replication all all scram-sha-256" >> "$$PGDATA/pg_hba.conf"'
+	docker exec curntvalv-fo-primary psql -q -U postgres -c "SELECT pg_reload_conf()" \
+		-c "SELECT pg_create_physical_replication_slot('standby1')" >/dev/null
+	docker run -d --name curntvalv-fo-standby --network curntvalv-fo -p 127.0.0.1:55443:5432 \
+		--entrypoint bash postgres:17 -c 'set -e; mkdir -p "$$PGDATA"; chown postgres "$$PGDATA"; chmod 700 "$$PGDATA"; \
+		gosu postgres pg_basebackup -d "host=curntvalv-fo-primary user=postgres password=postgres dbname=postgres" \
+			-D "$$PGDATA" -R -S standby1 -X stream; \
+		exec gosu postgres postgres $(FO_PG) -c sync_replication_slots=on' >/dev/null
+	@until docker exec curntvalv-fo-standby psql -h 127.0.0.1 -U postgres -c 'SELECT 1' >/dev/null 2>&1; do sleep 1; done
+
+failover-down:
+	@docker rm -f curntvalv-fo-primary curntvalv-fo-standby >/dev/null 2>&1 || true
+	@docker network rm curntvalv-fo >/dev/null 2>&1 || true
+
+test-failover:
+	@for s in $(FO_SCENARIOS); do \
+		$(MAKE) --no-print-directory failover-up && \
+		CURNTVALV_TEST_PG_PRIMARY_URL='$(FO_PRIMARY_URL)' CURNTVALV_TEST_PG_STANDBY_URL='$(FO_STANDBY_URL)' \
+			go test -race -count=1 -run "^TestFailover$$s$$" -v ./internal/source/pg/ || { $(MAKE) --no-print-directory failover-down; exit 1; }; \
+	done; $(MAKE) --no-print-directory failover-down

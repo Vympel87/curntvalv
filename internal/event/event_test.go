@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,5 +216,31 @@ func TestReaderCompacted(t *testing.T) {
 	res, err := r.Read(context.Background(), 0, 10, nil)
 	if err != nil || res.Next != 3 || len(res.Changes) != 1 {
 		t.Fatalf("read from oldest: %+v %v", res, err)
+	}
+}
+
+func TestSourceResetChange(t *testing.T) {
+	r := &pb.SourceReset{PreviousLsn: 0x1500000, PreviousSystemId: 7394150873, PreviousTimeline: 1,
+		Lsn: 0x3000000, SystemId: 7394150873000000001, Timeline: 2, Reason: "diverged"}
+	tb := &pb.TxBatch{CommitLsn: 0x3000000 - 1, EndLsn: 0x3000000, Final: true,
+		Events: []*pb.Event{{Op: pb.Op_OP_SOURCE_RESET, SourceReset: r}}}
+	// It passes a table filter: every consumer must see the gap.
+	cs := Changes(9, tb, nil, Filter{"orders"})
+	if len(cs) != 1 || !cs[0].IsSourceReset() || cs[0].Table() != "" || cs[0].Op() != "source_reset" {
+		t.Fatalf("%+v", cs)
+	}
+	b, err := json.Marshal(cs[0].JSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"op":"source_reset"`, `"table":""`, `"previous_lsn":"0/1500000"`, `"lsn":"0/3000000"`,
+		`"system_id":"7394150873000000001"`, `"timeline":2`, `"reason":"diverged"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("missing %s in %s", want, b)
+		}
+	}
+	// Row changes do not carry it.
+	if b, _ := json.Marshal(Change{Event: &pb.Event{Op: pb.Op_OP_INSERT}}.JSON()); strings.Contains(string(b), "reset") {
+		t.Errorf("%s", b)
 	}
 }

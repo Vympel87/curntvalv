@@ -41,15 +41,24 @@ func FormatLSN(lsn uint64) string { return fmt.Sprintf("%X/%X", lsn>>32, uint32(
 // ID returns the idempotency key of c.
 func (c Change) ID() string { return ID(c.CommitLSN, c.Seq) }
 
-// Table returns "namespace.name", or "schema#ID" if the schema is unknown.
+// IsSourceReset reports whether c marks a source reset rather than a row
+// change (design D7). Such a change has no table and passes every filter.
+func (c Change) IsSourceReset() bool { return c.Event.GetOp() == pb.Op_OP_SOURCE_RESET }
+
+// Table returns "namespace.name", or "schema#ID" if the schema is unknown,
+// or "" for a source reset.
 func (c Change) Table() string {
+	if c.IsSourceReset() {
+		return ""
+	}
 	if c.Schema == nil {
 		return fmt.Sprintf("schema#%d", c.Event.GetSchemaId())
 	}
 	return c.Schema.GetNamespace() + "." + c.Schema.GetName()
 }
 
-// Op returns the operation in lower case: insert, update, delete, truncate.
+// Op returns the operation in lower case: insert, update, delete, truncate,
+// or source_reset.
 func (c Change) Op() string {
 	return strings.ToLower(strings.TrimPrefix(c.Event.GetOp().String(), "OP_"))
 }
@@ -69,6 +78,22 @@ type JSON struct {
 	Before     map[string]any `json:"before,omitempty"`
 	After      map[string]any `json:"after,omitempty"`
 	Unchanged  []string       `json:"unchanged,omitempty"`
+	// Reset is set for op source_reset: an operator moved the source
+	// position, so changes between previous_lsn and lsn may be missing or
+	// repeated.
+	Reset *ResetJSON `json:"reset,omitempty"`
+}
+
+// ResetJSON is the JSON form of a source reset. System identifiers are
+// strings: they do not fit a JavaScript number.
+type ResetJSON struct {
+	PreviousLSN      string `json:"previous_lsn"`
+	PreviousSystemID uint64 `json:"previous_system_id,string"`
+	PreviousTimeline uint32 `json:"previous_timeline"`
+	LSN              string `json:"lsn"`
+	SystemID         uint64 `json:"system_id,string"`
+	Timeline         uint32 `json:"timeline"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 // CommitTime returns the commit time of the transaction.
@@ -85,6 +110,12 @@ func (c Change) JSON() JSON {
 		CommitTime: c.CommitTime().Format(time.RFC3339Nano),
 		Table:      c.Table(),
 		Op:         c.Op(),
+	}
+	if r := c.Event.GetSourceReset(); c.IsSourceReset() && r != nil {
+		j.Reset = &ResetJSON{
+			PreviousLSN: FormatLSN(r.GetPreviousLsn()), PreviousSystemID: r.GetPreviousSystemId(), PreviousTimeline: r.GetPreviousTimeline(),
+			LSN: FormatLSN(r.GetLsn()), SystemID: r.GetSystemId(), Timeline: r.GetTimeline(), Reason: r.GetReason(),
+		}
 	}
 	cols := c.Schema.GetColumns()
 	row := func(r *pb.Row) map[string]any {
@@ -145,13 +176,17 @@ func (f Filter) Match(sc *pb.Schema) bool {
 }
 
 // Changes returns the changes of one transaction batch stored at index that
-// pass filter. Schemas are taken from the batch itself or from lookup.
+// pass filter; a source reset passes any filter. Schemas are taken from the
+// batch itself or from lookup.
 func Changes(index uint64, tb *pb.TxBatch, lookup SchemaLookup, filter Filter) []Change {
 	var out []Change
 	for i, ev := range tb.GetEvents() {
-		sc := schemaOf(ev.GetSchemaId(), tb, lookup)
-		if !filter.Match(sc) {
-			continue
+		var sc *pb.Schema
+		if ev.GetOp() != pb.Op_OP_SOURCE_RESET {
+			sc = schemaOf(ev.GetSchemaId(), tb, lookup)
+			if !filter.Match(sc) {
+				continue
+			}
 		}
 		out = append(out, Change{
 			Index:        index,

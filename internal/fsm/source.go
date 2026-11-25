@@ -27,6 +27,21 @@ type SourceState struct {
 	// were therefore ignored. The source never produces them; a non-zero
 	// value means a bug and is reported loudly.
 	Anomalies uint64
+	// SystemID and Timeline identify the Postgres cluster and timeline the
+	// position belongs to (design D7); 0 until a batch carrying them is
+	// stored (batches of v0.2 do not).
+	SystemID uint64
+	Timeline uint32
+}
+
+// SourceReset returns the reset of a batch made by an operator's source
+// reset, or nil for an ordinary batch.
+func SourceReset(tb *pb.TxBatch) *pb.SourceReset {
+	evs := tb.GetEvents()
+	if len(evs) != 1 || evs[0].GetOp() != pb.Op_OP_SOURCE_RESET {
+		return nil
+	}
+	return evs[0].GetSourceReset()
 }
 
 var marshalOpts = proto.MarshalOptions{Deterministic: true}
@@ -69,24 +84,43 @@ func SchemaID(s *pb.Schema) uint64 {
 
 // applyTxBatch advances the source position. A batch must continue exactly
 // where the stored position ends: the next part of the partial transaction,
-// or the first part of a newer one. Anything else is counted as an anomaly
-// and ignored. Ignoring (instead of failing) is deterministic on every node
-// and avoids a poison entry that would stop the cluster forever.
+// or the first part of a newer one, from the same Postgres cluster. Anything
+// else is counted as an anomaly and ignored. Ignoring (instead of failing)
+// is deterministic on every node and avoids a poison entry that would stop
+// the cluster forever.
+//
+// A source reset replaces the position whatever it was: ingest continues
+// with transactions after the reset's LSN, of the reset's cluster.
 func (f *FSM) applyTxBatch(index uint64, b []byte) error {
 	tb := &pb.TxBatch{}
 	if err := proto.Unmarshal(b, tb); err != nil {
 		return fmt.Errorf("%w: tx batch: %v", ErrCorrupt, err)
 	}
 	s := &f.src
+	if r := SourceReset(tb); r != nil {
+		// Commit LSN lsn-1, as for any position without a transaction: one
+		// that commits exactly at lsn is still to come.
+		s.CommitLSN, s.EndLSN = max(r.GetLsn(), 1)-1, r.GetLsn()
+		s.PartialLSN, s.PartialNextSeq = 0, 0
+		s.SystemID, s.Timeline = r.GetSystemId(), r.GetTimeline()
+		f.lastChange = index
+		return nil
+	}
 	var ok bool
 	if s.PartialLSN != 0 {
 		ok = tb.GetCommitLsn() == s.PartialLSN && tb.GetFirstSeq() == s.PartialNextSeq
 	} else {
 		ok = tb.GetCommitLsn() > s.CommitLSN && tb.GetFirstSeq() == 0
 	}
+	if sys := tb.GetSystemId(); sys != 0 && s.SystemID != 0 && sys != s.SystemID {
+		ok = false // another Postgres cluster: only a reset may switch
+	}
 	if !ok {
 		s.Anomalies++
 		return nil
+	}
+	if tb.GetSystemId() != 0 {
+		s.SystemID, s.Timeline = tb.GetSystemId(), tb.GetTimeline()
 	}
 	if len(tb.GetEvents()) > 0 {
 		f.lastChange = index

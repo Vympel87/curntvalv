@@ -29,6 +29,10 @@ const (
 	Op_OP_UPDATE      Op = 2
 	Op_OP_DELETE      Op = 3
 	Op_OP_TRUNCATE    Op = 4
+	// Not a row change: an operator moved the source position (curntvalv
+	// source reset), so changes between the old and the new position may be
+	// missing or repeated. The event has no schema and carries source_reset.
+	Op_OP_SOURCE_RESET Op = 5
 )
 
 // Enum value maps for Op.
@@ -39,13 +43,15 @@ var (
 		2: "OP_UPDATE",
 		3: "OP_DELETE",
 		4: "OP_TRUNCATE",
+		5: "OP_SOURCE_RESET",
 	}
 	Op_value = map[string]int32{
-		"OP_UNSPECIFIED": 0,
-		"OP_INSERT":      1,
-		"OP_UPDATE":      2,
-		"OP_DELETE":      3,
-		"OP_TRUNCATE":    4,
+		"OP_UNSPECIFIED":  0,
+		"OP_INSERT":       1,
+		"OP_UPDATE":       2,
+		"OP_DELETE":       3,
+		"OP_TRUNCATE":     4,
+		"OP_SOURCE_RESET": 5,
 	}
 )
 
@@ -151,8 +157,13 @@ type TxBatch struct {
 	FirstSeq uint32 `protobuf:"varint,5,opt,name=first_seq,json=firstSeq,proto3" json:"first_seq,omitempty"`
 	Final    bool   `protobuf:"varint,6,opt,name=final,proto3" json:"final,omitempty"`
 	// Table schemas used by this batch that the cluster has not stored yet.
-	Schemas       []*Schema `protobuf:"bytes,7,rep,name=schemas,proto3" json:"schemas,omitempty"`
-	Events        []*Event  `protobuf:"bytes,8,rep,name=events,proto3" json:"events,omitempty"`
+	Schemas []*Schema `protobuf:"bytes,7,rep,name=schemas,proto3" json:"schemas,omitempty"`
+	Events  []*Event  `protobuf:"bytes,8,rep,name=events,proto3" json:"events,omitempty"`
+	// The Postgres cluster and timeline the batch was read from (design D7):
+	// the system identifier and timeline of IDENTIFY_SYSTEM. 0 in batches
+	// stored before v0.3.
+	SystemId      uint64 `protobuf:"varint,9,opt,name=system_id,json=systemId,proto3" json:"system_id,omitempty"`
+	Timeline      uint32 `protobuf:"varint,10,opt,name=timeline,proto3" json:"timeline,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -243,6 +254,20 @@ func (x *TxBatch) GetEvents() []*Event {
 	return nil
 }
 
+func (x *TxBatch) GetSystemId() uint64 {
+	if x != nil {
+		return x.SystemId
+	}
+	return 0
+}
+
+func (x *TxBatch) GetTimeline() uint32 {
+	if x != nil {
+		return x.Timeline
+	}
+	return 0
+}
+
 type Event struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Refers to a Schema stored in the state machine.
@@ -252,7 +277,9 @@ type Event struct {
 	// the key columns, and absent when Postgres does not send it.
 	Before *Row `protobuf:"bytes,3,opt,name=before,proto3" json:"before,omitempty"`
 	// New row image (insert, update).
-	After         *Row `protobuf:"bytes,4,opt,name=after,proto3" json:"after,omitempty"`
+	After *Row `protobuf:"bytes,4,opt,name=after,proto3" json:"after,omitempty"`
+	// Set with OP_SOURCE_RESET.
+	SourceReset   *SourceReset `protobuf:"bytes,5,opt,name=source_reset,json=sourceReset,proto3" json:"source_reset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -315,6 +342,110 @@ func (x *Event) GetAfter() *Row {
 	return nil
 }
 
+func (x *Event) GetSourceReset() *SourceReset {
+	if x != nil {
+		return x.SourceReset
+	}
+	return nil
+}
+
+// SourceReset records a move of the source position by an operator.
+type SourceReset struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Position before the reset: end LSN of the last stored transaction,
+	// and the Postgres cluster and timeline it came from (0 if unknown).
+	PreviousLsn      uint64 `protobuf:"varint,1,opt,name=previous_lsn,json=previousLsn,proto3" json:"previous_lsn,omitempty"`
+	PreviousSystemId uint64 `protobuf:"varint,2,opt,name=previous_system_id,json=previousSystemId,proto3" json:"previous_system_id,omitempty"`
+	PreviousTimeline uint32 `protobuf:"varint,3,opt,name=previous_timeline,json=previousTimeline,proto3" json:"previous_timeline,omitempty"`
+	// New position: ingest continues with transactions after lsn.
+	Lsn      uint64 `protobuf:"varint,4,opt,name=lsn,proto3" json:"lsn,omitempty"`
+	SystemId uint64 `protobuf:"varint,5,opt,name=system_id,json=systemId,proto3" json:"system_id,omitempty"`
+	Timeline uint32 `protobuf:"varint,6,opt,name=timeline,proto3" json:"timeline,omitempty"`
+	// Why ingest had stopped, as reported by the source.
+	Reason        string `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SourceReset) Reset() {
+	*x = SourceReset{}
+	mi := &file_curntvalv_v1_event_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SourceReset) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SourceReset) ProtoMessage() {}
+
+func (x *SourceReset) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_event_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SourceReset.ProtoReflect.Descriptor instead.
+func (*SourceReset) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *SourceReset) GetPreviousLsn() uint64 {
+	if x != nil {
+		return x.PreviousLsn
+	}
+	return 0
+}
+
+func (x *SourceReset) GetPreviousSystemId() uint64 {
+	if x != nil {
+		return x.PreviousSystemId
+	}
+	return 0
+}
+
+func (x *SourceReset) GetPreviousTimeline() uint32 {
+	if x != nil {
+		return x.PreviousTimeline
+	}
+	return 0
+}
+
+func (x *SourceReset) GetLsn() uint64 {
+	if x != nil {
+		return x.Lsn
+	}
+	return 0
+}
+
+func (x *SourceReset) GetSystemId() uint64 {
+	if x != nil {
+		return x.SystemId
+	}
+	return 0
+}
+
+func (x *SourceReset) GetTimeline() uint32 {
+	if x != nil {
+		return x.Timeline
+	}
+	return 0
+}
+
+func (x *SourceReset) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 type Row struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// One value per schema column, in column order.
@@ -325,7 +456,7 @@ type Row struct {
 
 func (x *Row) Reset() {
 	*x = Row{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[2]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -337,7 +468,7 @@ func (x *Row) String() string {
 func (*Row) ProtoMessage() {}
 
 func (x *Row) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[2]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -350,7 +481,7 @@ func (x *Row) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Row.ProtoReflect.Descriptor instead.
 func (*Row) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{2}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Row) GetValues() []*Value {
@@ -370,7 +501,7 @@ type Value struct {
 
 func (x *Value) Reset() {
 	*x = Value{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[3]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -382,7 +513,7 @@ func (x *Value) String() string {
 func (*Value) ProtoMessage() {}
 
 func (x *Value) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[3]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -395,7 +526,7 @@ func (x *Value) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value.ProtoReflect.Descriptor instead.
 func (*Value) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{3}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Value) GetKind() ValueKind {
@@ -430,7 +561,7 @@ type Schema struct {
 
 func (x *Schema) Reset() {
 	*x = Schema{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[4]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -442,7 +573,7 @@ func (x *Schema) String() string {
 func (*Schema) ProtoMessage() {}
 
 func (x *Schema) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[4]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -455,7 +586,7 @@ func (x *Schema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Schema.ProtoReflect.Descriptor instead.
 func (*Schema) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{4}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Schema) GetId() uint64 {
@@ -513,7 +644,7 @@ type Column struct {
 
 func (x *Column) Reset() {
 	*x = Column{}
-	mi := &file_curntvalv_v1_event_proto_msgTypes[5]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -525,7 +656,7 @@ func (x *Column) String() string {
 func (*Column) ProtoMessage() {}
 
 func (x *Column) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_event_proto_msgTypes[5]
+	mi := &file_curntvalv_v1_event_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -538,7 +669,7 @@ func (x *Column) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Column.ProtoReflect.Descriptor instead.
 func (*Column) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{5}
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Column) GetName() string {
@@ -573,7 +704,7 @@ var File_curntvalv_v1_event_proto protoreflect.FileDescriptor
 
 const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\n" +
-	"\x18curntvalv/v1/event.proto\x12\fcurntvalv.v1\"\x89\x02\n" +
+	"\x18curntvalv/v1/event.proto\x12\fcurntvalv.v1\"\xc2\x02\n" +
 	"\aTxBatch\x12\x1d\n" +
 	"\n" +
 	"commit_lsn\x18\x01 \x01(\x04R\tcommitLsn\x12\x17\n" +
@@ -583,12 +714,24 @@ const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\tfirst_seq\x18\x05 \x01(\rR\bfirstSeq\x12\x14\n" +
 	"\x05final\x18\x06 \x01(\bR\x05final\x12.\n" +
 	"\aschemas\x18\a \x03(\v2\x14.curntvalv.v1.SchemaR\aschemas\x12+\n" +
-	"\x06events\x18\b \x03(\v2\x13.curntvalv.v1.EventR\x06events\"\x9a\x01\n" +
+	"\x06events\x18\b \x03(\v2\x13.curntvalv.v1.EventR\x06events\x12\x1b\n" +
+	"\tsystem_id\x18\t \x01(\x04R\bsystemId\x12\x1a\n" +
+	"\btimeline\x18\n" +
+	" \x01(\rR\btimeline\"\xd8\x01\n" +
 	"\x05Event\x12\x1b\n" +
 	"\tschema_id\x18\x01 \x01(\x04R\bschemaId\x12 \n" +
 	"\x02op\x18\x02 \x01(\x0e2\x10.curntvalv.v1.OpR\x02op\x12)\n" +
 	"\x06before\x18\x03 \x01(\v2\x11.curntvalv.v1.RowR\x06before\x12'\n" +
-	"\x05after\x18\x04 \x01(\v2\x11.curntvalv.v1.RowR\x05after\"2\n" +
+	"\x05after\x18\x04 \x01(\v2\x11.curntvalv.v1.RowR\x05after\x12<\n" +
+	"\fsource_reset\x18\x05 \x01(\v2\x19.curntvalv.v1.SourceResetR\vsourceReset\"\xee\x01\n" +
+	"\vSourceReset\x12!\n" +
+	"\fprevious_lsn\x18\x01 \x01(\x04R\vpreviousLsn\x12,\n" +
+	"\x12previous_system_id\x18\x02 \x01(\x04R\x10previousSystemId\x12+\n" +
+	"\x11previous_timeline\x18\x03 \x01(\rR\x10previousTimeline\x12\x10\n" +
+	"\x03lsn\x18\x04 \x01(\x04R\x03lsn\x12\x1b\n" +
+	"\tsystem_id\x18\x05 \x01(\x04R\bsystemId\x12\x1a\n" +
+	"\btimeline\x18\x06 \x01(\rR\btimeline\x12\x16\n" +
+	"\x06reason\x18\a \x01(\tR\x06reason\"2\n" +
 	"\x03Row\x12+\n" +
 	"\x06values\x18\x01 \x03(\v2\x13.curntvalv.v1.ValueR\x06values\"H\n" +
 	"\x05Value\x12+\n" +
@@ -605,13 +748,14 @@ const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
 	"\btype_oid\x18\x02 \x01(\rR\atypeOid\x12#\n" +
 	"\rtype_modifier\x18\x03 \x01(\x05R\ftypeModifier\x12\x10\n" +
-	"\x03key\x18\x04 \x01(\bR\x03key*V\n" +
+	"\x03key\x18\x04 \x01(\bR\x03key*k\n" +
 	"\x02Op\x12\x12\n" +
 	"\x0eOP_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tOP_INSERT\x10\x01\x12\r\n" +
 	"\tOP_UPDATE\x10\x02\x12\r\n" +
 	"\tOP_DELETE\x10\x03\x12\x0f\n" +
-	"\vOP_TRUNCATE\x10\x04*\x82\x01\n" +
+	"\vOP_TRUNCATE\x10\x04\x12\x13\n" +
+	"\x0fOP_SOURCE_RESET\x10\x05*\x82\x01\n" +
 	"\tValueKind\x12\x1a\n" +
 	"\x16VALUE_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fVALUE_KIND_NULL\x10\x01\x12\x13\n" +
@@ -632,31 +776,33 @@ func file_curntvalv_v1_event_proto_rawDescGZIP() []byte {
 }
 
 var file_curntvalv_v1_event_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_curntvalv_v1_event_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_curntvalv_v1_event_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_curntvalv_v1_event_proto_goTypes = []any{
-	(Op)(0),         // 0: curntvalv.v1.Op
-	(ValueKind)(0),  // 1: curntvalv.v1.ValueKind
-	(*TxBatch)(nil), // 2: curntvalv.v1.TxBatch
-	(*Event)(nil),   // 3: curntvalv.v1.Event
-	(*Row)(nil),     // 4: curntvalv.v1.Row
-	(*Value)(nil),   // 5: curntvalv.v1.Value
-	(*Schema)(nil),  // 6: curntvalv.v1.Schema
-	(*Column)(nil),  // 7: curntvalv.v1.Column
+	(Op)(0),             // 0: curntvalv.v1.Op
+	(ValueKind)(0),      // 1: curntvalv.v1.ValueKind
+	(*TxBatch)(nil),     // 2: curntvalv.v1.TxBatch
+	(*Event)(nil),       // 3: curntvalv.v1.Event
+	(*SourceReset)(nil), // 4: curntvalv.v1.SourceReset
+	(*Row)(nil),         // 5: curntvalv.v1.Row
+	(*Value)(nil),       // 6: curntvalv.v1.Value
+	(*Schema)(nil),      // 7: curntvalv.v1.Schema
+	(*Column)(nil),      // 8: curntvalv.v1.Column
 }
 var file_curntvalv_v1_event_proto_depIdxs = []int32{
-	6, // 0: curntvalv.v1.TxBatch.schemas:type_name -> curntvalv.v1.Schema
+	7, // 0: curntvalv.v1.TxBatch.schemas:type_name -> curntvalv.v1.Schema
 	3, // 1: curntvalv.v1.TxBatch.events:type_name -> curntvalv.v1.Event
 	0, // 2: curntvalv.v1.Event.op:type_name -> curntvalv.v1.Op
-	4, // 3: curntvalv.v1.Event.before:type_name -> curntvalv.v1.Row
-	4, // 4: curntvalv.v1.Event.after:type_name -> curntvalv.v1.Row
-	5, // 5: curntvalv.v1.Row.values:type_name -> curntvalv.v1.Value
-	1, // 6: curntvalv.v1.Value.kind:type_name -> curntvalv.v1.ValueKind
-	7, // 7: curntvalv.v1.Schema.columns:type_name -> curntvalv.v1.Column
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	5, // 3: curntvalv.v1.Event.before:type_name -> curntvalv.v1.Row
+	5, // 4: curntvalv.v1.Event.after:type_name -> curntvalv.v1.Row
+	4, // 5: curntvalv.v1.Event.source_reset:type_name -> curntvalv.v1.SourceReset
+	6, // 6: curntvalv.v1.Row.values:type_name -> curntvalv.v1.Value
+	1, // 7: curntvalv.v1.Value.kind:type_name -> curntvalv.v1.ValueKind
+	8, // 8: curntvalv.v1.Schema.columns:type_name -> curntvalv.v1.Column
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_curntvalv_v1_event_proto_init() }
@@ -670,7 +816,7 @@ func file_curntvalv_v1_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_curntvalv_v1_event_proto_rawDesc), len(file_curntvalv_v1_event_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

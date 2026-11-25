@@ -50,3 +50,13 @@ jobs:
           go-version-file: go.mod
       - run: test -z "$(gofmt -l .)"
       - run: make test
+
+  # A real Postgres 17 failover per scenario (design D7).
+  failover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test-failover

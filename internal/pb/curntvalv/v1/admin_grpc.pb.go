@@ -19,12 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AdminService_Status_FullMethodName    = "/curntvalv.v1.AdminService/Status"
-	AdminService_Put_FullMethodName       = "/curntvalv.v1.AdminService/Put"
-	AdminService_Get_FullMethodName       = "/curntvalv.v1.AdminService/Get"
-	AdminService_Delete_FullMethodName    = "/curntvalv.v1.AdminService/Delete"
-	AdminService_ReadLog_FullMethodName   = "/curntvalv.v1.AdminService/ReadLog"
-	AdminService_ResetSink_FullMethodName = "/curntvalv.v1.AdminService/ResetSink"
+	AdminService_Status_FullMethodName      = "/curntvalv.v1.AdminService/Status"
+	AdminService_Put_FullMethodName         = "/curntvalv.v1.AdminService/Put"
+	AdminService_Get_FullMethodName         = "/curntvalv.v1.AdminService/Get"
+	AdminService_Delete_FullMethodName      = "/curntvalv.v1.AdminService/Delete"
+	AdminService_ReadLog_FullMethodName     = "/curntvalv.v1.AdminService/ReadLog"
+	AdminService_ResetSink_FullMethodName   = "/curntvalv.v1.AdminService/ResetSink"
+	AdminService_ResetSource_FullMethodName = "/curntvalv.v1.AdminService/ResetSource"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -47,6 +48,12 @@ type AdminServiceClient interface {
 	// ResetSink moves a configured sink to another position, also backwards
 	// (replay), and starts a new generation of its offsets. Leader only.
 	ResetSink(ctx context.Context, in *ResetSinkRequest, opts ...grpc.CallOption) (*ResetSinkResponse, error)
+	// ResetSource moves the Postgres source to the current position of its
+	// replication slot (creating the slot if it is missing) after a failover
+	// check stopped ingest (design D7). It stores an OP_SOURCE_RESET event so
+	// sinks and subscribers see the gap. Leader only, and only while the
+	// source on the leader is "failed".
+	ResetSource(ctx context.Context, in *ResetSourceRequest, opts ...grpc.CallOption) (*ResetSourceResponse, error)
 }
 
 type adminServiceClient struct {
@@ -117,6 +124,16 @@ func (c *adminServiceClient) ResetSink(ctx context.Context, in *ResetSinkRequest
 	return out, nil
 }
 
+func (c *adminServiceClient) ResetSource(ctx context.Context, in *ResetSourceRequest, opts ...grpc.CallOption) (*ResetSourceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResetSourceResponse)
+	err := c.cc.Invoke(ctx, AdminService_ResetSource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -137,6 +154,12 @@ type AdminServiceServer interface {
 	// ResetSink moves a configured sink to another position, also backwards
 	// (replay), and starts a new generation of its offsets. Leader only.
 	ResetSink(context.Context, *ResetSinkRequest) (*ResetSinkResponse, error)
+	// ResetSource moves the Postgres source to the current position of its
+	// replication slot (creating the slot if it is missing) after a failover
+	// check stopped ingest (design D7). It stores an OP_SOURCE_RESET event so
+	// sinks and subscribers see the gap. Leader only, and only while the
+	// source on the leader is "failed".
+	ResetSource(context.Context, *ResetSourceRequest) (*ResetSourceResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -164,6 +187,9 @@ func (UnimplementedAdminServiceServer) ReadLog(context.Context, *ReadLogRequest)
 }
 func (UnimplementedAdminServiceServer) ResetSink(context.Context, *ResetSinkRequest) (*ResetSinkResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResetSink not implemented")
+}
+func (UnimplementedAdminServiceServer) ResetSource(context.Context, *ResetSourceRequest) (*ResetSourceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResetSource not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -294,6 +320,24 @@ func _AdminService_ResetSink_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_ResetSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResetSourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ResetSource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ResetSource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ResetSource(ctx, req.(*ResetSourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -324,6 +368,10 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResetSink",
 			Handler:    _AdminService_ResetSink_Handler,
+		},
+		{
+			MethodName: "ResetSource",
+			Handler:    _AdminService_ResetSource_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

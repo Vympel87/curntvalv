@@ -8,6 +8,7 @@
 //	curntvalv log [--from N] [--follow] [--addr ...]
 //	curntvalv subscribe [--table T]... [--from N] [--addr ...]
 //	curntvalv sink reset NAME --to earliest|latest|INDEX [--addr ...]
+//	curntvalv source reset --to-slot [--addr ...]
 //	curntvalv version
 package main
 
@@ -78,6 +79,7 @@ const usage = `usage:
   curntvalv log [--from N] [--follow] [--addr HOST:PORT,...]
   curntvalv subscribe [--table NAME]... [--from N] [--addr HOST:PORT,...]
   curntvalv sink reset NAME --to earliest|latest|INDEX [--addr HOST:PORT,...]
+  curntvalv source reset --to-slot [--addr HOST:PORT,...]   after a failover check stopped ingest
   curntvalv certs [--out DIR] NODE...           a CA and node certificates for TLS
   curntvalv version
 
@@ -116,6 +118,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = subscribeCmd(ctx, args[1:], stdout, stderr)
 	case "sink":
 		err = sinkCmd(ctx, args[1:], stdout, stderr)
+	case "source":
+		err = sourceCmd(ctx, args[1:], stdout, stderr)
 	case "certs":
 		err = certsCmd(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -473,7 +477,11 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	gs := grpc.NewServer(append(guard.ServerOptions(srvTLS), grpc.MaxRecvMsgSize(transport.MaxMessageSize))...)
 	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
 	health := nodeHealth{src: src, runners: runners, specs: cfg.sinks, ret: ret, retCfg: retCfg, log: log}
-	admin := server.NewAdmin(node, node, meta, health, cfg.peers)
+	var resetter server.SourceResetter // a nil *Source must stay a nil interface
+	if src != nil {
+		resetter = src
+	}
+	admin := server.NewAdmin(node, node, meta, health, resetter, cfg.peers)
 	subscribe := server.NewSubscribe(reader)
 	pb.RegisterAdminServiceServer(gs, admin)
 	pb.RegisterSubscribeServiceServer(gs, subscribe)

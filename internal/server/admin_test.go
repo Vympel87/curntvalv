@@ -74,7 +74,7 @@ func (n *fakeNode) Status(context.Context) (raft.Status, error) {
 func newAdmin() (*Admin, *fakeNode) {
 	f := fsm.New()
 	n := &fakeNode{f: f}
-	return NewAdmin(n, n, f, nil, map[uint64]string{1: "a:1", 2: "b:2"}), n
+	return NewAdmin(n, n, f, nil, nil, map[uint64]string{1: "a:1", 2: "b:2"}), n
 }
 
 func TestPutGetDelete(t *testing.T) {
@@ -114,7 +114,7 @@ func (fakeHealth) Retention() *pb.RetentionStatus {
 func TestStatusReportsHealth(t *testing.T) {
 	f := fsm.New()
 	n := &fakeNode{f: f}
-	a := NewAdmin(n, n, f, fakeHealth{}, nil)
+	a := NewAdmin(n, n, f, fakeHealth{}, nil, nil)
 	ctx := context.Background()
 	for i := range 5 { // indexes 1-5 hold changes
 		tb, _ := fsm.EncodeTxBatch(&pb.TxBatch{CommitLsn: uint64(i + 1), Final: true, Events: []*pb.Event{{Op: pb.Op_OP_INSERT}}})
@@ -265,5 +265,44 @@ func TestReadLog(t *testing.T) {
 	n.first = 2
 	if _, err := a.ReadLog(ctx, &pb.ReadLogRequest{FromIndex: 1}); status.Code(err) != codes.OutOfRange {
 		t.Fatalf("compacted: %v", err)
+	}
+}
+
+type fakeResetter struct {
+	idx uint64
+	r   *pb.SourceReset
+	err error
+}
+
+func (f fakeResetter) Reset(context.Context) (uint64, *pb.SourceReset, error) {
+	return f.idx, f.r, f.err
+}
+
+func TestResetSource(t *testing.T) {
+	f := fsm.New()
+	n := &fakeNode{f: f}
+	ctx := context.Background()
+	if _, err := NewAdmin(n, n, f, nil, nil, nil).ResetSource(ctx, &pb.ResetSourceRequest{}); status.Code(err) != codes.Aborted {
+		t.Fatalf("without a source: %v", err)
+	}
+	r := &pb.SourceReset{Lsn: 100}
+	resp, err := NewAdmin(n, n, f, nil, fakeResetter{idx: 7, r: r}, nil).ResetSource(ctx, &pb.ResetSourceRequest{})
+	if err != nil || resp.GetIndex() != 7 || resp.GetSourceReset().GetLsn() != 100 {
+		t.Fatalf("%v %v", resp, err)
+	}
+	peers := map[uint64]string{2: "b:2"}
+	for _, tc := range []struct {
+		err  error
+		code codes.Code
+		msg  string
+	}{
+		{&raft.NotLeaderError{Leader: 2}, codes.FailedPrecondition, "b:2"},
+		{raft.ErrLeadershipLost, codes.Unavailable, ""},
+		{errors.New("pg: ingest has not stopped on this node"), codes.Aborted, "has not stopped"},
+	} {
+		_, err := NewAdmin(n, n, f, nil, fakeResetter{err: tc.err}, peers).ResetSource(ctx, &pb.ResetSourceRequest{})
+		if status.Code(err) != tc.code || !strings.Contains(status.Convert(err).Message(), tc.msg) {
+			t.Errorf("%v: got %v", tc.err, err)
+		}
 	}
 }

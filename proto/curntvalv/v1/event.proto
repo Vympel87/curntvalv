@@ -22,6 +22,11 @@ message TxBatch {
   // Table schemas used by this batch that the cluster has not stored yet.
   repeated Schema schemas = 7;
   repeated Event events = 8;
+  // The Postgres cluster and timeline the batch was read from (design D7):
+  // the system identifier and timeline of IDENTIFY_SYSTEM. 0 in batches
+  // stored before v0.3.
+  uint64 system_id = 9;
+  uint32 timeline = 10;
 }
 
 enum Op {
@@ -30,6 +35,10 @@ enum Op {
   OP_UPDATE = 2;
   OP_DELETE = 3;
   OP_TRUNCATE = 4;
+  // Not a row change: an operator moved the source position (curntvalv
+  // source reset), so changes between the old and the new position may be
+  // missing or repeated. The event has no schema and carries source_reset.
+  OP_SOURCE_RESET = 5;
 }
 
 message Event {
@@ -41,6 +50,23 @@ message Event {
   Row before = 3;
   // New row image (insert, update).
   Row after = 4;
+  // Set with OP_SOURCE_RESET.
+  SourceReset source_reset = 5;
+}
+
+// SourceReset records a move of the source position by an operator.
+message SourceReset {
+  // Position before the reset: end LSN of the last stored transaction,
+  // and the Postgres cluster and timeline it came from (0 if unknown).
+  uint64 previous_lsn = 1;
+  uint64 previous_system_id = 2;
+  uint32 previous_timeline = 3;
+  // New position: ingest continues with transactions after lsn.
+  uint64 lsn = 4;
+  uint64 system_id = 5;
+  uint32 timeline = 6;
+  // Why ingest had stopped, as reported by the source.
+  string reason = 7;
 }
 
 message Row {

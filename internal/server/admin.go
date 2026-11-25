@@ -48,6 +48,12 @@ type Health interface {
 	Retention() *pb.RetentionStatus
 }
 
+// SourceResetter moves the Postgres source to its slot's position after a
+// failover check stopped it (design D7). *pg.Source implements it.
+type SourceResetter interface {
+	Reset(ctx context.Context) (index uint64, r *pb.SourceReset, err error)
+}
+
 // Admin implements pb.AdminServiceServer.
 type Admin struct {
 	pb.UnimplementedAdminServiceServer
@@ -55,14 +61,15 @@ type Admin struct {
 	log    LogReader
 	meta   Meta
 	health Health
+	source SourceResetter
 	peers  map[uint64]string
 }
 
 // NewAdmin returns the admin service of one node. peers maps node ids to
-// addresses and is used to tell clients where the leader is. health may be
-// nil.
-func NewAdmin(node RaftNode, log LogReader, meta Meta, health Health, peers map[uint64]string) *Admin {
-	return &Admin{node: node, log: log, meta: meta, health: health, peers: peers}
+// addresses and is used to tell clients where the leader is. health and
+// source may be nil (no Postgres source on this node).
+func NewAdmin(node RaftNode, log LogReader, meta Meta, health Health, source SourceResetter, peers map[uint64]string) *Admin {
+	return &Admin{node: node, log: log, meta: meta, health: health, source: source, peers: peers}
 }
 
 const (
@@ -237,6 +244,25 @@ func (a *Admin) ResetSink(ctx context.Context, req *pb.ResetSinkRequest) (*pb.Re
 	}
 	pos, _ := a.meta.SinkPosition(name)
 	return &pb.ResetSinkResponse{Index: idx, Offset: offset, Generation: pos.Gen}, nil
+}
+
+// ResetSource moves the source to its slot's position. Errors other than
+// not being the leader are ABORTED with the reason, so clients do not retry
+// a reset elsewhere.
+func (a *Admin) ResetSource(ctx context.Context, _ *pb.ResetSourceRequest) (*pb.ResetSourceResponse, error) {
+	if a.source == nil {
+		return nil, status.Error(codes.Aborted, "no Postgres source is configured on this node")
+	}
+	idx, r, err := a.source.Reset(ctx)
+	if err != nil {
+		var nl *raft.NotLeaderError
+		if errors.As(err, &nl) || errors.Is(err, raft.ErrNotLeader) || errors.Is(err, raft.ErrLeadershipLost) ||
+			errors.Is(err, raft.ErrStopped) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return nil, a.toStatus(err)
+		}
+		return nil, status.Error(codes.Aborted, err.Error())
+	}
+	return &pb.ResetSourceResponse{Index: idx, SourceReset: r}, nil
 }
 
 func (a *Admin) configured(name string) bool {

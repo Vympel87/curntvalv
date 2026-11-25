@@ -177,17 +177,67 @@ The Postgres slot is acknowledged from Raft commit (D3), not from sink
 progress. Sink lag is absorbed by the curntValv log. Only a cluster without a
 majority stops acknowledging.
 
-### D7. Postgres failover (later milestone)
+### D7. Postgres failover
 
-After reconnecting to a new primary curntValv compares its `source_lsn` with the
-slot:
+curntValv continues after a Postgres failover when that is safe and stops
+loudly when it is not; it never continues silently. The danger is not only
+a lost slot: after a failover to a standby that lagged, the new primary
+writes new transactions at LSNs the cluster has already stored from the old
+primary, and LSN de-duplication (D3) would drop them as "already stored".
 
-- slot is at or behind `source_lsn` → safe, duplicates are dropped by D3;
-- slot is missing or ahead of `source_lsn` → changes were lost on the Postgres
-  side. curntValv stops the pipeline and reports it loudly; it never continues
-  silently.
-
-Recommended setup: Postgres 17+ failover slots, or Patroni permanent slots.
+- **Identity.** Every `TxBatch` carries the system identifier and timeline
+  of the server it was read from (`IDENTIFY_SYSTEM`); the state machine keeps
+  them with the position (snapshot version 5). Batches of v0.2 carry none;
+  the first batch that does sets them. A batch of another system identifier
+  is an anomaly; only a reset may switch.
+- **Checks at every session start**, before the slot is touched (so a slot
+  synced to a promoted standby is not trusted blindly):
+  - the server is in recovery (a standby, e.g. while a virtual IP or DNS
+    still moves): retried, not fatal;
+  - another system identifier: `ErrSourceChanged`;
+  - an older timeline than the stored one (an old primary came back):
+    `ErrDiverged`;
+  - a newer timeline: the server's `TIMELINE_HISTORY` says where the stored
+    timeline ended; a stored position past that switch point is
+    `ErrDiverged`, with both LSNs in the message;
+  - a stored position past the server's flushed WAL: `ErrDiverged`;
+  - then, as before, the slot: missing (`ErrSlotLost`) or ahead of the
+    stored position (`ErrSlotAhead`); at or behind is safe, D3 drops what is
+    sent again.
+  The "stored position" is the end LSN, which includes idle positions from
+  keepalives: if the old primary reported WAL the standby never got, the
+  new primary may commit transactions there, so that is a divergence too.
+- **Failover slots.** On Postgres 17 the slot is created with
+  `FAILOVER true`, and an existing slot is altered to it, so standbys with
+  `sync_replication_slots` keep a copy. The primary should list the
+  standbys' physical slots in `synchronized_standby_slots`: then it does not
+  send logical changes before the standbys have them, and a failover never
+  diverges. Without it (or with asynchronous Patroni) a failover can diverge
+  and stop ingest; the node logs this once. Postgres 14–16 work as before.
+- **Recovery: `curntvalv source reset --to-slot`.** The fatal errors above
+  need an operator. A reset, on the leader whose source failed in this term,
+  connects to Postgres, takes the slot's confirmed position (creating the
+  slot if it is missing) and stores a `TxBatch` with one `OP_SOURCE_RESET`
+  event carrying the old and new position, system identifier and timeline,
+  and the error. The state machine replaces the position with it (commit
+  LSN lsn-1, end LSN lsn, as for any position-only batch). The event goes
+  through the log like a change: sinks and subscribers receive it whatever
+  their table filter, so consumers learn that changes between the two
+  positions may be missing (slot ahead, lost slot) or repeated (slot behind,
+  replayed from the shared part of the history). Ingest then starts again
+  on its own.
+- **Connection.** For a virtual IP or DNS name nothing is needed; with
+  several hosts use libpq's `target_session_attrs=primary`.
+- **Testing.** `make test-failover` creates a Postgres 17 primary and a
+  streaming standby with slot sync for each scenario and moves a TCP proxy
+  (the virtual IP) after `pg_promote()`: with `synchronized_standby_slots`
+  ingest continues and stores every row once; without it, after the
+  standby was cut off, ingest stops with `ErrDiverged` instead of skipping
+  the new primary's rows, and a reset continues; with it and the standby
+  cut off, the primary holds the changes back and the failover is safe.
+  Disabling the checks makes the second scenario fail.
+- **Upgrading.** v0.2 nodes cannot read snapshot version 5 and do not know
+  the reset event; upgrade all nodes before a reset.
 
 ### D8. Static membership first
 
@@ -553,7 +603,7 @@ removing nodes at runtime (Raft single-server membership change) comes later.
 Event {
   key        (commit_lsn, seq)       // idempotency key
   table      "public.orders"
-  op         insert | update | delete | truncate
+  op         insert | update | delete | truncate | source_reset (D7)
   before     row image (only with REPLICA IDENTITY FULL, else key columns)
   after      row image
   commit_ts  timestamp from Postgres

@@ -14,6 +14,20 @@ break compatibility.
   beat environment variables, which beat the file.
 - `curntvalv server --check`: validate the flags, the config file and the
   TLS files, then exit.
+- Postgres failover (design D7): the cluster records the Postgres system
+  identifier and timeline with its position, and every session checks them
+  against the server, including its timeline history. A standby is waited
+  for; another cluster, an old primary, or a failover to a standby that
+  lacks stored changes stops ingest (`ErrSourceChanged`, `ErrDiverged`)
+  instead of skipping the new primary's transactions as already stored.
+- On Postgres 17 the slot is a failover slot (new slots, and existing ones
+  are converted); the node hints at `synchronized_standby_slots`.
+- `curntvalv source reset --to-slot` (admin RPC `ResetSource`): after a
+  failover check stopped ingest, continue from the slot's position. It
+  stores an `OP_SOURCE_RESET` event that sinks and subscribers receive
+  whatever their table filter (`"op":"source_reset"`, `client.OpSourceReset`).
+- `make test-failover`: real Postgres 17 failovers (primary, standby,
+  promotion) in three scenarios; also a CI job.
 
 ### Fixed
 
@@ -23,6 +37,11 @@ break compatibility.
   source took it as already stored. Position-only batches now store
   commit LSN P-1 for WAL position P.
 - `--http-listen` help no longer says the HTTP port has no authentication.
+
+### Upgrading from 0.2
+
+- Snapshots are now version 5, which v0.2 nodes cannot read: upgrade all
+  nodes close together, and before any `source reset`.
 
 ## [0.2.0]
 

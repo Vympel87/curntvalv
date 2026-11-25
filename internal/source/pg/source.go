@@ -70,9 +70,13 @@ type Source struct {
 	log   *slog.Logger
 
 	mu      sync.Mutex
-	health  string // standby, running, retrying, failed
+	health  string // standby, running, retrying, failed, resetting
 	lastErr string
 	stats   Stats
+	// failedTerm is the term in which a fatal error stopped ingest; it
+	// starts again in a new term or after a Reset.
+	failedTerm uint64
+	hinted     bool // the failover setup hint was logged
 }
 
 // Stats count what this node proposed to the log since it started. After a
@@ -102,7 +106,8 @@ func (s *Source) count(b *pb.TxBatch) {
 }
 
 // Health reports what the source is doing on this node: "standby" (not the
-// leader), "running", "retrying" or "failed", and the last error.
+// leader), "running", "retrying", "failed" or "resetting", and the last
+// error.
 func (s *Source) Health() (state, lastErr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -144,17 +149,18 @@ func New(cfg Config, node Node, state State) (*Source, error) {
 // isFatal reports errors that retrying cannot fix: they need an operator.
 func isFatal(err error) bool {
 	return errors.Is(err, ErrConfig) || errors.Is(err, ErrSlotLost) || errors.Is(err, ErrSlotAhead) ||
+		errors.Is(err, ErrSourceChanged) || errors.Is(err, ErrDiverged) ||
 		errors.Is(err, ErrPartialLost) || errors.Is(err, ErrProtocol)
 }
 
 // Run ingests while this node is the leader, until ctx is cancelled. When
 // leadership moves away the session stops; transient errors are retried with
 // backoff. A fatal error stops ingest on this node and is logged loudly
-// until leadership changes or the process restarts.
+// until leadership changes, the process restarts or an operator resets the
+// source (Reset).
 func (s *Source) Run(ctx context.Context) error {
 	const poll = 200 * time.Millisecond
 	backoff := time.Second
-	var failedTerm uint64 // term in which a fatal error happened
 	for {
 		select {
 		case <-ctx.Done():
@@ -169,12 +175,17 @@ func (s *Source) Run(ctx context.Context) error {
 			continue
 		}
 		if st.State != raft.StateLeader {
-			if h, _ := s.Health(); h != "standby" {
-				s.setHealth("standby", nil)
+			s.mu.Lock()
+			if s.health != "standby" && s.health != "resetting" {
+				s.health = "standby"
 			}
+			s.mu.Unlock()
 			continue
 		}
-		if st.Term == failedTerm {
+		s.mu.Lock()
+		failed := st.Term == s.failedTerm
+		s.mu.Unlock()
+		if failed {
 			continue
 		}
 
@@ -186,9 +197,15 @@ func (s *Source) Run(ctx context.Context) error {
 			backoff = time.Second
 			s.setHealth("standby", nil)
 		case isFatal(err):
-			failedTerm = st.Term
+			s.mu.Lock()
+			s.failedTerm = st.Term
+			s.mu.Unlock()
 			s.setHealth("failed", err)
-			s.log.Error("ingest stopped; fix the cause and restart the node or move leadership", "err", err)
+			if errors.Is(err, ErrSlotLost) || errors.Is(err, ErrSlotAhead) || errors.Is(err, ErrSourceChanged) || errors.Is(err, ErrDiverged) {
+				s.log.Error("ingest stopped; to accept the gap and continue from the slot, run `curntvalv source reset --to-slot` (design D7)", "err", err)
+			} else {
+				s.log.Error("ingest stopped; fix the cause and restart the node or move leadership", "err", err)
+			}
 		default:
 			s.setHealth("retrying", err)
 			s.log.Warn("ingest interrupted, retrying", "err", err, "retry_in", backoff)
@@ -246,29 +263,34 @@ func (s *Source) session(ctx context.Context, term uint64) error {
 		return fmt.Errorf("pg: connect: %w", err)
 	}
 	defer conn.Close(context.Background())
-	create, err := s.prepare(ctx, conn, pos)
+	rc, err := s.replicationConn(ctx)
 	if err != nil {
 		return err
 	}
-
-	rcfg, err := pgconn.ParseConfig(s.cfg.URL)
-	if err != nil {
-		return fmt.Errorf("%w: bad connection URL: %v", ErrConfig, err)
-	}
-	rcfg.RuntimeParams["replication"] = "database"
-	rc, err := pgconn.ConnectConfig(ctx, rcfg)
-	if err != nil {
-		return fmt.Errorf("pg: replication connect: %w", err)
-	}
 	defer rc.Close(context.Background())
 
-	if create {
-		res, err := pglogrepl.CreateReplicationSlot(ctx, rc, s.cfg.Slot, "pgoutput",
-			pglogrepl.CreateReplicationSlotOptions{Mode: pglogrepl.LogicalReplication, SnapshotAction: "NOEXPORT_SNAPSHOT"})
+	// Is this still the Postgres history the stored position belongs to
+	// (design D7)? Checked before the slot, so a slot synced to a promoted
+	// standby is not trusted blindly.
+	srv, err := identify(ctx, conn, rc)
+	if err != nil {
+		return err
+	}
+	if err := checkServer(ctx, pos, srv, timelineHistory(rc, srv.timeline)); err != nil {
+		return err
+	}
+	slot, err := s.prepare(ctx, conn, pos)
+	if err != nil {
+		return err
+	}
+	if slot.create {
+		lsn, err := s.createSlot(ctx, rc, srv)
 		if err != nil {
-			return fmt.Errorf("pg: create slot %s: %w", s.cfg.Slot, err)
+			return err
 		}
-		s.log.Info("created replication slot", "slot", s.cfg.Slot, "consistent_point", res.ConsistentPoint)
+		s.log.Info("created replication slot", "slot", s.cfg.Slot, "consistent_point", pglogrepl.LSN(lsn), "failover", srv.failoverSlots())
+	} else {
+		s.enableFailover(ctx, conn, rc, srv, slot.failover)
 	}
 
 	start := pglogrepl.LSN(pos.EndLSN)
@@ -281,8 +303,22 @@ func (s *Source) session(ctx context.Context, term uint64) error {
 	}
 	s.setHealth("running", nil)
 	s.log.Info("ingest started", "slot", s.cfg.Slot, "from", start,
-		"stored_commit_lsn", pglogrepl.LSN(pos.CommitLSN), "partial_lsn", pglogrepl.LSN(pos.PartialLSN))
-	return s.stream(ctx, rc, pos, term)
+		"stored_commit_lsn", pglogrepl.LSN(pos.CommitLSN), "partial_lsn", pglogrepl.LSN(pos.PartialLSN),
+		"system_id", srv.systemID, "timeline", srv.timeline)
+	return s.stream(ctx, rc, pos, term, srv)
+}
+
+func (s *Source) replicationConn(ctx context.Context) (*pgconn.PgConn, error) {
+	rcfg, err := pgconn.ParseConfig(s.cfg.URL)
+	if err != nil {
+		return nil, fmt.Errorf("%w: bad connection URL: %v", ErrConfig, err)
+	}
+	rcfg.RuntimeParams["replication"] = "database"
+	rc, err := pgconn.ConnectConfig(ctx, rcfg)
+	if err != nil {
+		return nil, fmt.Errorf("pg: replication connect: %w", err)
+	}
+	return rc, nil
 }
 
 // Check connects to Postgres and checks that it is set up for curntValv:
@@ -316,11 +352,17 @@ func checkSetup(ctx context.Context, conn *pgx.Conn, publication string) error {
 	return nil
 }
 
+// slotState is what prepare found out about the replication slot.
+type slotState struct {
+	create   bool // the slot does not exist yet and may be created
+	failover bool // it is a failover slot (Postgres 17)
+}
+
 // prepare checks the Postgres setup, fences off a previous leader's
 // connection and decides whether the slot must be created.
-func (s *Source) prepare(ctx context.Context, conn *pgx.Conn, pos fsm.SourceState) (create bool, err error) {
+func (s *Source) prepare(ctx context.Context, conn *pgx.Conn, pos fsm.SourceState) (slotState, error) {
 	if err := checkSetup(ctx, conn, s.cfg.Publication); err != nil {
-		return false, err
+		return slotState{}, err
 	}
 
 	fresh := pos.CommitLSN == 0 && pos.PartialLSN == 0
@@ -328,31 +370,34 @@ func (s *Source) prepare(ctx context.Context, conn *pgx.Conn, pos fsm.SourceStat
 		var plugin string
 		var activePID *int32
 		var confirmed *string
-		err := conn.QueryRow(ctx, `SELECT plugin, active_pid, confirmed_flush_lsn::text FROM pg_replication_slots
-			WHERE slot_name = $1 AND database = current_database()`, s.cfg.Slot).Scan(&plugin, &activePID, &confirmed)
+		var failover bool
+		// to_jsonb: the failover column exists only since Postgres 17.
+		err := conn.QueryRow(ctx, `SELECT plugin, active_pid, confirmed_flush_lsn::text,
+			coalesce((to_jsonb(s) ->> 'failover')::bool, false) FROM pg_replication_slots s
+			WHERE slot_name = $1 AND database = current_database()`, s.cfg.Slot).Scan(&plugin, &activePID, &confirmed, &failover)
 		if errors.Is(err, pgx.ErrNoRows) {
 			if !fresh {
-				return false, fmt.Errorf("%w: slot %q (stored position %s)", ErrSlotLost, s.cfg.Slot, pglogrepl.LSN(pos.EndLSN))
+				return slotState{}, fmt.Errorf("%w: slot %q (stored position %s)", ErrSlotLost, s.cfg.Slot, pglogrepl.LSN(pos.EndLSN))
 			}
-			return true, nil
+			return slotState{create: true}, nil
 		}
 		if err != nil {
-			return false, fmt.Errorf("pg: read slot: %w", err)
+			return slotState{}, fmt.Errorf("pg: read slot: %w", err)
 		}
 		if plugin != "pgoutput" {
-			return false, fmt.Errorf("%w: slot %q uses plugin %q, need pgoutput", ErrConfig, s.cfg.Slot, plugin)
+			return slotState{}, fmt.Errorf("%w: slot %q uses plugin %q, need pgoutput", ErrConfig, s.cfg.Slot, plugin)
 		}
 		if confirmed != nil && !fresh {
 			lsn, err := pglogrepl.ParseLSN(*confirmed)
 			if err != nil {
-				return false, fmt.Errorf("pg: parse slot position %q: %w", *confirmed, err)
+				return slotState{}, fmt.Errorf("pg: parse slot position %q: %w", *confirmed, err)
 			}
 			if uint64(lsn) > pos.EndLSN {
-				return false, fmt.Errorf("%w: slot at %s, stored up to %s", ErrSlotAhead, lsn, pglogrepl.LSN(pos.EndLSN))
+				return slotState{}, fmt.Errorf("%w: slot at %s, stored up to %s", ErrSlotAhead, lsn, pglogrepl.LSN(pos.EndLSN))
 			}
 		}
 		if activePID == nil {
-			return false, nil
+			return slotState{failover: failover}, nil
 		}
 		// Fencing (design D3): the slot is still used, normally by the
 		// previous leader. That node can no longer commit anything, but
@@ -361,14 +406,14 @@ func (s *Source) prepare(ctx context.Context, conn *pgx.Conn, pos fsm.SourceStat
 			s.log.Info("terminating previous reader of the slot", "slot", s.cfg.Slot, "pid", *activePID)
 		}
 		if _, err := conn.Exec(ctx, "SELECT pg_terminate_backend($1)", *activePID); err != nil {
-			return false, fmt.Errorf("pg: terminate previous slot reader: %w", err)
+			return slotState{}, fmt.Errorf("pg: terminate previous slot reader: %w", err)
 		}
 		if attempt >= 50 {
-			return false, fmt.Errorf("pg: slot %q still in use by pid %d", s.cfg.Slot, *activePID)
+			return slotState{}, fmt.Errorf("pg: slot %q still in use by pid %d", s.cfg.Slot, *activePID)
 		}
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return slotState{}, ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
@@ -395,7 +440,7 @@ type inFlight struct {
 // prefix. Any failed proposal ends the session; the next one starts from
 // the stored position and the state machine drops what is already stored
 // (design D3).
-func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceState, term uint64) error {
+func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceState, term uint64, srv server) error {
 	var queue []inFlight
 	queued := 0
 	// Before another session starts in the same term, every proposal of this
@@ -449,6 +494,7 @@ func (s *Source) stream(ctx context.Context, rc *pgconn.PgConn, pos fsm.SourceSt
 		return nil
 	}
 	propose := func(tb *pb.TxBatch) error {
+		tb.SystemId, tb.Timeline = srv.systemID, srv.timeline
 		data, err := fsm.EncodeTxBatch(tb)
 		if err != nil {
 			return err

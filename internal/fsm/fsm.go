@@ -47,7 +47,7 @@ const (
 	// MaxValueSize is the largest allowed value in bytes.
 	MaxValueSize = 1 << 20
 
-	snapshotVersion = 4
+	snapshotVersion = 5
 )
 
 var (
@@ -225,14 +225,15 @@ func (f *FSM) AppliedIndex() uint64 {
 //
 //	| version u8 | applied u64 | count uvarint | (key, value)* |
 //	| commit_lsn u64 | end_lsn u64 | partial_lsn u64 | partial_next_seq u32 |
-//	| anomalies u64 | schema count uvarint | schema* |
+//	| anomalies u64 | system_id u64 | timeline u32 |
+//	| schema count uvarint | schema* |
 //	| sink count uvarint | (sink name, offset u64, generation u64)* |
 //	| last change index u64 |
 //
 // with keys in sorted order, schemas in id order, sinks in name order, and
-// each key, value, schema (protobuf) and sink name length-prefixed. Version 3
-// (sinks without generation) and version 2 (without the sink section) are
-// still restored.
+// each key, value, schema (protobuf) and sink name length-prefixed. Version 4
+// (without system_id and timeline), 3 (sinks without generation) and 2
+// (without the sink section) are still restored.
 func (f *FSM) Snapshot() ([]byte, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -253,6 +254,8 @@ func (f *FSM) Snapshot() ([]byte, error) {
 	b = binary.LittleEndian.AppendUint64(b, f.src.PartialLSN)
 	b = binary.LittleEndian.AppendUint32(b, f.src.PartialNextSeq)
 	b = binary.LittleEndian.AppendUint64(b, f.src.Anomalies)
+	b = binary.LittleEndian.AppendUint64(b, f.src.SystemID)
+	b = binary.LittleEndian.AppendUint32(b, f.src.Timeline)
 	ids := make([]uint64, 0, len(f.schemas))
 	for id := range f.schemas {
 		ids = append(ids, id)
@@ -315,6 +318,14 @@ func (f *FSM) Restore(b []byte) error {
 		Anomalies:      binary.LittleEndian.Uint64(rest[28:36]),
 	}
 	rest = rest[36:]
+	if b[0] >= 5 {
+		if len(rest) < 12 {
+			return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+		}
+		src.SystemID = binary.LittleEndian.Uint64(rest[0:8])
+		src.Timeline = binary.LittleEndian.Uint32(rest[8:12])
+		rest = rest[12:]
+	}
 	ns, k := binary.Uvarint(rest)
 	if k <= 0 {
 		return fmt.Errorf("%w: bad schema count", ErrCorrupt)

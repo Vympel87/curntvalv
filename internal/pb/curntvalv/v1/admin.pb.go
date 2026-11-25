@@ -176,7 +176,7 @@ type StatusResponse struct {
 	LastApplied   uint64                 `protobuf:"varint,9,opt,name=last_applied,json=lastApplied,proto3" json:"last_applied,omitempty"`
 	SnapshotIndex uint64                 `protobuf:"varint,10,opt,name=snapshot_index,json=snapshotIndex,proto3" json:"snapshot_index,omitempty"`
 	// Postgres source on this node: "" (none configured), "standby" (not the
-	// leader), "running", "retrying" or "failed".
+	// leader), "running", "retrying", "failed" or "resetting".
 	SourceState string        `protobuf:"bytes,11,opt,name=source_state,json=sourceState,proto3" json:"source_state,omitempty"`
 	SourceError string        `protobuf:"bytes,12,opt,name=source_error,json=sourceError,proto3" json:"source_error,omitempty"`
 	Sinks       []*SinkStatus `protobuf:"bytes,13,rep,name=sinks,proto3" json:"sinks,omitempty"`
@@ -644,6 +644,95 @@ func (x *ResetSinkResponse) GetGeneration() uint64 {
 	return 0
 }
 
+type ResetSourceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResetSourceRequest) Reset() {
+	*x = ResetSourceRequest{}
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResetSourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResetSourceRequest) ProtoMessage() {}
+
+func (x *ResetSourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResetSourceRequest.ProtoReflect.Descriptor instead.
+func (*ResetSourceRequest) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{6}
+}
+
+type ResetSourceResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Raft index at which the reset was committed.
+	Index         uint64       `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
+	SourceReset   *SourceReset `protobuf:"bytes,2,opt,name=source_reset,json=sourceReset,proto3" json:"source_reset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResetSourceResponse) Reset() {
+	*x = ResetSourceResponse{}
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResetSourceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResetSourceResponse) ProtoMessage() {}
+
+func (x *ResetSourceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResetSourceResponse.ProtoReflect.Descriptor instead.
+func (*ResetSourceResponse) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ResetSourceResponse) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *ResetSourceResponse) GetSourceReset() *SourceReset {
+	if x != nil {
+		return x.SourceReset
+	}
+	return nil
+}
+
 type PutRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -654,7 +743,7 @@ type PutRequest struct {
 
 func (x *PutRequest) Reset() {
 	*x = PutRequest{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[6]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -666,7 +755,7 @@ func (x *PutRequest) String() string {
 func (*PutRequest) ProtoMessage() {}
 
 func (x *PutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[6]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -679,7 +768,7 @@ func (x *PutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutRequest.ProtoReflect.Descriptor instead.
 func (*PutRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{6}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PutRequest) GetKey() string {
@@ -706,7 +795,7 @@ type PutResponse struct {
 
 func (x *PutResponse) Reset() {
 	*x = PutResponse{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[7]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -718,7 +807,7 @@ func (x *PutResponse) String() string {
 func (*PutResponse) ProtoMessage() {}
 
 func (x *PutResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[7]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -731,7 +820,7 @@ func (x *PutResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutResponse.ProtoReflect.Descriptor instead.
 func (*PutResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{7}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PutResponse) GetIndex() uint64 {
@@ -750,7 +839,7 @@ type GetRequest struct {
 
 func (x *GetRequest) Reset() {
 	*x = GetRequest{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -762,7 +851,7 @@ func (x *GetRequest) String() string {
 func (*GetRequest) ProtoMessage() {}
 
 func (x *GetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[8]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -775,7 +864,7 @@ func (x *GetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRequest.ProtoReflect.Descriptor instead.
 func (*GetRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{8}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetRequest) GetKey() string {
@@ -796,7 +885,7 @@ type GetResponse struct {
 
 func (x *GetResponse) Reset() {
 	*x = GetResponse{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -808,7 +897,7 @@ func (x *GetResponse) String() string {
 func (*GetResponse) ProtoMessage() {}
 
 func (x *GetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[9]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -821,7 +910,7 @@ func (x *GetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetResponse.ProtoReflect.Descriptor instead.
 func (*GetResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{9}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetResponse) GetFound() bool {
@@ -854,7 +943,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -866,7 +955,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[10]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -879,7 +968,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{10}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *DeleteRequest) GetKey() string {
@@ -898,7 +987,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[11]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -910,7 +999,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[11]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -923,7 +1012,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{11}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DeleteResponse) GetIndex() uint64 {
@@ -945,7 +1034,7 @@ type ReadLogRequest struct {
 
 func (x *ReadLogRequest) Reset() {
 	*x = ReadLogRequest{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[12]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -957,7 +1046,7 @@ func (x *ReadLogRequest) String() string {
 func (*ReadLogRequest) ProtoMessage() {}
 
 func (x *ReadLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[12]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -970,7 +1059,7 @@ func (x *ReadLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadLogRequest.ProtoReflect.Descriptor instead.
 func (*ReadLogRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{12}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ReadLogRequest) GetFromIndex() uint64 {
@@ -1000,7 +1089,7 @@ type LogEntry struct {
 
 func (x *LogEntry) Reset() {
 	*x = LogEntry{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[13]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1012,7 +1101,7 @@ func (x *LogEntry) String() string {
 func (*LogEntry) ProtoMessage() {}
 
 func (x *LogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[13]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1025,7 +1114,7 @@ func (x *LogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
 func (*LogEntry) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{13}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *LogEntry) GetIndex() uint64 {
@@ -1071,7 +1160,7 @@ type ReadLogResponse struct {
 
 func (x *ReadLogResponse) Reset() {
 	*x = ReadLogResponse{}
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[14]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1083,7 +1172,7 @@ func (x *ReadLogResponse) String() string {
 func (*ReadLogResponse) ProtoMessage() {}
 
 func (x *ReadLogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_admin_proto_msgTypes[14]
+	mi := &file_curntvalv_v1_admin_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1096,7 +1185,7 @@ func (x *ReadLogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadLogResponse.ProtoReflect.Descriptor instead.
 func (*ReadLogResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{14}
+	return file_curntvalv_v1_admin_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ReadLogResponse) GetEntries() []*LogEntry {
@@ -1184,7 +1273,11 @@ const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\x06offset\x18\x02 \x01(\x04R\x06offset\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
-	"generation\"4\n" +
+	"generation\"\x14\n" +
+	"\x12ResetSourceRequest\"i\n" +
+	"\x13ResetSourceResponse\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\x04R\x05index\x12<\n" +
+	"\fsource_reset\x18\x02 \x01(\v2\x19.curntvalv.v1.SourceResetR\vsourceReset\"4\n" +
 	"\n" +
 	"PutRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -1230,14 +1323,15 @@ const file_curntvalv_v1_admin_proto_rawDesc = "" +
 	"\x16ENTRY_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fENTRY_KIND_NOOP\x10\x01\x12\x13\n" +
 	"\x0fENTRY_KIND_META\x10\x02\x12\x17\n" +
-	"\x13ENTRY_KIND_TX_BATCH\x10\x032\xa6\x03\n" +
+	"\x13ENTRY_KIND_TX_BATCH\x10\x032\xfa\x03\n" +
 	"\fAdminService\x12C\n" +
 	"\x06Status\x12\x1b.curntvalv.v1.StatusRequest\x1a\x1c.curntvalv.v1.StatusResponse\x12:\n" +
 	"\x03Put\x12\x18.curntvalv.v1.PutRequest\x1a\x19.curntvalv.v1.PutResponse\x12:\n" +
 	"\x03Get\x12\x18.curntvalv.v1.GetRequest\x1a\x19.curntvalv.v1.GetResponse\x12C\n" +
 	"\x06Delete\x12\x1b.curntvalv.v1.DeleteRequest\x1a\x1c.curntvalv.v1.DeleteResponse\x12F\n" +
 	"\aReadLog\x12\x1c.curntvalv.v1.ReadLogRequest\x1a\x1d.curntvalv.v1.ReadLogResponse\x12L\n" +
-	"\tResetSink\x12\x1e.curntvalv.v1.ResetSinkRequest\x1a\x1f.curntvalv.v1.ResetSinkResponseB;Z9github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pbb\x06proto3"
+	"\tResetSink\x12\x1e.curntvalv.v1.ResetSinkRequest\x1a\x1f.curntvalv.v1.ResetSinkResponse\x12R\n" +
+	"\vResetSource\x12 .curntvalv.v1.ResetSourceRequest\x1a!.curntvalv.v1.ResetSourceResponseB;Z9github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pbb\x06proto3"
 
 var (
 	file_curntvalv_v1_admin_proto_rawDescOnce sync.Once
@@ -1252,55 +1346,61 @@ func file_curntvalv_v1_admin_proto_rawDescGZIP() []byte {
 }
 
 var file_curntvalv_v1_admin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_curntvalv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_curntvalv_v1_admin_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_curntvalv_v1_admin_proto_goTypes = []any{
-	(ResetPosition)(0),        // 0: curntvalv.v1.ResetPosition
-	(EntryKind)(0),            // 1: curntvalv.v1.EntryKind
-	(*StatusRequest)(nil),     // 2: curntvalv.v1.StatusRequest
-	(*StatusResponse)(nil),    // 3: curntvalv.v1.StatusResponse
-	(*RetentionStatus)(nil),   // 4: curntvalv.v1.RetentionStatus
-	(*SinkStatus)(nil),        // 5: curntvalv.v1.SinkStatus
-	(*ResetSinkRequest)(nil),  // 6: curntvalv.v1.ResetSinkRequest
-	(*ResetSinkResponse)(nil), // 7: curntvalv.v1.ResetSinkResponse
-	(*PutRequest)(nil),        // 8: curntvalv.v1.PutRequest
-	(*PutResponse)(nil),       // 9: curntvalv.v1.PutResponse
-	(*GetRequest)(nil),        // 10: curntvalv.v1.GetRequest
-	(*GetResponse)(nil),       // 11: curntvalv.v1.GetResponse
-	(*DeleteRequest)(nil),     // 12: curntvalv.v1.DeleteRequest
-	(*DeleteResponse)(nil),    // 13: curntvalv.v1.DeleteResponse
-	(*ReadLogRequest)(nil),    // 14: curntvalv.v1.ReadLogRequest
-	(*LogEntry)(nil),          // 15: curntvalv.v1.LogEntry
-	(*ReadLogResponse)(nil),   // 16: curntvalv.v1.ReadLogResponse
-	nil,                       // 17: curntvalv.v1.ReadLogResponse.SchemasEntry
-	(*TxBatch)(nil),           // 18: curntvalv.v1.TxBatch
-	(*Schema)(nil),            // 19: curntvalv.v1.Schema
+	(ResetPosition)(0),          // 0: curntvalv.v1.ResetPosition
+	(EntryKind)(0),              // 1: curntvalv.v1.EntryKind
+	(*StatusRequest)(nil),       // 2: curntvalv.v1.StatusRequest
+	(*StatusResponse)(nil),      // 3: curntvalv.v1.StatusResponse
+	(*RetentionStatus)(nil),     // 4: curntvalv.v1.RetentionStatus
+	(*SinkStatus)(nil),          // 5: curntvalv.v1.SinkStatus
+	(*ResetSinkRequest)(nil),    // 6: curntvalv.v1.ResetSinkRequest
+	(*ResetSinkResponse)(nil),   // 7: curntvalv.v1.ResetSinkResponse
+	(*ResetSourceRequest)(nil),  // 8: curntvalv.v1.ResetSourceRequest
+	(*ResetSourceResponse)(nil), // 9: curntvalv.v1.ResetSourceResponse
+	(*PutRequest)(nil),          // 10: curntvalv.v1.PutRequest
+	(*PutResponse)(nil),         // 11: curntvalv.v1.PutResponse
+	(*GetRequest)(nil),          // 12: curntvalv.v1.GetRequest
+	(*GetResponse)(nil),         // 13: curntvalv.v1.GetResponse
+	(*DeleteRequest)(nil),       // 14: curntvalv.v1.DeleteRequest
+	(*DeleteResponse)(nil),      // 15: curntvalv.v1.DeleteResponse
+	(*ReadLogRequest)(nil),      // 16: curntvalv.v1.ReadLogRequest
+	(*LogEntry)(nil),            // 17: curntvalv.v1.LogEntry
+	(*ReadLogResponse)(nil),     // 18: curntvalv.v1.ReadLogResponse
+	nil,                         // 19: curntvalv.v1.ReadLogResponse.SchemasEntry
+	(*SourceReset)(nil),         // 20: curntvalv.v1.SourceReset
+	(*TxBatch)(nil),             // 21: curntvalv.v1.TxBatch
+	(*Schema)(nil),              // 22: curntvalv.v1.Schema
 }
 var file_curntvalv_v1_admin_proto_depIdxs = []int32{
 	5,  // 0: curntvalv.v1.StatusResponse.sinks:type_name -> curntvalv.v1.SinkStatus
 	4,  // 1: curntvalv.v1.StatusResponse.retention:type_name -> curntvalv.v1.RetentionStatus
 	0,  // 2: curntvalv.v1.ResetSinkRequest.position:type_name -> curntvalv.v1.ResetPosition
-	1,  // 3: curntvalv.v1.LogEntry.kind:type_name -> curntvalv.v1.EntryKind
-	18, // 4: curntvalv.v1.LogEntry.tx_batch:type_name -> curntvalv.v1.TxBatch
-	15, // 5: curntvalv.v1.ReadLogResponse.entries:type_name -> curntvalv.v1.LogEntry
-	17, // 6: curntvalv.v1.ReadLogResponse.schemas:type_name -> curntvalv.v1.ReadLogResponse.SchemasEntry
-	19, // 7: curntvalv.v1.ReadLogResponse.SchemasEntry.value:type_name -> curntvalv.v1.Schema
-	2,  // 8: curntvalv.v1.AdminService.Status:input_type -> curntvalv.v1.StatusRequest
-	8,  // 9: curntvalv.v1.AdminService.Put:input_type -> curntvalv.v1.PutRequest
-	10, // 10: curntvalv.v1.AdminService.Get:input_type -> curntvalv.v1.GetRequest
-	12, // 11: curntvalv.v1.AdminService.Delete:input_type -> curntvalv.v1.DeleteRequest
-	14, // 12: curntvalv.v1.AdminService.ReadLog:input_type -> curntvalv.v1.ReadLogRequest
-	6,  // 13: curntvalv.v1.AdminService.ResetSink:input_type -> curntvalv.v1.ResetSinkRequest
-	3,  // 14: curntvalv.v1.AdminService.Status:output_type -> curntvalv.v1.StatusResponse
-	9,  // 15: curntvalv.v1.AdminService.Put:output_type -> curntvalv.v1.PutResponse
-	11, // 16: curntvalv.v1.AdminService.Get:output_type -> curntvalv.v1.GetResponse
-	13, // 17: curntvalv.v1.AdminService.Delete:output_type -> curntvalv.v1.DeleteResponse
-	16, // 18: curntvalv.v1.AdminService.ReadLog:output_type -> curntvalv.v1.ReadLogResponse
-	7,  // 19: curntvalv.v1.AdminService.ResetSink:output_type -> curntvalv.v1.ResetSinkResponse
-	14, // [14:20] is the sub-list for method output_type
-	8,  // [8:14] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	20, // 3: curntvalv.v1.ResetSourceResponse.source_reset:type_name -> curntvalv.v1.SourceReset
+	1,  // 4: curntvalv.v1.LogEntry.kind:type_name -> curntvalv.v1.EntryKind
+	21, // 5: curntvalv.v1.LogEntry.tx_batch:type_name -> curntvalv.v1.TxBatch
+	17, // 6: curntvalv.v1.ReadLogResponse.entries:type_name -> curntvalv.v1.LogEntry
+	19, // 7: curntvalv.v1.ReadLogResponse.schemas:type_name -> curntvalv.v1.ReadLogResponse.SchemasEntry
+	22, // 8: curntvalv.v1.ReadLogResponse.SchemasEntry.value:type_name -> curntvalv.v1.Schema
+	2,  // 9: curntvalv.v1.AdminService.Status:input_type -> curntvalv.v1.StatusRequest
+	10, // 10: curntvalv.v1.AdminService.Put:input_type -> curntvalv.v1.PutRequest
+	12, // 11: curntvalv.v1.AdminService.Get:input_type -> curntvalv.v1.GetRequest
+	14, // 12: curntvalv.v1.AdminService.Delete:input_type -> curntvalv.v1.DeleteRequest
+	16, // 13: curntvalv.v1.AdminService.ReadLog:input_type -> curntvalv.v1.ReadLogRequest
+	6,  // 14: curntvalv.v1.AdminService.ResetSink:input_type -> curntvalv.v1.ResetSinkRequest
+	8,  // 15: curntvalv.v1.AdminService.ResetSource:input_type -> curntvalv.v1.ResetSourceRequest
+	3,  // 16: curntvalv.v1.AdminService.Status:output_type -> curntvalv.v1.StatusResponse
+	11, // 17: curntvalv.v1.AdminService.Put:output_type -> curntvalv.v1.PutResponse
+	13, // 18: curntvalv.v1.AdminService.Get:output_type -> curntvalv.v1.GetResponse
+	15, // 19: curntvalv.v1.AdminService.Delete:output_type -> curntvalv.v1.DeleteResponse
+	18, // 20: curntvalv.v1.AdminService.ReadLog:output_type -> curntvalv.v1.ReadLogResponse
+	7,  // 21: curntvalv.v1.AdminService.ResetSink:output_type -> curntvalv.v1.ResetSinkResponse
+	9,  // 22: curntvalv.v1.AdminService.ResetSource:output_type -> curntvalv.v1.ResetSourceResponse
+	16, // [16:23] is the sub-list for method output_type
+	9,  // [9:16] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_curntvalv_v1_admin_proto_init() }
@@ -1315,7 +1415,7 @@ func file_curntvalv_v1_admin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_curntvalv_v1_admin_proto_rawDesc), len(file_curntvalv_v1_admin_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

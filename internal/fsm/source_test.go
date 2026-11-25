@@ -142,3 +142,77 @@ func TestDecodeTxBatch(t *testing.T) {
 		t.Fatalf("corrupt: %v %v", ok, err)
 	}
 }
+
+func TestSourceIdentity(t *testing.T) {
+	f := New()
+	// A v0.2 batch carries no identity; the first one that does sets it.
+	applyBatch(t, f, 1, &pb.TxBatch{CommitLsn: 100, EndLsn: 108, Final: true})
+	applyBatch(t, f, 2, &pb.TxBatch{CommitLsn: 200, EndLsn: 208, Final: true, SystemId: 42, Timeline: 1})
+	if got := f.Source(); got.SystemID != 42 || got.Timeline != 1 || got.CommitLSN != 200 {
+		t.Fatalf("%+v", got)
+	}
+	// A new timeline of the same cluster continues (the source checked it).
+	applyBatch(t, f, 3, &pb.TxBatch{CommitLsn: 300, EndLsn: 308, Final: true, SystemId: 42, Timeline: 2})
+	// Another cluster is an anomaly, also without identity-less batches
+	// changing anything.
+	applyBatch(t, f, 4, &pb.TxBatch{CommitLsn: 400, EndLsn: 408, Final: true, SystemId: 7, Timeline: 1})
+	applyBatch(t, f, 5, &pb.TxBatch{CommitLsn: 500, EndLsn: 508, Final: true})
+	got := f.Source()
+	if got.Anomalies != 1 || got.SystemID != 42 || got.Timeline != 2 || got.CommitLSN != 500 {
+		t.Fatalf("%+v", got)
+	}
+
+	// The identity survives a snapshot.
+	snap, err := f.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := New()
+	if err := g.Restore(snap); err != nil {
+		t.Fatal(err)
+	}
+	if g.Source() != got {
+		t.Fatalf("restored %+v, want %+v", g.Source(), got)
+	}
+	// A version 4 snapshot restores without one.
+	h := New()
+	if err := h.Restore(asVersion4(t, snap)); err != nil {
+		t.Fatal(err)
+	}
+	want := got
+	want.SystemID, want.Timeline = 0, 0
+	if h.Source() != want {
+		t.Fatalf("v4 restored %+v, want %+v", h.Source(), want)
+	}
+}
+
+func resetBatch(r *pb.SourceReset) *pb.TxBatch {
+	return &pb.TxBatch{CommitLsn: max(r.GetLsn(), 1) - 1, EndLsn: r.GetLsn(), Final: true, SystemId: r.GetSystemId(),
+		Timeline: r.GetTimeline(), Events: []*pb.Event{{Op: pb.Op_OP_SOURCE_RESET, SourceReset: r}}}
+}
+
+func TestSourceResetReplacesThePosition(t *testing.T) {
+	f := New()
+	applyBatch(t, f, 1, &pb.TxBatch{CommitLsn: 500, EndLsn: 508, Final: true, SystemId: 42, Timeline: 1, Events: events(1)})
+	// Part of a large transaction, then a reset backwards to another cluster.
+	applyBatch(t, f, 2, &pb.TxBatch{CommitLsn: 600, EndLsn: 608, Events: events(2), SystemId: 42, Timeline: 1})
+	applyBatch(t, f, 3, resetBatch(&pb.SourceReset{PreviousLsn: 508, PreviousSystemId: 42, PreviousTimeline: 1,
+		Lsn: 300, SystemId: 7, Timeline: 3, Reason: "diverged"}))
+	if got := f.Source(); got != (SourceState{CommitLSN: 299, EndLSN: 300, SystemID: 7, Timeline: 3}) {
+		t.Fatalf("after reset: %+v", got)
+	}
+	if f.LastChange() != 3 {
+		t.Fatalf("reset is a change for sinks; last change %d", f.LastChange())
+	}
+	// Transactions of the new cluster after the reset are taken, also one
+	// committing exactly at the reset position.
+	applyBatch(t, f, 4, &pb.TxBatch{CommitLsn: 300, EndLsn: 340, Final: true, SystemId: 7, Timeline: 3, Events: events(1)})
+	if got := f.Source(); got.CommitLSN != 300 || got.Anomalies != 0 {
+		t.Fatalf("after reset: %+v", got)
+	}
+	// An OP_SOURCE_RESET event among others is not a reset.
+	tb := &pb.TxBatch{CommitLsn: 1, Events: append(events(1), &pb.Event{Op: pb.Op_OP_SOURCE_RESET, SourceReset: &pb.SourceReset{}})}
+	if SourceReset(tb) != nil {
+		t.Fatal("mixed batch taken as a reset")
+	}
+}

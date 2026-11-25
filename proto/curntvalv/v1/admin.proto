@@ -22,6 +22,12 @@ service AdminService {
   // ResetSink moves a configured sink to another position, also backwards
   // (replay), and starts a new generation of its offsets. Leader only.
   rpc ResetSink(ResetSinkRequest) returns (ResetSinkResponse);
+  // ResetSource moves the Postgres source to the current position of its
+  // replication slot (creating the slot if it is missing) after a failover
+  // check stopped ingest (design D7). It stores an OP_SOURCE_RESET event so
+  // sinks and subscribers see the gap. Leader only, and only while the
+  // source on the leader is "failed".
+  rpc ResetSource(ResetSourceRequest) returns (ResetSourceResponse);
 }
 
 message StatusRequest {}
@@ -38,7 +44,7 @@ message StatusResponse {
   uint64 last_applied = 9;
   uint64 snapshot_index = 10;
   // Postgres source on this node: "" (none configured), "standby" (not the
-  // leader), "running", "retrying" or "failed".
+  // leader), "running", "retrying", "failed" or "resetting".
   string source_state = 11;
   string source_error = 12;
   repeated SinkStatus sinks = 13;
@@ -104,6 +110,14 @@ message ResetSinkResponse {
   // New offset (0 for earliest) and generation.
   uint64 offset = 2;
   uint64 generation = 3;
+}
+
+message ResetSourceRequest {}
+
+message ResetSourceResponse {
+  // Raft index at which the reset was committed.
+  uint64 index = 1;
+  SourceReset source_reset = 2;
 }
 
 message PutRequest {

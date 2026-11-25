@@ -232,6 +232,18 @@ func TestChangeJSONMatchesSharedForm(t *testing.T) {
 	if string(got) != string(want) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
+	// A source reset too.
+	reset := &pb.ChangeEvent{Index: 9, CommitLsn: 99, Event: &pb.Event{Op: pb.Op_OP_SOURCE_RESET,
+		SourceReset: &pb.SourceReset{PreviousLsn: 50, Lsn: 100, SystemId: 7394150873000000001, Timeline: 2, Reason: "diverged"}}}
+	rc := convert(reset, nil)
+	if rc.Op != OpSourceReset || rc.Table != "" || rc.Reset == nil || rc.Reset.SystemID != 7394150873000000001 || rc.Reset.LSN != "0/64" {
+		t.Fatalf("%+v %+v", rc, rc.Reset)
+	}
+	got, _ = json.Marshal(rc)
+	want, _ = json.Marshal(event.Change{Index: 9, CommitLSN: 99, Event: reset.Event}.JSON())
+	if string(got) != string(want) {
+		t.Fatalf("reset: got  %s\nwant %s", got, want)
+	}
 }
 
 func TestNewNeedsAnAddress(t *testing.T) {
