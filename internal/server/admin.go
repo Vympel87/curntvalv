@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -62,6 +63,13 @@ type Backfiller interface {
 	CancelBackfill(ctx context.Context, tables []string) (index uint64, names []string, err error)
 }
 
+// Membership changes the cluster's members (design D18). *raft.Node
+// implements it.
+type Membership interface {
+	AddMember(ctx context.Context, id uint64, addr string) (uint64, error)
+	RemoveMember(ctx context.Context, id uint64) (uint64, error)
+}
+
 // Source is the Postgres source as the admin service uses it.
 type Source interface {
 	SourceResetter
@@ -71,19 +79,21 @@ type Source interface {
 // Admin implements pb.AdminServiceServer.
 type Admin struct {
 	pb.UnimplementedAdminServiceServer
-	node   RaftNode
-	log    LogReader
-	meta   Meta
-	health Health
-	source Source
-	peers  map[uint64]string
+	node    RaftNode
+	log     LogReader
+	meta    Meta
+	health  Health
+	source  Source
+	members Membership
+	peers   map[uint64]string
 }
 
 // NewAdmin returns the admin service of one node. peers maps node ids to
-// addresses and is used to tell clients where the leader is. health and
-// source may be nil (no Postgres source on this node).
-func NewAdmin(node RaftNode, log LogReader, meta Meta, health Health, source Source, peers map[uint64]string) *Admin {
-	return &Admin{node: node, log: log, meta: meta, health: health, source: source, peers: peers}
+// addresses (from --peers) and tells clients where the leader is when the
+// cluster configuration does not. health and source may be nil (no Postgres
+// source on this node), members too (no membership changes).
+func NewAdmin(node RaftNode, log LogReader, meta Meta, health Health, source Source, members Membership, peers map[uint64]string) *Admin {
+	return &Admin{node: node, log: log, meta: meta, health: health, source: source, members: members, peers: peers}
 }
 
 const (
@@ -102,13 +112,21 @@ func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResp
 		Term:          st.Term,
 		State:         st.State.String(),
 		Leader:        st.Leader,
-		LeaderAddr:    a.peers[st.Leader],
 		FirstIndex:    st.FirstIndex,
 		LastIndex:     st.LastIndex,
 		CommitIndex:   st.CommitIndex,
 		LastApplied:   st.LastApplied,
 		SnapshotIndex: st.SnapshotIndex,
+		ConfigIndex:   st.ConfigIndex,
 	}
+	for _, m := range st.Config.Members {
+		pm := &pb.Member{Id: m.ID, Addr: m.Addr, Voter: m.Voter, MatchIndex: st.Match[m.ID]}
+		if m.ID == st.ID && st.State == raft.StateLeader {
+			pm.MatchIndex = st.LastIndex
+		}
+		resp.Members = append(resp.Members, pm)
+	}
+	resp.LeaderAddr = a.addr(st, st.Leader)
 	if a.health != nil {
 		resp.SourceState, resp.SourceError = a.health.Source()
 		resp.Sinks = a.health.Sinks()
@@ -189,6 +207,8 @@ func (a *Admin) ReadLog(ctx context.Context, req *pb.ReadLogRequest) (*pb.ReadLo
 		switch {
 		case e.Type == raft.EntryNoop:
 			le.Kind = pb.EntryKind_ENTRY_KIND_NOOP
+		case e.Type == raft.EntryConfig:
+			le.Kind = pb.EntryKind_ENTRY_KIND_CONFIG
 		default:
 			tb, ok, err := fsm.DecodeTxBatch(e.Data)
 			if err != nil {
@@ -300,6 +320,56 @@ func (a *Admin) CancelBackfill(ctx context.Context, req *pb.CancelBackfillReques
 	return &pb.CancelBackfillResponse{Index: idx, Tables: names}, nil
 }
 
+// AddMember adds a server as a learner and makes it a voter once it has
+// caught up (design D18).
+func (a *Admin) AddMember(ctx context.Context, req *pb.AddMemberRequest) (*pb.AddMemberResponse, error) {
+	if a.members == nil {
+		return nil, status.Error(codes.Unimplemented, "membership changes are not available on this node")
+	}
+	if req.GetId() == 0 || req.GetAddr() == "" {
+		return nil, status.Error(codes.InvalidArgument, "a member needs an id and an address")
+	}
+	idx, err := a.members.AddMember(ctx, req.GetId(), req.GetAddr())
+	if err != nil {
+		return nil, a.memberError(err)
+	}
+	return &pb.AddMemberResponse{Index: idx}, nil
+}
+
+// RemoveMember removes a server.
+func (a *Admin) RemoveMember(ctx context.Context, req *pb.RemoveMemberRequest) (*pb.RemoveMemberResponse, error) {
+	if a.members == nil {
+		return nil, status.Error(codes.Unimplemented, "membership changes are not available on this node")
+	}
+	idx, err := a.members.RemoveMember(ctx, req.GetId())
+	if err != nil {
+		return nil, a.memberError(err)
+	}
+	return &pb.RemoveMemberResponse{Index: idx}, nil
+}
+
+// memberError maps membership errors: an invalid change is
+// INVALID_ARGUMENT with the reason (not retried), a change in progress
+// UNAVAILABLE (retry).
+func (a *Admin) memberError(err error) error {
+	switch {
+	case errors.Is(err, raft.ErrInvalidConfChange):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, raft.ErrConfChangeInProgress):
+		return status.Error(codes.Unavailable, err.Error())
+	}
+	return a.toStatus(err)
+}
+
+// addr returns the address of node id: from the configuration in st, else
+// from --peers.
+func (a *Admin) addr(st raft.Status, id uint64) string {
+	if m, ok := st.Config.Member(id); ok && m.Addr != "" {
+		return m.Addr
+	}
+	return a.peers[id]
+}
+
 // sourceError maps an error of a source operation: Raft and context errors
 // as usual (a client may retry on the leader), anything else ABORTED with
 // the reason, so clients do not retry it elsewhere.
@@ -331,7 +401,10 @@ func (a *Admin) toStatus(err error) error {
 	case errors.As(err, &nl):
 		msg := "not the leader; leader unknown"
 		if nl.Leader != 0 {
-			msg = fmt.Sprintf("not the leader; leader is node %d at %s", nl.Leader, a.peers[nl.Leader])
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			st, _ := a.node.Status(ctx)
+			cancel()
+			msg = fmt.Sprintf("not the leader; leader is node %d at %s", nl.Leader, a.addr(st, nl.Leader))
 		}
 		return status.Error(codes.FailedPrecondition, msg)
 	case errors.Is(err, raft.ErrLeadershipLost):

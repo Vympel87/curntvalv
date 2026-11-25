@@ -9,7 +9,6 @@ package transport
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -45,14 +44,25 @@ type Options struct {
 }
 
 // Transport sends Raft messages to peers. It implements raft.Transport.
+// The set of peers can change while it runs (SetPeers, design D18).
 type Transport struct {
-	self   uint64
-	peers  map[uint64]string // id → address, without self
-	opts   Options
-	queues map[uint64]chan raft.Message
+	self uint64
+	opts Options
+
+	mu    sync.RWMutex
+	peers map[uint64]*peer
+	ctx   context.Context // set by Run; nil before
+	wg    sync.WaitGroup
 
 	dropped atomic.Uint64
 	running atomic.Bool
+}
+
+// peer is one destination: its queue and, while running, its goroutine.
+type peer struct {
+	addr   string
+	queue  chan raft.Message
+	cancel context.CancelFunc // nil while not started
 }
 
 // New returns a transport for node self. peers maps every node id (self may
@@ -70,26 +80,60 @@ func New(self uint64, peers map[uint64]string, opts Options) *Transport {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
-	t := &Transport{self: self, peers: map[uint64]string{}, opts: opts, queues: map[uint64]chan raft.Message{}}
+	t := &Transport{self: self, opts: opts, peers: map[uint64]*peer{}}
+	t.SetPeers(peers)
+	return t
+}
+
+// SetPeers replaces the set of peers: new ones are connected, removed ones
+// disconnected (their queued messages are dropped), and a changed address
+// reconnects. Safe for concurrent use, also while Run runs.
+func (t *Transport) SetPeers(peers map[uint64]string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for id, p := range t.peers {
+		if addr, ok := peers[id]; !ok || addr != p.addr {
+			t.stopPeer(p)
+			delete(t.peers, id)
+		}
+	}
 	for id, addr := range peers {
-		if id == self {
+		if id == t.self {
 			continue
 		}
-		t.peers[id] = addr
-		t.queues[id] = make(chan raft.Message, opts.QueueSize)
+		if _, ok := t.peers[id]; ok {
+			continue
+		}
+		p := &peer{addr: addr, queue: make(chan raft.Message, t.opts.QueueSize)}
+		t.peers[id] = p
+		if t.ctx != nil {
+			t.startPeer(id, p)
+		}
 	}
-	return t
+}
+
+// Peers returns the current peers.
+func (t *Transport) Peers() map[uint64]string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := make(map[uint64]string, len(t.peers))
+	for id, p := range t.peers {
+		out[id] = p.addr
+	}
+	return out
 }
 
 // Send queues m for its destination. It never blocks.
 func (t *Transport) Send(m raft.Message) {
-	q, ok := t.queues[m.To]
+	t.mu.RLock()
+	p, ok := t.peers[m.To]
+	t.mu.RUnlock()
 	if !ok {
 		t.dropped.Add(1)
 		return
 	}
 	select {
-	case q <- m:
+	case p.queue <- m:
 	default:
 		t.dropped.Add(1)
 	}
@@ -104,46 +148,64 @@ func (t *Transport) Run(ctx context.Context) error {
 	if !t.running.CompareAndSwap(false, true) {
 		return errors.New("transport: Run called twice")
 	}
-	var wg sync.WaitGroup
-	for id, addr := range t.peers {
-		creds := t.opts.DialOptions
-		if len(creds) == 0 {
-			creds = []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-		}
-		conn, err := grpc.NewClient(addr, append(slices.Clone(creds),
-			grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(MaxMessageSize)),
-			// gRPC's own reconnect backoff grows to 120s by default. A peer
-			// that comes back must hear from the leader well within an
-			// election timeout, or it starts elections and disrupts the
-			// cluster, so cap it like our own backoff.
-			grpc.WithConnectParams(grpc.ConnectParams{
-				Backoff: backoff.Config{
-					BaseDelay:  t.opts.MinBackoff,
-					Multiplier: 1.6,
-					Jitter:     0.2,
-					MaxDelay:   t.opts.MaxBackoff,
-				},
-				MinConnectTimeout: max(t.opts.MaxBackoff, time.Second),
-			}),
-		)...)
-		if err != nil {
-			return fmt.Errorf("transport: client for node %d (%s): %w", id, addr, err)
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer conn.Close()
-			t.runPeer(ctx, id, pb.NewRaftServiceClient(conn))
-		}()
+	t.mu.Lock()
+	t.ctx = ctx
+	for id, p := range t.peers {
+		t.startPeer(id, p)
 	}
-	wg.Wait()
+	t.mu.Unlock()
+	<-ctx.Done()
+	t.wg.Wait()
 	return nil
 }
 
+// startPeer starts the goroutine of p. t.mu must be held.
+func (t *Transport) startPeer(id uint64, p *peer) {
+	creds := t.opts.DialOptions
+	if len(creds) == 0 {
+		creds = []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	}
+	conn, err := grpc.NewClient(p.addr, append(slices.Clone(creds),
+		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(MaxMessageSize)),
+		// gRPC's own reconnect backoff grows to 120s by default. A peer
+		// that comes back must hear from the leader well within an
+		// election timeout, or it starts elections and disrupts the
+		// cluster, so cap it like our own backoff.
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff: backoff.Config{
+				BaseDelay:  t.opts.MinBackoff,
+				Multiplier: 1.6,
+				Jitter:     0.2,
+				MaxDelay:   t.opts.MaxBackoff,
+			},
+			MinConnectTimeout: max(t.opts.MaxBackoff, time.Second),
+		}),
+	)...)
+	if err != nil {
+		// Only a malformed target fails here; messages to it are dropped.
+		t.opts.Logger.Error("raft peer address unusable", "peer", id, "addr", p.addr, "err", err)
+		return
+	}
+	ctx, cancel := context.WithCancel(t.ctx)
+	p.cancel = cancel
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		defer conn.Close()
+		t.runPeer(ctx, id, p.queue, pb.NewRaftServiceClient(conn))
+	}()
+}
+
+// stopPeer stops the goroutine of p, if it runs. t.mu must be held.
+func (t *Transport) stopPeer(p *peer) {
+	if p.cancel != nil {
+		p.cancel()
+	}
+}
+
 // runPeer keeps a stream to one peer open and drains its queue into it.
-func (t *Transport) runPeer(ctx context.Context, id uint64, client pb.RaftServiceClient) {
+func (t *Transport) runPeer(ctx context.Context, id uint64, queue <-chan raft.Message, client pb.RaftServiceClient) {
 	log := t.opts.Logger.With("peer", id)
-	queue := t.queues[id]
 	backoff := t.opts.MinBackoff
 	for ctx.Err() == nil {
 		err := t.stream(ctx, client, queue, &backoff)

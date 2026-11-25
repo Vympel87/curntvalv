@@ -165,6 +165,10 @@ func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return errors.New("no node reachable")
 	}
 	if leader != nil {
+		if leader.GetConfigIndex() != 0 || len(leader.GetMembers()) != reachable {
+			fmt.Fprintln(stdout)
+			printMembers(stdout, leader)
+		}
 		printPipeline(stdout, leader)
 	}
 	return nil
@@ -376,6 +380,86 @@ func backfillCmd(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		}
 		return err
 	})
+}
+
+// memberCmd runs "member add ID=HOST:PORT", "member remove ID" and
+// "member list" (design D18).
+func memberCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	const want = "want: member add ID=HOST:PORT | member remove ID | member list"
+	cf, pos, err := parseClientFlags("member", args, stderr)
+	if err != nil {
+		return err
+	}
+	if len(pos) == 0 {
+		return usageErr(want)
+	}
+	switch {
+	case pos[0] == "list" && len(pos) == 1:
+		ctx, cancel := context.WithTimeout(ctx, cf.timeout)
+		defer cancel()
+		return onLeader(ctx, cf, func(ctx context.Context, c pb.AdminServiceClient) error {
+			st, err := c.Status(ctx, &pb.StatusRequest{})
+			if err != nil {
+				return err
+			}
+			if st.GetState() != "leader" {
+				return status.Error(codes.FailedPrecondition, "not the leader")
+			}
+			printMembers(stdout, st)
+			return nil
+		})
+	case pos[0] == "add" && len(pos) == 2:
+		peers, err := parsePeers(pos[1])
+		if err != nil || len(peers) != 1 {
+			return usageErr(want)
+		}
+		var id uint64
+		var addr string
+		for id, addr = range peers {
+		}
+		// The new server first copies the log; give it time.
+		ctx, cancel := context.WithTimeout(ctx, max(cf.timeout, 5*time.Minute))
+		defer cancel()
+		return onLeaderWithin(ctx, cf, max(cf.timeout, 5*time.Minute), func(ctx context.Context, c pb.AdminServiceClient) error {
+			r, err := c.AddMember(ctx, &pb.AddMemberRequest{Id: id, Addr: addr})
+			if err == nil {
+				fmt.Fprintf(stdout, "node %d (%s) is a voting member (index %d)\n", id, addr, r.GetIndex())
+			}
+			return err
+		})
+	case pos[0] == "remove" && len(pos) == 2:
+		id, err := strconv.ParseUint(pos[1], 10, 64)
+		if err != nil || id == 0 {
+			return usageErr(want)
+		}
+		ctx, cancel := context.WithTimeout(ctx, cf.timeout)
+		defer cancel()
+		return onLeader(ctx, cf, func(ctx context.Context, c pb.AdminServiceClient) error {
+			r, err := c.RemoveMember(ctx, &pb.RemoveMemberRequest{Id: id})
+			if err == nil {
+				fmt.Fprintf(stdout, "node %d removed (index %d); stop it and remove its data directory\n", id, r.GetIndex())
+			}
+			return err
+		})
+	}
+	return usageErr(want)
+}
+
+// printMembers prints the cluster configuration as the leader sees it.
+func printMembers(out io.Writer, st *pb.StatusResponse) {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "MEMBER\tADDR\tROLE\tMATCH")
+	for _, m := range st.GetMembers() {
+		role := "voter"
+		if !m.GetVoter() {
+			role = "learner"
+		}
+		if m.GetId() == st.GetId() {
+			role += " (leader)"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%d\n", m.GetId(), m.GetAddr(), role, m.GetMatchIndex())
+	}
+	w.Flush()
 }
 
 func nodeStatus(ctx context.Context, opts []grpc.DialOption, addr string) (*pb.StatusResponse, error) {

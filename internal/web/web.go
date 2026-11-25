@@ -150,6 +150,9 @@ type nodeView struct {
 	Commit   uint64 `json:"commit_index"`
 	Applied  uint64 `json:"applied_index"`
 	Snapshot uint64 `json:"snapshot_index"`
+	// "voter" or "learner" (design D18); empty without a known
+	// configuration.
+	Role string `json:"role,omitempty"`
 }
 
 type pipelineView struct {
@@ -185,10 +188,26 @@ type retentionView struct {
 func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	view := clusterView{Version: s.cfg.Version, Self: s.cfg.Self, Nodes: make([]nodeView, len(s.cfg.Peers))}
-	statuses := make([]*pb.StatusResponse, len(s.cfg.Peers))
+	// The members of the configuration this node knows (design D18), else
+	// the configured peers.
+	addrs, roles := s.cfg.Peers, map[string]string{}
+	if st, err := s.local.Status(ctx, &pb.StatusRequest{}); err == nil && len(st.GetMembers()) > 0 {
+		addrs = nil
+		for _, m := range st.GetMembers() {
+			if m.GetAddr() == "" {
+				continue
+			}
+			addrs = append(addrs, m.GetAddr())
+			roles[m.GetAddr()] = "voter"
+			if !m.GetVoter() {
+				roles[m.GetAddr()] = "learner"
+			}
+		}
+	}
+	view := clusterView{Version: s.cfg.Version, Self: s.cfg.Self, Nodes: make([]nodeView, len(addrs))}
+	statuses := make([]*pb.StatusResponse, len(addrs))
 	var wg sync.WaitGroup
-	for i, addr := range s.cfg.Peers {
+	for i, addr := range addrs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -200,13 +219,13 @@ func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) {
 				st, err = s.peers.NodeStatus(ctx, addr)
 			}
 			if err != nil {
-				view.Nodes[i] = nodeView{Addr: addr, State: "unreachable", Error: err.Error()}
+				view.Nodes[i] = nodeView{Addr: addr, State: "unreachable", Error: err.Error(), Role: roles[addr]}
 				return
 			}
 			statuses[i] = st
 			view.Nodes[i] = nodeView{Addr: addr, ID: st.GetId(), State: st.GetState(), Term: st.GetTerm(), Leader: st.GetLeader(),
 				First: st.GetFirstIndex(), Last: st.GetLastIndex(), Commit: st.GetCommitIndex(), Applied: st.GetLastApplied(),
-				Snapshot: st.GetSnapshotIndex()}
+				Snapshot: st.GetSnapshotIndex(), Role: roles[addr]}
 		}()
 	}
 	wg.Wait()

@@ -35,9 +35,18 @@ func (s StateType) String() string {
 type Config struct {
 	// ID of this node. Must be non-zero.
 	ID uint64
-	// Peers lists every member of the cluster, including ID (static
-	// membership, design D8).
+	// Peers lists the voters of the cluster, including ID, for a cluster
+	// that has no stored configuration yet: the initial configuration.
+	// Once a membership change is in the log or a snapshot, that one is
+	// used (design D18).
 	Peers []uint64
+	// Addrs gives the address of each of Peers; it is stored with the first
+	// membership change. Optional.
+	Addrs map[uint64]string
+	// Join starts a node that is not a member yet and waits to be added by
+	// the leader (Peers is then ignored). It never campaigns until it is a
+	// voter.
+	Join bool
 	// ElectionTicks is the minimum election timeout. The actual timeout is
 	// chosen at random from [ElectionTicks, 2*ElectionTicks). Default 10.
 	ElectionTicks int
@@ -114,10 +123,23 @@ func (c *Config) setDefaults() error {
 		}
 		seen[p] = true
 	}
-	if !seen[c.ID] {
+	if !seen[c.ID] && !c.Join {
 		return fmt.Errorf("raft: config: Peers must contain ID %d", c.ID)
 	}
 	return nil
+}
+
+// bootstrapConf is the configuration of a cluster without a stored one.
+func (c *Config) bootstrapConf() Configuration {
+	var conf Configuration
+	if c.Join {
+		return conf
+	}
+	for _, p := range c.Peers {
+		conf.Members = append(conf.Members, Member{ID: p, Addr: c.Addrs[p], Voter: true})
+	}
+	slices.SortFunc(conf.Members, func(a, b Member) int { return compareU64(a.ID, b.ID) })
+	return conf
 }
 
 // Retention decides how much of the log must be kept (design D5).
@@ -146,6 +168,13 @@ type Status struct {
 	LastApplied   uint64
 	SnapshotIndex uint64 // latest snapshot, 0 if none
 	Counters      Counters
+	// Config is the configuration in effect on this node; ConfigIndex the
+	// log index of its entry (0 if it comes from a snapshot or Peers).
+	Config      Configuration
+	ConfigIndex uint64
+	// Match is, on the leader, the highest log index known to be stored on
+	// each other member.
+	Match map[uint64]uint64
 }
 
 // Counters count events on this node since Run started (for metrics).
@@ -170,11 +199,16 @@ type readState struct {
 	confirmed bool
 }
 
+// confEntry is a configuration entry in the log after the latest snapshot.
+type confEntry struct {
+	index uint64
+	conf  Configuration
+}
+
 // raft is the protocol state machine of one node. It is not safe for
 // concurrent use. Every error it returns is fatal for the node.
 type raft struct {
 	id    uint64
-	peers []uint64 // sorted, includes id
 	cfg   Config
 	log   LogStore
 	store StableStore
@@ -186,6 +220,15 @@ type raft struct {
 	// Persistent state (Figure 2). The log itself lives in log.
 	term     uint64
 	votedFor uint64
+
+	// Membership (design D18). conf is the latest configuration in the log,
+	// else the latest snapshot's (baseConf), else bootstrap; confIndex is
+	// the index of its entry, 0 if it is not in the log.
+	bootstrap Configuration
+	baseConf  *Configuration
+	confs     []confEntry
+	conf      Configuration
+	confIndex uint64
 
 	// Cached position of the last log entry.
 	lastIndex uint64
@@ -235,11 +278,9 @@ func newRaft(cfg Config, st Storage, tr Transport, app Applier) (*raft, error) {
 	if err != nil {
 		return nil, err
 	}
-	peers := slices.Clone(cfg.Peers)
-	slices.Sort(peers)
 	r := &raft{
 		id:        cfg.ID,
-		peers:     peers,
+		bootstrap: cfg.bootstrapConf(),
 		cfg:       cfg,
 		log:       st.Log,
 		store:     st.Stable,
@@ -294,9 +335,14 @@ func (r *raft) restore() error {
 		if err != nil {
 			return err
 		}
-		if err := r.app.Restore(data); err != nil {
+		conf, app, err := unwrapSnapshot(data)
+		if err != nil {
+			return fmt.Errorf("raft: snapshot %d: %w", latest.Index, err)
+		}
+		if err := r.app.Restore(app); err != nil {
 			return fmt.Errorf("raft: restore snapshot %d: %w", latest.Index, err)
 		}
+		r.baseConf = conf
 		r.commitIndex, r.lastApplied = latest.Index, latest.Index
 	}
 	if r.lastIndex > 0 {
@@ -306,10 +352,75 @@ func (r *raft) restore() error {
 		}
 		r.lastTerm = t
 	}
+	// Configuration entries after the snapshot (at most about
+	// SnapshotEntries of them to read).
+	for i := max(r.commitIndex+1, r.log.FirstIndex()); i <= r.lastIndex; i++ {
+		e, err := r.entryAt(i)
+		if err != nil {
+			return err
+		}
+		if err := r.recordConf(e); err != nil {
+			return err
+		}
+	}
+	r.updateConf()
 	return nil
 }
 
-func (r *raft) quorum() int { return len(r.peers)/2 + 1 }
+func (r *raft) quorum() int { return r.conf.quorum() }
+
+// recordConf remembers a configuration entry that is now in the log.
+func (r *raft) recordConf(e Entry) error {
+	if e.Type != EntryConfig {
+		return nil
+	}
+	c, err := decodeConfig(e.Data)
+	if err != nil {
+		return fmt.Errorf("raft: entry %d: %w", e.Index, err)
+	}
+	r.confs = append(r.confs, confEntry{index: e.Index, conf: c})
+	return nil
+}
+
+// updateConf makes the latest configuration the current one and, on a
+// leader, starts or stops replicating to the servers that came or went.
+func (r *raft) updateConf() {
+	switch n := len(r.confs); {
+	case n > 0:
+		r.conf, r.confIndex = r.confs[n-1].conf, r.confs[n-1].index
+	case r.baseConf != nil:
+		r.conf, r.confIndex = *r.baseConf, 0
+	default:
+		r.conf, r.confIndex = r.bootstrap, 0
+	}
+	if r.state != StateLeader {
+		return
+	}
+	for _, m := range r.conf.Members {
+		if _, ok := r.next[m.ID]; !ok {
+			r.next[m.ID], r.match[m.ID] = r.lastIndex+1, 0
+		}
+	}
+	for id := range r.next {
+		if _, ok := r.conf.Member(id); !ok {
+			delete(r.next, id)
+			delete(r.match, id)
+		}
+	}
+}
+
+// confAt returns the configuration in effect at index i (at or after the
+// latest snapshot), nil if it is the bootstrap one.
+func (r *raft) confAt(i uint64) *Configuration {
+	c := r.baseConf
+	for _, ce := range r.confs {
+		if ce.index <= i {
+			conf := ce.conf
+			c = &conf
+		}
+	}
+	return c
+}
 
 func (r *raft) status() Status {
 	s := Status{
@@ -322,6 +433,14 @@ func (r *raft) status() Status {
 		CommitIndex: r.commitIndex,
 		LastApplied: r.lastApplied,
 		Counters:    r.counters,
+		Config:      r.conf.clone(),
+		ConfigIndex: r.confIndex,
+	}
+	if r.state == StateLeader {
+		s.Match = make(map[uint64]uint64, len(r.match))
+		for id, m := range r.match {
+			s.Match[id] = m
+		}
 	}
 	if n := len(r.snapshots); n > 0 {
 		s.SnapshotIndex = r.snapshots[n-1].Index
@@ -385,6 +504,18 @@ func (r *raft) appendLog(entries []Entry) error {
 		return fmt.Errorf("%w: log store returned index %d, want %d", errSafety, last, tail.Index)
 	}
 	r.lastIndex, r.lastTerm = tail.Index, tail.Term
+	changed := false
+	for _, e := range entries {
+		if e.Type == EntryConfig {
+			if err := r.recordConf(e); err != nil {
+				return err
+			}
+			changed = true
+		}
+	}
+	if changed {
+		r.updateConf()
+	}
 	return nil
 }
 
@@ -403,6 +534,11 @@ func (r *raft) truncateAfter(i uint64) error {
 		return err
 	}
 	r.lastTerm = t
+	// A configuration whose entry was removed no longer applies (§4.1).
+	if n := len(r.confs); n > 0 && r.confs[n-1].index > i {
+		r.confs = slices.DeleteFunc(r.confs, func(c confEntry) bool { return c.index > i })
+		r.updateConf()
+	}
 	return nil
 }
 
@@ -454,7 +590,7 @@ func (r *raft) preCampaign() error {
 	if len(r.preVotes) >= r.quorum() {
 		return r.campaign()
 	}
-	for _, p := range r.peers {
+	for _, p := range r.conf.Voters() {
 		if p == r.id {
 			continue
 		}
@@ -480,7 +616,7 @@ func (r *raft) campaign() error {
 	if len(r.votes) >= r.quorum() {
 		return r.becomeLeader()
 	}
-	for _, p := range r.peers {
+	for _, p := range r.conf.Voters() {
 		if p == r.id {
 			continue
 		}
@@ -495,9 +631,11 @@ func (r *raft) becomeLeader() error {
 	r.leader = r.id
 	r.votes = nil
 	r.heartbeatElapsed = 0
-	for _, p := range r.peers {
-		r.next[p] = r.lastIndex + 1
-		r.match[p] = 0
+	clear(r.next)
+	clear(r.match)
+	for _, m := range r.conf.Members {
+		r.next[m.ID] = r.lastIndex + 1
+		r.match[m.ID] = 0
 	}
 	// A no-op entry of the new term lets the leader commit entries from
 	// earlier terms (§5.4.2, §8).
@@ -535,6 +673,9 @@ func (r *raft) tick() error {
 		return nil
 	}
 	r.electionElapsed++
+	if !r.conf.IsVoter(r.id) {
+		return nil // a learner, or not a member (yet or any more)
+	}
 	if r.electionElapsed >= r.electionTimeout {
 		if r.cfg.PreVote {
 			return r.preCampaign()
@@ -572,7 +713,10 @@ func (r *raft) requestRead() (uint64, error) {
 		return 0, &NotLeaderError{Leader: r.leader}
 	}
 	r.readSeq++
-	rs := &readState{id: r.readSeq, acks: map[uint64]bool{r.id: true}}
+	rs := &readState{id: r.readSeq, acks: map[uint64]bool{}}
+	if r.conf.IsVoter(r.id) {
+		rs.acks[r.id] = true
+	}
 	rs.confirmed = len(rs.acks) >= r.quorum()
 	r.reads = append(r.reads, rs)
 	if !rs.confirmed {
@@ -622,6 +766,12 @@ func (r *raft) step(m Message) error {
 	case MsgPreVoteResp:
 		return r.handlePreVoteResp(m)
 	}
+	// A server that hears from a current leader ignores vote requests for a
+	// while (thesis §4.2.3), so a removed server, which no longer gets
+	// heartbeats, cannot depose the leader with ever higher terms.
+	if m.Type == MsgVote && m.Term > r.term && r.heardFromLeader() {
+		return nil
+	}
 	switch {
 	case m.Term > r.term:
 		// Rule for all servers: discover a higher term → follower.
@@ -659,6 +809,12 @@ func (r *raft) step(m Message) error {
 	}
 }
 
+// heardFromLeader reports whether this node is the leader or heard from one
+// within the minimum election timeout.
+func (r *raft) heardFromLeader() bool {
+	return r.state == StateLeader || (r.leader != 0 && r.electionElapsed < r.cfg.ElectionTicks)
+}
+
 // isUpToDate implements the election restriction of §5.4.1.
 func (r *raft) isUpToDate(lastIndex, lastTerm uint64) bool {
 	return lastTerm > r.lastTerm || (lastTerm == r.lastTerm && lastIndex >= r.lastIndex)
@@ -684,8 +840,7 @@ func (r *raft) handleVote(m Message) error {
 // the term is ahead, the candidate's log is up to date, and this node has
 // not heard from a leader for a minimum election timeout.
 func (r *raft) handlePreVote(m Message) {
-	recentLeader := r.state == StateLeader || (r.leader != 0 && r.electionElapsed < r.cfg.ElectionTicks)
-	if m.Term > r.term && !recentLeader && r.isUpToDate(m.LastLogIndex, m.LastLogTerm) {
+	if m.Term > r.term && !r.heardFromLeader() && r.isUpToDate(m.LastLogIndex, m.LastLogTerm) {
 		r.sendTerm(Message{Type: MsgPreVoteResp, To: m.From, VoteGranted: true}, m.Term)
 		return
 	}
@@ -699,8 +854,8 @@ func (r *raft) handlePreVoteResp(m Message) error {
 		}
 		return nil
 	}
-	if r.preVotes == nil || r.state != StateFollower || m.Term != r.term+1 {
-		return nil // stale
+	if r.preVotes == nil || r.state != StateFollower || m.Term != r.term+1 || !r.conf.IsVoter(m.From) {
+		return nil // stale, or not a voter
 	}
 	r.preVotes[m.From] = true
 	if len(r.preVotes) >= r.quorum() {
@@ -710,7 +865,7 @@ func (r *raft) handlePreVoteResp(m Message) error {
 }
 
 func (r *raft) handleVoteResp(m Message) error {
-	if r.state != StateCandidate || !m.VoteGranted {
+	if r.state != StateCandidate || !m.VoteGranted || !r.conf.IsVoter(m.From) {
 		return nil
 	}
 	r.votes[m.From] = true
@@ -843,9 +998,15 @@ func (r *raft) handleSnapshot(m Message) error {
 	if err := r.log.Reset(s.Meta.Index + 1); err != nil {
 		return fmt.Errorf("raft: reset log to %d: %w", s.Meta.Index+1, err)
 	}
-	if err := r.app.Restore(s.Data); err != nil {
+	conf, app, err := unwrapSnapshot(s.Data)
+	if err != nil {
+		return fmt.Errorf("raft: snapshot %d from %d: %w", s.Meta.Index, m.From, err)
+	}
+	if err := r.app.Restore(app); err != nil {
 		return fmt.Errorf("raft: restore snapshot %d: %w", s.Meta.Index, err)
 	}
+	r.baseConf, r.confs = conf, nil
+	r.updateConf()
 	r.lastIndex, r.lastTerm = s.Meta.Index, s.Meta.Term
 	r.commitIndex, r.lastApplied = s.Meta.Index, s.Meta.Index
 	if err := r.dropSnapshotsBefore(s.Meta.Index); err != nil {
@@ -861,9 +1022,12 @@ func (r *raft) handleAppendResp(m Message) error {
 		return nil
 	}
 	from := m.From
-	// Any reply in our term acknowledges us as leader for read requests
-	// up to m.ReadID.
-	if m.ReadID > 0 {
+	if _, ok := r.conf.Member(from); !ok {
+		return nil // removed meanwhile
+	}
+	// Any reply in our term from a voter acknowledges us as leader for read
+	// requests up to m.ReadID.
+	if m.ReadID > 0 && r.conf.IsVoter(from) {
 		for _, rs := range r.reads {
 			if rs.id <= m.ReadID && !rs.confirmed {
 				rs.acks[from] = true
@@ -880,6 +1044,9 @@ func (r *raft) handleAppendResp(m Message) error {
 		}
 		if err := r.maybeCommit(); err != nil {
 			return err
+		}
+		if r.state != StateLeader {
+			return nil // stepped down after its removal
 		}
 		if r.next[from] <= r.lastIndex {
 			return r.sendAppend(from)
@@ -899,9 +1066,17 @@ func (r *raft) handleAppendResp(m Message) error {
 
 // maybeCommit advances commitIndex to the highest index stored on a majority,
 // but only if that entry is from the current term (§5.4.2).
+//
+// Only voters count. A leader that removed itself is not one: it manages
+// the cluster until the change is committed and then steps down (thesis
+// §4.2.2).
 func (r *raft) maybeCommit() error {
-	matched := make([]uint64, 0, len(r.peers))
-	for _, p := range r.peers {
+	voters := r.conf.Voters()
+	if len(voters) == 0 {
+		return nil
+	}
+	matched := make([]uint64, 0, len(voters))
+	for _, p := range voters {
 		if p == r.id {
 			matched = append(matched, r.lastIndex)
 		} else {
@@ -921,7 +1096,47 @@ func (r *raft) maybeCommit() error {
 		return nil
 	}
 	r.commitIndex = n
-	return r.applyCommitted()
+	if err := r.applyCommitted(); err != nil {
+		return err
+	}
+	if !r.conf.IsVoter(r.id) && r.confIndex <= r.commitIndex {
+		// Our removal is committed: tell the others, then step down.
+		if err := r.broadcastAppend(); err != nil {
+			return err
+		}
+		return r.becomeFollower(r.term, 0)
+	}
+	return nil
+}
+
+// proposeConf appends a configuration entry for cc and returns its index.
+// The new configuration is in effect at once (§4.1).
+func (r *raft) proposeConf(cc ConfChange) (uint64, error) {
+	if r.state != StateLeader {
+		return 0, &NotLeaderError{Leader: r.leader}
+	}
+	if r.confIndex > r.commitIndex {
+		return 0, fmt.Errorf("%w: entry %d is not committed yet", ErrConfChangeInProgress, r.confIndex)
+	}
+	// A new leader must commit an entry of its term first, or an older
+	// leader's uncommitted change could still win on top of this one.
+	if t, err := r.termAt(r.commitIndex); err != nil && !errors.Is(err, errCompacted) {
+		return 0, err
+	} else if t != r.term {
+		return 0, fmt.Errorf("%w: the leader has not committed an entry of term %d yet", ErrConfChangeInProgress, r.term)
+	}
+	next, err := r.conf.apply(cc)
+	if err != nil {
+		return 0, err
+	}
+	idx := r.lastIndex + 1
+	if err := r.appendLog([]Entry{{Index: idx, Term: r.term, Type: EntryConfig, Data: encodeConfig(next)}}); err != nil {
+		return 0, err
+	}
+	if err := r.broadcastAppend(); err != nil {
+		return 0, err
+	}
+	return idx, r.maybeCommit()
 }
 
 func (r *raft) applyCommitted() error {
@@ -950,7 +1165,7 @@ func (r *raft) maybeSnapshot() error {
 	if r.lastApplied < latest+uint64(r.cfg.SnapshotEntries) {
 		return nil
 	}
-	data, err := r.app.Snapshot()
+	app, err := r.app.Snapshot()
 	if err != nil {
 		return fmt.Errorf("raft: take snapshot: %w", err)
 	}
@@ -958,6 +1173,12 @@ func (r *raft) maybeSnapshot() error {
 	if err != nil {
 		return err
 	}
+	// The configuration at the snapshot travels with it; configuration
+	// entries it covers are no longer needed in memory.
+	conf := r.confAt(r.lastApplied)
+	data := wrapSnapshot(conf, app)
+	r.baseConf = conf
+	r.confs = slices.DeleteFunc(r.confs, func(c confEntry) bool { return c.index <= r.lastApplied })
 	meta := SnapshotMeta{Index: r.lastApplied, Term: t}
 	if err := r.snaps.Save(meta, data); err != nil {
 		return fmt.Errorf("raft: save snapshot %d: %w", meta.Index, err)
@@ -1056,11 +1277,11 @@ func (r *raft) sendTerm(m Message, term uint64) {
 }
 
 func (r *raft) broadcastAppend() error {
-	for _, p := range r.peers {
-		if p == r.id {
+	for _, m := range r.conf.Members {
+		if m.ID == r.id {
 			continue
 		}
-		if err := r.sendAppend(p); err != nil {
+		if err := r.sendAppend(m.ID); err != nil {
 			return err
 		}
 	}

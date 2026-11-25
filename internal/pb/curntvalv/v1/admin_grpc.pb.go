@@ -28,6 +28,8 @@ const (
 	AdminService_ResetSource_FullMethodName    = "/curntvalv.v1.AdminService/ResetSource"
 	AdminService_StartBackfill_FullMethodName  = "/curntvalv.v1.AdminService/StartBackfill"
 	AdminService_CancelBackfill_FullMethodName = "/curntvalv.v1.AdminService/CancelBackfill"
+	AdminService_AddMember_FullMethodName      = "/curntvalv.v1.AdminService/AddMember"
+	AdminService_RemoveMember_FullMethodName   = "/curntvalv.v1.AdminService/RemoveMember"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -62,6 +64,13 @@ type AdminServiceClient interface {
 	StartBackfill(ctx context.Context, in *StartBackfillRequest, opts ...grpc.CallOption) (*StartBackfillResponse, error)
 	// CancelBackfill stops pending backfills. Leader only.
 	CancelBackfill(ctx context.Context, in *CancelBackfillRequest, opts ...grpc.CallOption) (*CancelBackfillResponse, error)
+	// AddMember adds a server to the cluster (design D18): as a learner
+	// first, then, once it has caught up, as a voter. It returns when the
+	// server is a voter. Leader only; calling it again is safe.
+	AddMember(ctx context.Context, in *AddMemberRequest, opts ...grpc.CallOption) (*AddMemberResponse, error)
+	// RemoveMember removes a server. Removing the leader makes it step down.
+	// Leader only.
+	RemoveMember(ctx context.Context, in *RemoveMemberRequest, opts ...grpc.CallOption) (*RemoveMemberResponse, error)
 }
 
 type adminServiceClient struct {
@@ -162,6 +171,26 @@ func (c *adminServiceClient) CancelBackfill(ctx context.Context, in *CancelBackf
 	return out, nil
 }
 
+func (c *adminServiceClient) AddMember(ctx context.Context, in *AddMemberRequest, opts ...grpc.CallOption) (*AddMemberResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddMemberResponse)
+	err := c.cc.Invoke(ctx, AdminService_AddMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) RemoveMember(ctx context.Context, in *RemoveMemberRequest, opts ...grpc.CallOption) (*RemoveMemberResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveMemberResponse)
+	err := c.cc.Invoke(ctx, AdminService_RemoveMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -194,6 +223,13 @@ type AdminServiceServer interface {
 	StartBackfill(context.Context, *StartBackfillRequest) (*StartBackfillResponse, error)
 	// CancelBackfill stops pending backfills. Leader only.
 	CancelBackfill(context.Context, *CancelBackfillRequest) (*CancelBackfillResponse, error)
+	// AddMember adds a server to the cluster (design D18): as a learner
+	// first, then, once it has caught up, as a voter. It returns when the
+	// server is a voter. Leader only; calling it again is safe.
+	AddMember(context.Context, *AddMemberRequest) (*AddMemberResponse, error)
+	// RemoveMember removes a server. Removing the leader makes it step down.
+	// Leader only.
+	RemoveMember(context.Context, *RemoveMemberRequest) (*RemoveMemberResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -230,6 +266,12 @@ func (UnimplementedAdminServiceServer) StartBackfill(context.Context, *StartBack
 }
 func (UnimplementedAdminServiceServer) CancelBackfill(context.Context, *CancelBackfillRequest) (*CancelBackfillResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelBackfill not implemented")
+}
+func (UnimplementedAdminServiceServer) AddMember(context.Context, *AddMemberRequest) (*AddMemberResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddMember not implemented")
+}
+func (UnimplementedAdminServiceServer) RemoveMember(context.Context, *RemoveMemberRequest) (*RemoveMemberResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveMember not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -414,6 +456,42 @@ func _AdminService_CancelBackfill_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_AddMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddMemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).AddMember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_AddMember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).AddMember(ctx, req.(*AddMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_RemoveMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveMemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).RemoveMember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_RemoveMember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).RemoveMember(ctx, req.(*RemoveMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -456,6 +534,14 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CancelBackfill",
 			Handler:    _AdminService_CancelBackfill_Handler,
+		},
+		{
+			MethodName: "AddMember",
+			Handler:    _AdminService_AddMember_Handler,
+		},
+		{
+			MethodName: "RemoveMember",
+			Handler:    _AdminService_RemoveMember_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -63,6 +63,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Dashboard, Prometheus metrics, health checks, live change feed | ✅ implemented |
 | Postgres failover checks, `source reset`, config file | ✅ implemented (unreleased) |
 | Backfill of existing rows | ✅ implemented (unreleased) |
+| Adding and removing nodes at runtime | ✅ implemented (unreleased) |
 
 ## Install
 
@@ -291,6 +292,26 @@ in its newer version, and the order in the log stays correct for every row
 (design D17). A backfill survives leader changes and continues from the
 last key stored; each row is stored once. Rows inserted ahead of the
 backfill while it runs can arrive both as an insert and as a backfill row.
+
+## Adding and removing nodes
+
+Start the new node with an empty data directory and `--join`, giving the
+current members in `--peers` and its own address in `--listen`, then add
+it from anywhere:
+
+```bash
+bin/curntvalv server --id 4 --join --listen 10.0.0.4:7001 \
+  --peers 1=10.0.0.1:7001,2=10.0.0.2:7001,3=10.0.0.3:7001 --data-dir data/4
+bin/curntvalv member add 4=10.0.0.4:7001   # learner, copies the log, then votes
+bin/curntvalv member list
+bin/curntvalv member remove 2              # then stop node 2 and delete its data
+```
+
+A new node does not count for a majority until it has caught up, so adding
+one never stalls the cluster. Removing the leader makes it step down. The
+membership is stored in the log, so `--peers` matters only for a cluster's
+first start (design D18). Change one node at a time; keep an odd number of
+voters.
 
 ## Postgres failover
 

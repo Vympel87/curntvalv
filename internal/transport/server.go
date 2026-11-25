@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -24,8 +25,9 @@ type Stepper interface {
 type Server struct {
 	pb.UnimplementedRaftServiceServer
 	self  uint64
-	peers map[uint64]bool
 	node  Stepper
+	mu    sync.RWMutex
+	peers map[uint64]bool
 }
 
 // ErrUnknownMessageType is returned by FromPB for a message type this
@@ -35,13 +37,29 @@ var ErrUnknownMessageType = errors.New("transport: unknown message type")
 // NewServer returns the receiving side for node self. Messages from ids not
 // in peers, or addressed to another node, are dropped.
 func NewServer(self uint64, peers map[uint64]string, node Stepper) *Server {
-	s := &Server{self: self, peers: map[uint64]bool{}, node: node}
+	s := &Server{self: self, node: node}
+	s.SetPeers(peers)
+	return s
+}
+
+// SetPeers replaces the ids messages are accepted from. Safe for concurrent
+// use.
+func (s *Server) SetPeers(peers map[uint64]string) {
+	ids := map[uint64]bool{}
 	for id := range peers {
-		if id != self {
-			s.peers[id] = true
+		if id != s.self {
+			ids[id] = true
 		}
 	}
-	return s
+	s.mu.Lock()
+	s.peers = ids
+	s.mu.Unlock()
+}
+
+func (s *Server) known(id uint64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.peers[id]
 }
 
 // Stream receives messages until the peer closes the stream.
@@ -64,7 +82,7 @@ func (s *Server) Stream(stream pb.RaftService_StreamServer) error {
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
-		if m.To != s.self || !s.peers[m.From] {
+		if m.To != s.self || !s.known(m.From) {
 			continue
 		}
 		if err := s.node.Step(ctx, m); err != nil {
@@ -136,7 +154,7 @@ func FromPB(p *pb.RaftMessage) (raft.Message, error) {
 		m.Entries = make([]raft.Entry, n)
 		for i, e := range p.GetEntries() {
 			et := raft.EntryType(e.GetType())
-			if et != raft.EntryNormal && et != raft.EntryNoop {
+			if et != raft.EntryNormal && et != raft.EntryNoop && et != raft.EntryConfig {
 				return raft.Message{}, fmt.Errorf("transport: unknown entry type %d", e.GetType())
 			}
 			m.Entries[i] = raft.Entry{Index: e.GetIndex(), Term: e.GetTerm(), Type: et, Data: e.GetData()}

@@ -56,6 +56,7 @@ type Node struct {
 	recvc   chan Message
 	propc   chan proposal
 	readc   chan chan proposeResult
+	confc   chan confRequest
 	statusc chan chan Status
 	done    chan struct{}
 	running atomic.Bool
@@ -78,6 +79,7 @@ func NewNode(cfg Config, storage Storage, tr Transport, app Applier) (*Node, err
 		recvc:   make(chan Message, 1024),
 		propc:   make(chan proposal, 1024),
 		readc:   make(chan chan proposeResult, 1024),
+		confc:   make(chan confRequest),
 		statusc: make(chan chan Status),
 		done:    make(chan struct{}),
 	}, nil
@@ -129,6 +131,8 @@ func (n *Node) Run(ctx context.Context) error {
 				c <- proposeResult{err: err}
 				err = nil
 			}
+		case req := <-n.confc:
+			err = n.proposeConf(r, w, req)
 		case c := <-n.statusc:
 			c <- r.status()
 		}
@@ -192,6 +196,118 @@ func (n *Node) propose(r *raft, w *waitingApplier, p proposal) error {
 	}
 	_, err := r.propose(data)
 	return err
+}
+
+type confRequest struct {
+	cc     ConfChange
+	result chan proposeResult // buffered, size 1
+}
+
+// proposeConf starts a membership change. Errors about the change itself go
+// to the caller; only storage errors are fatal.
+func (n *Node) proposeConf(r *raft, w *waitingApplier, req confRequest) error {
+	if r.state != StateLeader {
+		req.result <- proposeResult{err: &NotLeaderError{Leader: r.leader}}
+		return nil
+	}
+	// Register the waiter first: a single-node cluster commits at once.
+	idx := r.lastIndex + 1
+	w.waiters[idx] = waiter{term: r.term, result: req.result}
+	if _, err := r.proposeConf(req.cc); err != nil {
+		delete(w.waiters, idx)
+		if errors.Is(err, ErrConfChangeInProgress) || errors.Is(err, ErrInvalidConfChange) {
+			req.result <- proposeResult{err: err}
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// ChangeMembership applies one membership change (design D18) and returns
+// once its entry is committed. It fails with *NotLeaderError,
+// ErrConfChangeInProgress (retry soon), ErrInvalidConfChange or
+// ErrLeadershipLost.
+func (n *Node) ChangeMembership(ctx context.Context, cc ConfChange) (uint64, error) {
+	req := confRequest{cc: cc, result: make(chan proposeResult, 1)}
+	select {
+	case n.confc <- req:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-n.done:
+		return 0, ErrStopped
+	}
+	p := &Proposal{result: req.result, stopped: n.done}
+	return p.Wait(ctx)
+}
+
+// changeMembership retries cc while another change is in progress.
+func (n *Node) changeMembership(ctx context.Context, cc ConfChange) (uint64, error) {
+	for {
+		idx, err := n.ChangeMembership(ctx, cc)
+		if !errors.Is(err, ErrConfChangeInProgress) {
+			return idx, err
+		}
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("%w (%w)", ctx.Err(), err)
+		case <-time.After(n.cfg.TickInterval):
+		}
+	}
+}
+
+// AddMember adds server id at addr as a learner, waits until it has caught
+// up with the leader's log, and makes it a voter (thesis §4.2.1), so the
+// cluster does not wait for a new server to copy the log. It may be called
+// again after an error: a learner is only promoted, a voter is left alone.
+// It returns the index of the last change.
+func (n *Node) AddMember(ctx context.Context, id uint64, addr string) (uint64, error) {
+	st, err := n.Status(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if st.State != StateLeader {
+		return 0, &NotLeaderError{Leader: st.Leader}
+	}
+	m, ok := st.Config.Member(id)
+	switch {
+	case ok && m.Addr != addr:
+		return 0, fmt.Errorf("%w: server %d is a member at %s", ErrInvalidConfChange, id, m.Addr)
+	case ok && m.Voter:
+		return st.ConfigIndex, nil
+	case !ok:
+		if _, err := n.changeMembership(ctx, ConfChange{Type: ConfAddLearner, ID: id, Addr: addr}); err != nil {
+			return 0, err
+		}
+	}
+	// Caught up: no more behind than one AppendEntries carries.
+	for {
+		st, err := n.Status(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if st.State != StateLeader {
+			return 0, ErrLeadershipLost
+		}
+		if _, ok := st.Config.Member(id); !ok {
+			return 0, fmt.Errorf("%w: server %d was removed meanwhile", ErrInvalidConfChange, id)
+		}
+		if match, ok := st.Match[id]; ok && match > 0 && st.LastIndex-match <= uint64(n.cfg.MaxEntriesPerMsg) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("server %d has not caught up: %w", id, ctx.Err())
+		case <-time.After(n.cfg.TickInterval):
+		}
+	}
+	return n.changeMembership(ctx, ConfChange{Type: ConfPromote, ID: id})
+}
+
+// RemoveMember removes server id, voter or learner. Removing the leader
+// itself makes it step down once the change is committed.
+func (n *Node) RemoveMember(ctx context.Context, id uint64) (uint64, error) {
+	return n.changeMembership(ctx, ConfChange{Type: ConfRemove, ID: id})
 }
 
 // Propose replicates data through Raft and blocks until it is committed,

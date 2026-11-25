@@ -30,9 +30,10 @@ Done: M0–M7 (v0.1.0), v0.2.0.
   `curntvalv source reset` (design D7)
 - Backfill of existing rows: `curntvalv backfill`, `--backfill-initial`
   (design D17)
+- Dynamic cluster membership: `curntvalv member add|remove|list`,
+  `--join` (design D18)
 
 ## Next
 
-- Dynamic cluster membership
 - More sinks: Meilisearch, Redis, Kafka, NATS
 - Filters and simple transforms per sink

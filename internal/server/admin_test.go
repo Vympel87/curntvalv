@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ var (
 // fakeNode applies proposals straight to an FSM and keeps them as its log,
 // or fails with err.
 type fakeNode struct {
+	conf    raft.Configuration
 	f       *fsm.FSM
 	err     error
 	readErr error
@@ -68,13 +70,14 @@ func (n *fakeNode) ReadIndex(context.Context) (uint64, error) {
 }
 
 func (n *fakeNode) Status(context.Context) (raft.Status, error) {
-	return raft.Status{ID: 1, Term: 4, State: raft.StateLeader, Leader: 1, LastIndex: n.index, CommitIndex: n.index, LastApplied: n.index, FirstIndex: max1(n.first)}, nil
+	return raft.Status{ID: 1, Term: 4, State: raft.StateLeader, Leader: 1, LastIndex: n.index, CommitIndex: n.index, LastApplied: n.index, FirstIndex: max1(n.first),
+		Config: n.conf, ConfigIndex: 3, Match: map[uint64]uint64{2: 1}}, nil
 }
 
 func newAdmin() (*Admin, *fakeNode) {
 	f := fsm.New()
 	n := &fakeNode{f: f}
-	return NewAdmin(n, n, f, nil, nil, map[uint64]string{1: "a:1", 2: "b:2"}), n
+	return NewAdmin(n, n, f, nil, nil, nil, map[uint64]string{1: "a:1", 2: "b:2"}), n
 }
 
 func TestPutGetDelete(t *testing.T) {
@@ -114,7 +117,7 @@ func (fakeHealth) Retention() *pb.RetentionStatus {
 func TestStatusReportsHealth(t *testing.T) {
 	f := fsm.New()
 	n := &fakeNode{f: f}
-	a := NewAdmin(n, n, f, fakeHealth{}, nil, nil)
+	a := NewAdmin(n, n, f, fakeHealth{}, nil, nil, nil)
 	ctx := context.Background()
 	for i := range 5 { // indexes 1-5 hold changes
 		tb, _ := fsm.EncodeTxBatch(&pb.TxBatch{CommitLsn: uint64(i + 1), Final: true, Events: []*pb.Event{{Op: pb.Op_OP_INSERT}}})
@@ -291,11 +294,11 @@ func TestResetSource(t *testing.T) {
 	f := fsm.New()
 	n := &fakeNode{f: f}
 	ctx := context.Background()
-	if _, err := NewAdmin(n, n, f, nil, nil, nil).ResetSource(ctx, &pb.ResetSourceRequest{}); status.Code(err) != codes.Aborted {
+	if _, err := NewAdmin(n, n, f, nil, nil, nil, nil).ResetSource(ctx, &pb.ResetSourceRequest{}); status.Code(err) != codes.Aborted {
 		t.Fatalf("without a source: %v", err)
 	}
 	r := &pb.SourceReset{Lsn: 100}
-	resp, err := NewAdmin(n, n, f, nil, fakeResetter{idx: 7, r: r}, nil).ResetSource(ctx, &pb.ResetSourceRequest{})
+	resp, err := NewAdmin(n, n, f, nil, fakeResetter{idx: 7, r: r}, nil, nil).ResetSource(ctx, &pb.ResetSourceRequest{})
 	if err != nil || resp.GetIndex() != 7 || resp.GetSourceReset().GetLsn() != 100 {
 		t.Fatalf("%v %v", resp, err)
 	}
@@ -309,7 +312,7 @@ func TestResetSource(t *testing.T) {
 		{raft.ErrLeadershipLost, codes.Unavailable, ""},
 		{errors.New("pg: ingest has not stopped on this node"), codes.Aborted, "has not stopped"},
 	} {
-		_, err := NewAdmin(n, n, f, nil, fakeResetter{err: tc.err}, peers).ResetSource(ctx, &pb.ResetSourceRequest{})
+		_, err := NewAdmin(n, n, f, nil, fakeResetter{err: tc.err}, nil, peers).ResetSource(ctx, &pb.ResetSourceRequest{})
 		if status.Code(err) != tc.code || !strings.Contains(status.Convert(err).Message(), tc.msg) {
 			t.Errorf("%v: got %v", tc.err, err)
 		}
@@ -320,10 +323,10 @@ func TestBackfillRPCs(t *testing.T) {
 	f := fsm.New()
 	n := &fakeNode{f: f}
 	ctx := context.Background()
-	if _, err := NewAdmin(n, n, f, nil, nil, nil).StartBackfill(ctx, &pb.StartBackfillRequest{}); status.Code(err) != codes.Aborted {
+	if _, err := NewAdmin(n, n, f, nil, nil, nil, nil).StartBackfill(ctx, &pb.StartBackfillRequest{}); status.Code(err) != codes.Aborted {
 		t.Fatalf("without a source: %v", err)
 	}
-	a := NewAdmin(n, n, f, nil, fakeResetter{idx: 9}, nil)
+	a := NewAdmin(n, n, f, nil, fakeResetter{idx: 9}, nil, nil)
 	if resp, err := a.StartBackfill(ctx, &pb.StartBackfillRequest{Tables: []string{"orders"}}); err != nil || resp.GetIndex() != 9 ||
 		strings.Join(resp.GetTables(), ",") != "start,orders" {
 		t.Fatalf("%v %v", resp, err)
@@ -332,13 +335,76 @@ func TestBackfillRPCs(t *testing.T) {
 		strings.Join(resp.GetTables(), ",") != "cancel,orders" {
 		t.Fatalf("%v %v", resp, err)
 	}
-	a = NewAdmin(n, n, f, nil, fakeResetter{err: errors.New("pg: cannot backfill x: no primary key")}, nil)
+	a = NewAdmin(n, n, f, nil, fakeResetter{err: errors.New("pg: cannot backfill x: no primary key")}, nil, nil)
 	if _, err := a.StartBackfill(ctx, &pb.StartBackfillRequest{Tables: []string{"x"}}); status.Code(err) != codes.Aborted ||
 		!strings.Contains(err.Error(), "no primary key") {
 		t.Fatalf("%v", err)
 	}
-	a = NewAdmin(n, n, f, nil, fakeResetter{err: &raft.NotLeaderError{}}, nil)
+	a = NewAdmin(n, n, f, nil, fakeResetter{err: &raft.NotLeaderError{}}, nil, nil)
 	if _, err := a.CancelBackfill(ctx, &pb.CancelBackfillRequest{Tables: []string{"x"}}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("%v", err)
+	}
+}
+
+type fakeMembers struct {
+	err   error
+	calls []string
+}
+
+func (m *fakeMembers) AddMember(_ context.Context, id uint64, addr string) (uint64, error) {
+	m.calls = append(m.calls, fmt.Sprintf("add %d %s", id, addr))
+	return 11, m.err
+}
+
+func (m *fakeMembers) RemoveMember(_ context.Context, id uint64) (uint64, error) {
+	m.calls = append(m.calls, fmt.Sprintf("remove %d", id))
+	return 12, m.err
+}
+
+func TestMembers(t *testing.T) {
+	f := fsm.New()
+	n := &fakeNode{f: f, conf: raft.Configuration{Members: []raft.Member{{ID: 1, Addr: "a:1", Voter: true}, {ID: 2, Addr: "b:2"}}}}
+	ctx := context.Background()
+	if _, err := NewAdmin(n, n, f, nil, nil, nil, nil).AddMember(ctx, &pb.AddMemberRequest{Id: 2, Addr: "b"}); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("without membership: %v", err)
+	}
+	m := &fakeMembers{}
+	a := NewAdmin(n, n, f, nil, nil, m, nil)
+	if _, err := a.AddMember(ctx, &pb.AddMemberRequest{Id: 3}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("no address: %v", err)
+	}
+	if r, err := a.AddMember(ctx, &pb.AddMemberRequest{Id: 3, Addr: "c:3"}); err != nil || r.GetIndex() != 11 {
+		t.Fatalf("%v %v", r, err)
+	}
+	if r, err := a.RemoveMember(ctx, &pb.RemoveMemberRequest{Id: 2}); err != nil || r.GetIndex() != 12 {
+		t.Fatalf("%v %v", r, err)
+	}
+	if fmt.Sprint(m.calls) != "[add 3 c:3 remove 2]" {
+		t.Fatalf("%v", m.calls)
+	}
+	for _, tc := range []struct {
+		err  error
+		code codes.Code
+	}{
+		{fmt.Errorf("%w: server 2 is the last voter", raft.ErrInvalidConfChange), codes.InvalidArgument},
+		{raft.ErrConfChangeInProgress, codes.Unavailable},
+		{&raft.NotLeaderError{Leader: 2}, codes.FailedPrecondition},
+	} {
+		m.err = tc.err
+		if _, err := a.RemoveMember(ctx, &pb.RemoveMemberRequest{Id: 2}); status.Code(err) != tc.code {
+			t.Errorf("%v: %v", tc.err, err)
+		}
+	}
+	// The leader's address comes from the configuration.
+	m.err = &raft.NotLeaderError{Leader: 2}
+	if _, err := a.RemoveMember(ctx, &pb.RemoveMemberRequest{Id: 2}); !strings.Contains(err.Error(), "b:2") {
+		t.Fatalf("%v", err)
+	}
+	st, err := a.Status(ctx, &pb.StatusRequest{})
+	if err != nil || len(st.GetMembers()) != 2 || st.GetConfigIndex() != 3 || st.GetLeaderAddr() != "a:1" {
+		t.Fatalf("%v %v", st, err)
+	}
+	if mb := st.GetMembers()[1]; mb.GetVoter() || mb.GetMatchIndex() != 1 || mb.GetAddr() != "b:2" {
+		t.Fatalf("%v", mb)
 	}
 }

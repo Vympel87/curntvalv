@@ -202,6 +202,7 @@ type cluster struct {
 	stables map[uint64]*memStable
 	snaps   map[uint64]*memSnaps
 	apps    map[uint64]*recApplier
+	joined  map[uint64]bool // started with Join
 	round   int
 
 	// For invariant checks.
@@ -254,12 +255,25 @@ func (c *cluster) start(id uint64) {
 	cfg := c.cfg
 	cfg.ID = id
 	cfg.Seed = c.cfg.Seed*1_000_003 + uint64(c.round) + 1 // non-zero, differs per restart
+	cfg.Join = c.joined[id]
 	c.apps[id] = &recApplier{}
 	r, err := newRaft(cfg, c.storage(id), c.net, c.apps[id])
 	if err != nil {
 		c.t.Fatalf("start node %d: %v", id, err)
 	}
 	c.rafts[id] = r
+}
+
+// addNode starts a new, empty node that joins the cluster (Config.Join).
+func (c *cluster) addNode(id uint64) {
+	c.t.Helper()
+	if c.joined == nil {
+		c.joined = map[uint64]bool{}
+	}
+	c.ids = append(c.ids, id)
+	c.joined[id] = true
+	c.logs[id], c.stables[id], c.snaps[id] = &memLog{}, &memStable{}, &memSnaps{}
+	c.start(id)
 }
 
 func (c *cluster) storage(id uint64) Storage {
@@ -366,7 +380,8 @@ func (c *cluster) leader() uint64 {
 	return best
 }
 
-// stableLeader returns a leader that every live node in its partition agrees on.
+// stableLeader returns a leader that every live member of its configuration
+// in its partition agrees on.
 func (c *cluster) stableLeader() uint64 {
 	l := c.leader()
 	if l == 0 {
@@ -374,6 +389,9 @@ func (c *cluster) stableLeader() uint64 {
 	}
 	for _, id := range c.ids {
 		r := c.rafts[id]
+		if _, member := c.rafts[l].conf.Member(id); !member {
+			continue
+		}
 		if r != nil && c.net.connected(id, l) && (r.leader != l || r.term != c.rafts[l].term) {
 			return 0
 		}
@@ -402,11 +420,19 @@ func (c *cluster) propose(id uint64, data string) uint64 {
 	return idx
 }
 
-// waitApplied runs until every live node has applied at least index.
+// waitApplied runs until every live node has applied at least index; with
+// a leader, every live member of its configuration (a removed node no longer
+// gets entries).
 func (c *cluster) waitApplied(index uint64) {
 	c.t.Helper()
 	c.runUntil(1000, fmt.Sprintf("apply of index %d on all live nodes", index), func() bool {
+		l := c.leader()
 		for _, id := range c.ids {
+			if l != 0 {
+				if _, member := c.rafts[l].conf.Member(id); !member {
+					continue
+				}
+			}
 			if r := c.rafts[id]; r != nil && r.lastApplied < index {
 				return false
 			}

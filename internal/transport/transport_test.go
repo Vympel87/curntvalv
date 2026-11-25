@@ -267,6 +267,70 @@ func TestServerDropsForeignMessages(t *testing.T) {
 	}
 }
 
+// Peers can be added, moved and removed while the transport runs; the server
+// accepts only the current ones.
+func TestSetPeers(t *testing.T) {
+	lisA, lisB := listen(t, "127.0.0.1:0"), listen(t, "127.0.0.1:0")
+	recA, recB := &recorder{}, &recorder{}
+	srvB := NewServer(3, map[uint64]string{}, recB)
+	defer serve(t, lisA, NewServer(2, map[uint64]string{1: "x"}, recA)).Stop()
+	defer serve(t, lisB, srvB).Stop()
+
+	tr := New(1, map[uint64]string{1: "self"}, Options{MinBackoff: 10 * time.Millisecond, MaxBackoff: 50 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- tr.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+
+	tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2, Term: 1}) // unknown yet: dropped
+	tr.SetPeers(map[uint64]string{1: "self", 2: lisA.Addr().String()})
+	waitFor(t, "added peer", func() bool {
+		tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2, Term: 2})
+		time.Sleep(5 * time.Millisecond)
+		return len(recA.terms()) > 0
+	})
+	if fmt.Sprint(recA.terms()[0]) != "2" || tr.Dropped() == 0 {
+		t.Fatalf("got %v, dropped %d", recA.terms(), tr.Dropped())
+	}
+	// Node 2 moves to B's address; B does not know node 1 yet.
+	tr.SetPeers(map[uint64]string{2: lisB.Addr().String()})
+	if fmt.Sprint(tr.Peers()) != fmt.Sprintf("map[2:%s]", lisB.Addr()) {
+		t.Fatalf("peers %v", tr.Peers())
+	}
+	tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2, Term: 3})
+	time.Sleep(100 * time.Millisecond)
+	if len(recB.terms()) != 0 {
+		t.Fatalf("server accepted a message for another node: %v", recB.terms())
+	}
+	// Removed: messages are dropped.
+	tr.SetPeers(nil)
+	before := tr.Dropped()
+	tr.Send(raft.Message{Type: raft.MsgApp, From: 1, To: 2, Term: 4})
+	if tr.Dropped() != before+1 {
+		t.Fatal("message to a removed peer not dropped")
+	}
+}
+
+// A server accepts messages from a peer added later.
+func TestServerSetPeers(t *testing.T) {
+	lis := listen(t, "127.0.0.1:0")
+	rec := &recorder{}
+	srv := NewServer(2, map[uint64]string{1: "x"}, rec)
+	defer serve(t, lis, srv).Stop()
+	tr := New(4, map[uint64]string{2: lis.Addr().String()}, Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go tr.Run(ctx)
+	tr.Send(raft.Message{Type: raft.MsgApp, From: 4, To: 2, Term: 1})
+	time.Sleep(100 * time.Millisecond)
+	srv.SetPeers(map[uint64]string{1: "x", 4: "y"})
+	tr.Send(raft.Message{Type: raft.MsgApp, From: 4, To: 2, Term: 2})
+	waitFor(t, "message from the added peer", func() bool { return len(rec.terms()) > 0 })
+	if fmt.Sprint(rec.terms()) != "[2]" {
+		t.Fatalf("got %v", rec.terms())
+	}
+}
+
 // --- a real Raft cluster over gRPC --------------------------------------------
 
 type grpcNode struct {

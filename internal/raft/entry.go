@@ -1,7 +1,9 @@
 // Package raft implements the Raft consensus algorithm as described in
 // "In Search of an Understandable Consensus Algorithm (Extended Version)"
 // by Ongaro and Ousterhout: leader election (§5.2), log replication (§5.3)
-// and the safety rules of §5.4.
+// and the safety rules of §5.4, with log compaction (§7), linearizable
+// reads (§8), and from Ongaro's thesis PreVote (§9.6) and single-server
+// membership changes (§4).
 //
 // The package has two layers:
 //
@@ -30,6 +32,8 @@ const (
 	// EntryNoop is appended by a leader at the start of its term (§8) so that
 	// entries from earlier terms can be committed.
 	EntryNoop EntryType = 2
+	// EntryConfig carries a cluster configuration (design D18).
+	EntryConfig EntryType = 3
 )
 
 func (t EntryType) String() string {
@@ -38,6 +42,8 @@ func (t EntryType) String() string {
 		return "normal"
 	case EntryNoop:
 		return "noop"
+	case EntryConfig:
+		return "config"
 	default:
 		return fmt.Sprintf("EntryType(%d)", uint8(t))
 	}
@@ -81,7 +87,7 @@ func decodeEntry(index uint64, b []byte) (Entry, error) {
 		Type:  EntryType(b[8]),
 		Data:  b[entryHeaderSize:],
 	}
-	if e.Type != EntryNormal && e.Type != EntryNoop {
+	if e.Type != EntryNormal && e.Type != EntryNoop && e.Type != EntryConfig {
 		return Entry{}, fmt.Errorf("%w: index %d: unknown type %d", ErrCorruptEntry, index, b[8])
 	}
 	if e.Term == 0 {

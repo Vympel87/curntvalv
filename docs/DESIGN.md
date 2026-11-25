@@ -241,8 +241,9 @@ primary, and LSN de-duplication (D3) would drop them as "already stored".
 
 ### D8. Static membership first
 
-v0.1 clusters are defined in the config file (fixed list of nodes). Adding and
-removing nodes at runtime (Raft single-server membership change) comes later.
+v0.1 and v0.2 clusters are defined by `--peers` (a fixed list of nodes).
+Since v0.3 nodes can be added and removed at runtime (D18); `--peers` is
+then only the initial configuration.
 
 ### D9. Shape of the Raft implementation
 
@@ -323,6 +324,9 @@ removing nodes at runtime (Raft single-server membership change) comes later.
   still succeed through the old nodes, which campaign directly, or turn
   PreVote off until every node is upgraded. From v0.2 on the transport
   drops message types it does not know and keeps the stream.
+- **Membership** changes one server at a time (D18): the voters of the
+  current configuration replace the fixed peer list in elections, commits
+  and reads.
 - **Broken invariants are fatal.** Two leaders in one term, truncating below
   `commitIndex`, or a log term above the current term stop the node with an
   error (`errSafety`) instead of continuing.
@@ -674,6 +678,61 @@ A backfill reads them from the table into the log, next to the stream.
   disabled. End to end, the leader is killed halfway through a backfill of
   40,000 rows: every row is backfilled exactly once.
 
+### D18. Cluster membership changes
+
+- **One server at a time** (Ongaro's thesis §4), not joint consensus
+  (paper §6). Any two majorities of configurations that differ by one
+  server overlap, so no extra phase is needed; the thesis recommends it as
+  the simpler mechanism.
+- **Configuration in the log.** An `EntryConfig` entry holds the members
+  (id, address, voter or learner). A node uses the latest configuration
+  in its log at once, committed or not (§4.1); an entry removed by a
+  conflicting leader takes its configuration with it. Snapshots carry the
+  configuration at their index: raft prepends it to the state machine's
+  data behind a magic prefix. Snapshots taken before the first change have
+  none and stay as they were, so older nodes can still install them; a
+  node without a stored configuration uses `--peers`. Only voters
+  campaign, vote counts and commit majorities count only voters, and the
+  leader replicates to every member.
+- **Safety rules.** A leader starts a change only when the previous one
+  is committed and it has committed an entry of its own term (the fix to
+  the single-server algorithm Ongaro published in 2015: without it, a new
+  leader's change and an old leader's uncommitted one could form disjoint
+  majorities).
+- **Learners first** (§4.2.1). `curntvalv member add` adds the server as a
+  learner: it receives the log (and the base snapshot) but does not vote
+  or count for a majority, so a cluster never waits for a server that is
+  still copying. The leader promotes it once it is no more than one
+  AppendEntries (`MaxEntriesPerMsg`) behind; the command returns then.
+  Calling it again only finishes what is missing.
+- **Removing the leader** (§4.2.2). It keeps leading, without counting
+  itself, until the configuration without it is committed, tells the
+  others, and steps down; it never campaigns again.
+- **Disruptive servers** (§4.2.3). A server that heard from a leader
+  within the minimum election timeout ignores RequestVote, so a removed
+  server that no longer gets heartbeats cannot raise the term. With
+  PreVote (D9) such a server does not even start elections that could
+  win.
+- **Operations.** A new node starts with `--join` (empty data directory,
+  `--peers` listing the current members, `--listen` its own address) and
+  waits without campaigning; `curntvalv member add ID=HOST:PORT` adds it,
+  `curntvalv member remove ID` removes one, `curntvalv member list` and
+  `status` show the configuration with each member's match index.
+  Addresses travel in the configuration: every node updates its Raft
+  transport and the senders it accepts from the configuration it holds
+  (checked every 200ms). `--peers` and `--join` may stay in a node's flags
+  after the change; a stored configuration always wins.
+- **Testing.** In the deterministic harness: adding a learner that does
+  not count for a majority, promotion, removing a follower that keeps
+  running without PreVote, the leader removing itself, one change at a
+  time, rollback of an overwritten configuration, restarts from the log
+  and from snapshots, and random changes under loss, reordering,
+  partitions and crashes with the invariants of Figure 3 checked every
+  round. Disabling the vote rule, counting learners, or the rollback each
+  makes a test fail. End to end: a node joins, the leader is killed, a
+  node is removed and the leader removes itself while Postgres changes
+  flow in; every row arrives.
+
 ## 4. Data model
 
 ```
@@ -712,6 +771,7 @@ does not send it). Converting text to typed values is the sinks' job.
 | New sink added | Receives history from the oldest retained offset |
 | Postgres primary failover | Continue if safe, stop loudly if not (D7) |
 | Leader killed during a backfill | New leader continues from the stored key; every row backfilled once (D17) |
+| Membership changes under faults | One configuration at a time; Figure 3 invariants hold; no lost change (D18) |
 
 End-to-end checker: write N numbered rows while injecting faults, then verify
 that the sink contains exactly rows 1..N.

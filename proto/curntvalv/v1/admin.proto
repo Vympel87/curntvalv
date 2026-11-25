@@ -34,6 +34,13 @@ service AdminService {
   rpc StartBackfill(StartBackfillRequest) returns (StartBackfillResponse);
   // CancelBackfill stops pending backfills. Leader only.
   rpc CancelBackfill(CancelBackfillRequest) returns (CancelBackfillResponse);
+  // AddMember adds a server to the cluster (design D18): as a learner
+  // first, then, once it has caught up, as a voter. It returns when the
+  // server is a voter. Leader only; calling it again is safe.
+  rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
+  // RemoveMember removes a server. Removing the leader makes it step down.
+  // Leader only.
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
 }
 
 message StatusRequest {}
@@ -58,6 +65,38 @@ message StatusResponse {
   RetentionStatus retention = 14;
   // Backfills (replicated), in the order they were started.
   repeated Backfill backfills = 15;
+  // The cluster configuration in effect on this node, sorted by id.
+  repeated Member members = 16;
+  // Log index of the configuration's entry; 0 if it comes from a snapshot
+  // or from --peers.
+  uint64 config_index = 17;
+}
+
+message Member {
+  uint64 id = 1;
+  string addr = 2;
+  // false: a learner, which receives the log but does not vote.
+  bool voter = 3;
+  // On the leader: the highest log index stored on this member.
+  uint64 match_index = 4;
+}
+
+message AddMemberRequest {
+  uint64 id = 1;
+  string addr = 2;
+}
+
+message AddMemberResponse {
+  // Index of the last configuration entry.
+  uint64 index = 1;
+}
+
+message RemoveMemberRequest {
+  uint64 id = 1;
+}
+
+message RemoveMemberResponse {
+  uint64 index = 1;
 }
 
 message RetentionStatus {
@@ -190,6 +229,8 @@ enum EntryKind {
   ENTRY_KIND_NOOP = 1;
   ENTRY_KIND_META = 2;
   ENTRY_KIND_TX_BATCH = 3;
+  // A cluster configuration (design D18).
+  ENTRY_KIND_CONFIG = 4;
 }
 
 message LogEntry {

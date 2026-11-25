@@ -38,7 +38,7 @@ function renderNodes(view) {
     const tr = el("tr", n.addr === view.self ? { class: "self" } : {},
       el("td", {}, n.error ? "?" : n.id),
       el("td", {}, n.addr),
-      el("td", n.error ? { title: n.error } : {}, badge(n.state)),
+      el("td", n.error ? { title: n.error } : {}, badge(n.state), n.role === "learner" ? " learner" : ""),
       num(n.term), num(n.first_index), num(n.last_index), num(n.commit_index), num(n.applied_index), num(n.snapshot_index));
     return tr;
   }));

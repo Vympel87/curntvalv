@@ -34,6 +34,12 @@ break compatibility.
   `--backfill-initial` backfills every published table when a new cluster
   starts. Rows arrive as `"op":"backfill"` (`client.OpBackfill`). Progress
   in `curntvalv status`, the dashboard and `/metrics`. Needs Postgres 14.
+- Cluster membership changes (design D18): `curntvalv member add
+  ID=HOST:PORT` (a node started with `--join`; learner first, voter once
+  caught up), `curntvalv member remove ID`, `curntvalv member list`. One
+  server at a time (Raft thesis §4), with the 2015 fix; the configuration
+  lives in the log and in snapshots. Status and the dashboard show the
+  members.
 
 ### Fixed
 
@@ -43,7 +49,9 @@ break compatibility.
 
 - Snapshots are now version 6, which v0.2 nodes cannot read: upgrade all
   nodes close together, and before any `source reset` or `backfill start`
-  (a v0.2 node cannot apply those entries).
+  (a v0.2 node cannot apply those entries), and before the first
+  `member add` or `member remove` (a v0.2 node stops on a configuration
+  entry).
 
 ## [0.2.1]
 

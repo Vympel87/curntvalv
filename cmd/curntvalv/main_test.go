@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -130,8 +131,9 @@ type e2eCluster struct {
 	https []string // HTTP addresses (--http-listen)
 	peers string
 	procs map[int]*proc
-	args  []string // server flags besides id, peers, data dir
-	env   []string // extra environment for servers
+	args  []string         // server flags besides id, peers, data dir
+	extra map[int][]string // flags for one node only
+	env   []string         // extra environment for servers
 	// cliEnv is extra environment for client commands (TLS CA, token).
 	cliEnv []string
 	logs   map[int]*syncBuffer // kept across restarts
@@ -228,7 +230,7 @@ func (c *e2eCluster) start(i int) {
 	args := []string{"server", "--id", fmt.Sprint(i), "--peers", c.peers,
 		"--data-dir", filepath.Join(c.dir, fmt.Sprintf("node%d", i)), "--tick", "20ms", "--log-level", "debug",
 		"--http-listen", c.https[i-1]}
-	cmd := exec.Command(c.bin, append(args, c.args...)...)
+	cmd := exec.Command(c.bin, slices.Concat(args, c.args, c.extra[i])...)
 	cmd.Env = append(os.Environ(), c.env...)
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {

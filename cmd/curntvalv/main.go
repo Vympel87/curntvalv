@@ -10,6 +10,7 @@
 //	curntvalv sink reset NAME --to earliest|latest|INDEX [--addr ...]
 //	curntvalv source reset --to-slot [--addr ...]
 //	curntvalv backfill start|cancel TABLE... [--addr ...]
+//	curntvalv member add ID=HOST:PORT | remove ID | list [--addr ...]
 //	curntvalv version
 package main
 
@@ -83,6 +84,9 @@ const usage = `usage:
   curntvalv source reset --to-slot [--addr HOST:PORT,...]   after a failover check stopped ingest
   curntvalv backfill start TABLE... [--addr HOST:PORT,...]  copy existing rows into the log
   curntvalv backfill cancel TABLE... [--addr HOST:PORT,...]
+  curntvalv member add ID=HOST:PORT [--addr HOST:PORT,...]  add a node started with --join
+  curntvalv member remove ID [--addr HOST:PORT,...]
+  curntvalv member list [--addr HOST:PORT,...]
   curntvalv certs [--out DIR] NODE...           a CA and node certificates for TLS
   curntvalv version
 
@@ -125,6 +129,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = sourceCmd(ctx, args[1:], stdout, stderr)
 	case "backfill":
 		err = backfillCmd(ctx, args[1:], stdout, stderr)
+	case "member":
+		err = memberCmd(ctx, args[1:], stdout, stderr)
 	case "certs":
 		err = certsCmd(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -249,8 +255,9 @@ func parseServerFlags(args []string, stderr io.Writer, getenv func(string) strin
 	fs.SetOutput(stderr)
 	configFile := fs.String("config", getenv("CURNTVALV_CONFIG"), "read unset flags from this file of KEY = VALUE lines, KEY being a flag name (env CURNTVALV_CONFIG);\nflags beat environment variables, which beat the file")
 	check := fs.Bool("check", false, "check the flags and config file, load the TLS files, and exit")
-	id := fs.Uint64("id", 0, "id of this node (must appear in --peers)")
-	peersFlag := fs.String("peers", "", "all cluster members as ID=HOST:PORT,... (including this node)")
+	id := fs.Uint64("id", 0, "id of this node (must appear in --peers, unless --join)")
+	peersFlag := fs.String("peers", "", "the initial cluster members as ID=HOST:PORT,... (including this node); once members were added or removed (curntvalv member), the stored membership is used")
+	join := fs.Bool("join", false, "start a new node that waits to be added with `curntvalv member add ID=HOST:PORT`; --peers then lists the current members")
 	dataDir := fs.String("data-dir", "", "directory for the log, Raft state and snapshots")
 	listen := fs.String("listen", "", "address to listen on (default: this node's address in --peers)")
 	tick := fs.Duration("tick", 100*time.Millisecond, "Raft tick length")
@@ -291,8 +298,14 @@ func parseServerFlags(args []string, stderr io.Writer, getenv func(string) strin
 	if err != nil {
 		return serverConfig{}, err
 	}
-	if _, ok := peers[*id]; !ok {
-		return serverConfig{}, usageErr("--id %d is not in --peers", *id)
+	if _, ok := peers[*id]; !ok && !*join {
+		return serverConfig{}, usageErr("--id %d is not in --peers (use --join to add a node to a running cluster)", *id)
+	}
+	if _, ok := peers[*id]; !ok && *listen == "" {
+		return serverConfig{}, usageErr("--join for a node not in --peers needs --listen HOST:PORT")
+	}
+	if *id == 0 {
+		return serverConfig{}, usageErr("--id must not be 0")
 	}
 	if *dataDir == "" {
 		return serverConfig{}, usageErr("--data-dir is required")
@@ -310,6 +323,8 @@ func parseServerFlags(args []string, stderr io.Writer, getenv func(string) strin
 		raft: raft.Config{
 			ID:              *id,
 			Peers:           ids,
+			Addrs:           peers,
+			Join:            *join,
 			ElectionTicks:   *election,
 			HeartbeatTicks:  *heartbeat,
 			TickInterval:    *tick,
@@ -481,13 +496,14 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 	}
 
 	gs := grpc.NewServer(append(guard.ServerOptions(srvTLS), grpc.MaxRecvMsgSize(transport.MaxMessageSize))...)
-	pb.RegisterRaftServiceServer(gs, transport.NewServer(cfg.raft.ID, cfg.peers, node))
+	raftSrv := transport.NewServer(cfg.raft.ID, cfg.peers, node)
+	pb.RegisterRaftServiceServer(gs, raftSrv)
 	health := nodeHealth{src: src, runners: runners, specs: cfg.sinks, ret: ret, retCfg: retCfg, log: log}
 	var resetter server.Source // a nil *Source must stay a nil interface
 	if src != nil {
 		resetter = src
 	}
-	admin := server.NewAdmin(node, node, meta, health, resetter, cfg.peers)
+	admin := server.NewAdmin(node, node, meta, health, resetter, node, cfg.peers)
 	subscribe := server.NewSubscribe(reader)
 	pb.RegisterAdminServiceServer(gs, admin)
 	pb.RegisterSubscribeServiceServer(gs, subscribe)
@@ -559,6 +575,11 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		if err := node.Run(ctx); err != nil {
 			errc <- fmt.Errorf("raft: %w", err)
 		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		syncMembers(ctx, node, cfg.peers, logger, tr, raftSrv)
 	}()
 	if src != nil {
 		wg.Add(1)
