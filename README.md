@@ -64,6 +64,8 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Postgres failover checks, `source reset`, config file | ✅ implemented (v0.3) |
 | Backfill of existing rows | ✅ implemented (v0.3) |
 | Adding and removing nodes at runtime | ✅ implemented (v0.3) |
+| Sinks for NATS JetStream, Redis Streams, Meilisearch, Kafka | ✅ implemented (v0.4) |
+| Filters and column projection per sink, named subscriptions | ✅ implemented (v0.4) |
 
 ## Install
 

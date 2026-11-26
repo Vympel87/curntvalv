@@ -2,7 +2,7 @@
 
 Each milestone ends with something that can be run and shown.
 
-Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0.
+Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0.
 
 | # | Milestone | Done when |
 |---|---|---|
@@ -33,11 +33,10 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0.
 - Dynamic cluster membership: `curntvalv member add|remove|list`,
   `--join` (design D18)
 
-## v0.4 (in progress)
+## v0.4 (done)
 
 - Sinks: NATS JetStream, Redis Streams, Meilisearch (design D19), Kafka
   (design D20)
-
 - Filters and column projection per sink (design D21)
 - Named subscriptions: positions kept in the cluster (design D22)
 

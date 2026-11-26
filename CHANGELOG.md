@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
-## [Unreleased]
+## [0.4.0]
 
 ### Added
 
@@ -13,7 +13,8 @@ break compatibility.
   `Nats-Msg-Id`, the stream is created if missing), Redis Streams
   (`type=redis`: `XADD` with entry IDs from the log, so each change is in the
   stream once) and Meilisearch (`type=meilisearch`: a search index mirroring
-  each table). No new dependencies (design D19).
+  each table). No new dependencies (design D19). `make test-sinks` runs
+  their tests against real servers in Docker; CI runs them too.
 - Kafka sink (`type=kafka`, design D20): a record per change keyed by the
   row's key, idempotent producer with `acks=all`, SASL PLAIN/SCRAM and TLS,
   several seed brokers. Adds the dependency franz-go v1.21.7.
@@ -30,9 +31,9 @@ break compatibility.
 ### Upgrading from 0.3
 
 - Snapshots are now version 7, which v0.3 nodes cannot read: upgrade all
-  nodes before the first named subscription.
-- `make test-sinks` runs their tests against real servers in Docker; CI
-  runs them too.
+  nodes close together, and before the first named subscription (a v0.3
+  node stops on a subscription command).
+- Sink options are new; existing `--sink` flags keep working unchanged.
 
 ## [0.3.0]
 
@@ -164,6 +165,7 @@ First release. Early development: not ready for production.
 - No Postgres failover handling yet (design D7), no initial table
   snapshot, static membership.
 
+[0.4.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Vympel87/curntvalv/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.2.0
