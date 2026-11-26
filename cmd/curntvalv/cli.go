@@ -783,6 +783,7 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	name := fs.String("name", "", "a named subscription: the cluster keeps the position and the next run continues there (created on first use)")
 	start := fs.String("start", "earliest", "with a new --name: earliest (the oldest retained change) or latest (only new changes)")
 	policy := fs.String("policy", "block", "with a new --name: block (the log keeps what the subscription has not read) or drop")
+	txs := fs.Bool("transactions", false, "print whole transactions, each change with tx_changes; --limit stops after a whole transaction")
 	var tables listFlag
 	fs.Var(&tables, "table", "table to receive, as NAME or NAMESPACE.NAME; repeat or comma separate (default: all)")
 	def := os.Getenv("CURNTVALV_ADDR")
@@ -818,6 +819,22 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		OnRetry: func(addr string, err error, next uint64) {
 			fmt.Fprintf(stderr, "subscribe: %s: %s; retrying from index %d\n", addr, status.Convert(err).Message(), next)
 		}}
+	if *txs {
+		for tx, err := range c.Transactions(ctx, opts) {
+			if err != nil {
+				return err
+			}
+			for _, ch := range tx {
+				if err := enc.Encode(ch); err != nil {
+					return err
+				}
+			}
+			if printed += len(tx); *limit > 0 && printed >= *limit {
+				return nil
+			}
+		}
+		return nil
+	}
 	for ch, err := range c.Subscribe(ctx, opts) {
 		if err != nil {
 			return err

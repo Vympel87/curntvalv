@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"slices"
 	"strings"
 	"time"
 
@@ -113,6 +114,10 @@ type Change struct {
 	// Unchanged lists large (TOAST) columns an update did not touch; they
 	// are missing from After.
 	Unchanged []string `json:"unchanged,omitempty"`
+	// TxChanges is set with Options.Transactions: how many changes of this
+	// transaction the stream sends (design D30). 0 means the change stands
+	// alone.
+	TxChanges uint32 `json:"tx_changes,omitempty"`
 	// Reset is set for OpSourceReset.
 	Reset *Reset `json:"reset,omitempty"`
 }
@@ -128,6 +133,11 @@ type Options struct {
 	// OnRetry, if set, is called when a stream to a node failed and
 	// Subscribe tries again, from index next.
 	OnRetry func(addr string, err error, next uint64)
+	// Transactions asks for whole transactions (design D30): every change
+	// gets TxChanges, and a resumed stream never starts inside a
+	// transaction but sends it again from its start. Client.Transactions
+	// sets it and yields one transaction at a time.
+	Transactions bool
 
 	// Name makes this a named subscription (design D22): the cluster keeps
 	// its position and Subscribe continues from there; From must be 0. A
@@ -223,12 +233,14 @@ func (c *Client) Subscribe(ctx context.Context, opts Options) iter.Seq2[Change, 
 			addr := c.addrs[attempt%len(c.addrs)]
 			received, restart := false, false
 			var failed error
-			stop, err := c.stream(ctx, addr, &pb.SubscribeRequest{FromIndex: next, Tables: opts.Tables},
+			stop, err := c.stream(ctx, addr, &pb.SubscribeRequest{FromIndex: next, Tables: opts.Tables, Transactions: opts.Transactions},
 				func(resp *pb.SubscribeResponse, schemas map[uint64]*pb.Schema) bool {
 					received = true
 					for _, ce := range resp.GetEvents() {
-						if pos != nil {
+						if pos != nil && !opts.Transactions {
 							// Everything before this change's entry is done.
+							// (With transactions only next_index is a safe
+							// place to continue from.)
 							if restart, failed = pos.advance(ctx, c, ce.GetIndex()-1); restart || failed != nil {
 								return false
 							}
@@ -324,7 +336,7 @@ func convert(ce *pb.ChangeEvent, schemas map[uint64]*pb.Schema) Change {
 		CommitTimeUs: ce.GetCommitTimeUs(), Event: ce.GetEvent(), Schema: schemas[ce.GetEvent().GetSchemaId()]}.JSON()
 	ch := Change{ID: j.ID, Index: j.Index, LSN: j.LSN, Seq: j.Seq, Xid: j.Xid,
 		CommitTime: time.UnixMicro(ce.GetCommitTimeUs()).UTC(), Table: j.Table, Op: Op(j.Op),
-		Before: row(j.Before), After: row(j.After), Unchanged: j.Unchanged}
+		Before: row(j.Before), After: row(j.After), Unchanged: j.Unchanged, TxChanges: ce.GetTxChanges()}
 	if r := j.Reset; r != nil {
 		ch.Reset = &Reset{PreviousLSN: r.PreviousLSN, PreviousSystemID: r.PreviousSystemID, PreviousTimeline: r.PreviousTimeline,
 			LSN: r.LSN, SystemID: r.SystemID, Timeline: r.Timeline, Reason: r.Reason}
@@ -345,4 +357,48 @@ func row(m map[string]any) map[string]*string {
 		}
 	}
 	return out
+}
+
+// Transactions is Subscribe with Options.Transactions set, yielding one
+// Postgres transaction at a time: all the changes of it the stream sends, in
+// order (design D30). A change without TxChanges (a transaction too large for
+// the cluster to hold, or one cut short by a Postgres failover) comes alone.
+// After a reconnect a transaction can be yielded again, as changes can with
+// Subscribe; it is never yielded in part. With ManualCommit, commit the Index
+// of a transaction's last change once it is processed.
+func (c *Client) Transactions(ctx context.Context, opts Options) iter.Seq2[[]Change, error] {
+	opts.Transactions = true
+	return groupTransactions(c.Subscribe(ctx, opts))
+}
+
+// groupTransactions turns a stream of changes with TxChanges into one of
+// transactions.
+func groupTransactions(changes iter.Seq2[Change, error]) iter.Seq2[[]Change, error] {
+	return func(yield func([]Change, error) bool) {
+		var tx []Change
+		for ch, err := range changes {
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if ch.TxChanges == 0 {
+				tx = nil // a part left by a broken stream is sent again whole
+				if !yield([]Change{ch}, nil) {
+					return
+				}
+				continue
+			}
+			if len(tx) > 0 && (tx[0].LSN != ch.LSN || slices.ContainsFunc(tx, func(t Change) bool { return t.ID == ch.ID })) {
+				tx = nil // the stream resumed: this transaction starts again
+			}
+			tx = append(tx, ch)
+			if len(tx) == int(ch.TxChanges) {
+				done := tx
+				tx = nil
+				if !yield(done, nil) {
+					return
+				}
+			}
+		}
+	}
 }

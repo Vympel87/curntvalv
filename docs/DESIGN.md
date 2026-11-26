@@ -1066,6 +1066,17 @@ A backfill reads them from the table into the log, next to the stream.
   one Kafka need different ones. The other sinks get the grouping and
   `tx_changes` but write as before (NATS, Redis, Meilisearch and
   ClickHouse have no transaction over several writes that fits).
+- **Subscribers.** `SubscribeRequest.transactions` makes the stream group
+  the same way (the grouper is shared by runners and streams) and set
+  `ChangeEvent.tx_changes`. A transaction may span several responses of
+  about 1 MB; only the last moves `next_index` on, so a stream resumed from
+  any `next_index` starts at a transaction's first batch and sends it
+  whole. The Go client's `Options.Transactions` passes it through and, for
+  a named subscription, commits only `next_index` positions (the index of
+  a change can lie inside a transaction whose first batch had nothing for
+  the subscriber). `Client.Transactions` yields one transaction at a time,
+  dropping a part left by a broken stream when the transaction starts
+  again; `curntvalv subscribe --transactions` prints them.
 - **`on_error=skip`** (D28) then passes over whole transactions: the unit
   delivered one at a time is a transaction, and a refused one is recorded
   once, by its first change.
@@ -1075,8 +1086,11 @@ A backfill reads them from the table into the log, next to the stream.
   delivery batches, filtered tables, an open transaction across a restart
   (the offset must not pass it), one past `max_tx`, one never finished and
   one resumed, and a poison transaction; Kafka against a broker (commit,
-  fencing, read_committed); end to end a 2500-row Postgres transaction
-  reaching a webhook in one request.
+  fencing, read_committed); a stream holding an open transaction and
+  splitting a large one; the client's grouping after a broken stream, and
+  a named subscription stopped inside a transaction whose first batch had
+  nothing for it; end to end a 2500-row Postgres transaction reaching a
+  webhook in one request and `subscribe --transactions`.
 
 ## 4. Data model
 

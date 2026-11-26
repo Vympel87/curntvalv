@@ -69,7 +69,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Filter expressions, masks, renames, ClickHouse mirror tables, Kafka tombstones | ✅ implemented (v0.5) |
 | Hashed columns, rows leaving a filter as deletes | ✅ implemented (v0.6) |
 | Poison changes (`on_error=skip`), rolling upgrade test | ✅ implemented (v0.7) |
-| Whole transactions (`transactions=true`), Kafka transactions | ✅ on main, for v0.8 |
+| Whole transactions for sinks, Kafka and subscribers | ✅ on main, for v0.8 |
 
 ## Install
 
@@ -240,6 +240,27 @@ curntvalv subscription delete billing
 A named subscription holds back log retention until it has read the
 changes (`--policy drop` / `Options.Drop` does not); delete the ones you no
 longer use. Use one consumer per name.
+
+To apply changes to another database, take one Postgres transaction at a
+time:
+
+```go
+for tx, err := range c.Transactions(ctx, client.Options{Name: "replica", Tables: []string{"orders"}}) {
+	if err != nil {
+		log.Fatal(err)
+	}
+	// tx holds every change of one transaction (for these tables), in
+	// order: apply them in one transaction of your own. After a failure a
+	// transaction can come again, but never in part.
+}
+```
+
+```bash
+curntvalv subscribe --transactions --table orders   # each change with tx_changes
+```
+
+A transaction above 100000 changes, or one cut short by a Postgres
+failover, comes one change at a time (`TxChanges` 0).
 
 ## Sinks
 

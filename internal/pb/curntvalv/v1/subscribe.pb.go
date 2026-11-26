@@ -297,7 +297,12 @@ type SubscribeRequest struct {
 	FromIndex uint64 `protobuf:"varint,1,opt,name=from_index,json=fromIndex,proto3" json:"from_index,omitempty"`
 	// Tables to receive, as "name" (any namespace) or "namespace.name".
 	// Empty means all tables.
-	Tables        []string `protobuf:"bytes,2,rep,name=tables,proto3" json:"tables,omitempty"`
+	Tables []string `protobuf:"bytes,2,rep,name=tables,proto3" json:"tables,omitempty"`
+	// Send whole transactions (design D30): every change of a transaction
+	// carries tx_changes, the number of its changes the stream sends. A
+	// transaction may span several responses; next_index never points into
+	// one, so resuming there sends it again from its start.
+	Transactions  bool `protobuf:"varint,3,opt,name=transactions,proto3" json:"transactions,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -344,6 +349,13 @@ func (x *SubscribeRequest) GetTables() []string {
 		return x.Tables
 	}
 	return nil
+}
+
+func (x *SubscribeRequest) GetTransactions() bool {
+	if x != nil {
+		return x.Transactions
+	}
+	return false
 }
 
 type SubscribeResponse struct {
@@ -418,10 +430,13 @@ type ChangeEvent struct {
 	Index     uint64 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
 	CommitLsn uint64 `protobuf:"varint,3,opt,name=commit_lsn,json=commitLsn,proto3" json:"commit_lsn,omitempty"`
 	// Position of the change in its transaction.
-	Seq           uint32 `protobuf:"varint,4,opt,name=seq,proto3" json:"seq,omitempty"`
-	Xid           uint32 `protobuf:"varint,5,opt,name=xid,proto3" json:"xid,omitempty"`
-	CommitTimeUs  int64  `protobuf:"varint,6,opt,name=commit_time_us,json=commitTimeUs,proto3" json:"commit_time_us,omitempty"`
-	Event         *Event `protobuf:"bytes,7,opt,name=event,proto3" json:"event,omitempty"`
+	Seq          uint32 `protobuf:"varint,4,opt,name=seq,proto3" json:"seq,omitempty"`
+	Xid          uint32 `protobuf:"varint,5,opt,name=xid,proto3" json:"xid,omitempty"`
+	CommitTimeUs int64  `protobuf:"varint,6,opt,name=commit_time_us,json=commitTimeUs,proto3" json:"commit_time_us,omitempty"`
+	Event        *Event `protobuf:"bytes,7,opt,name=event,proto3" json:"event,omitempty"`
+	// With transactions: how many changes of this transaction the stream
+	// sends. 0 for a change that stands alone (design D30).
+	TxChanges     uint32 `protobuf:"varint,8,opt,name=tx_changes,json=txChanges,proto3" json:"tx_changes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -505,6 +520,13 @@ func (x *ChangeEvent) GetEvent() *Event {
 	return nil
 }
 
+func (x *ChangeEvent) GetTxChanges() uint32 {
+	if x != nil {
+		return x.TxChanges
+	}
+	return 0
+}
+
 var File_curntvalv_v1_subscribe_proto protoreflect.FileDescriptor
 
 const file_curntvalv_v1_subscribe_proto_rawDesc = "" +
@@ -525,11 +547,12 @@ const file_curntvalv_v1_subscribe_proto_rawDesc = "" +
 	"generation\x18\x02 \x01(\x04R\n" +
 	"generation\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x04R\x06offset\"\x1c\n" +
-	"\x1aCommitSubscriptionResponse\"I\n" +
+	"\x1aCommitSubscriptionResponse\"m\n" +
 	"\x10SubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"from_index\x18\x01 \x01(\x04R\tfromIndex\x12\x16\n" +
-	"\x06tables\x18\x02 \x03(\tR\x06tables\"\xff\x01\n" +
+	"\x06tables\x18\x02 \x03(\tR\x06tables\x12\"\n" +
+	"\ftransactions\x18\x03 \x01(\bR\ftransactions\"\xff\x01\n" +
 	"\x11SubscribeResponse\x121\n" +
 	"\x06events\x18\x01 \x03(\v2\x19.curntvalv.v1.ChangeEventR\x06events\x12F\n" +
 	"\aschemas\x18\x02 \x03(\v2,.curntvalv.v1.SubscribeResponse.SchemasEntryR\aschemas\x12\x1d\n" +
@@ -537,7 +560,7 @@ const file_curntvalv_v1_subscribe_proto_rawDesc = "" +
 	"next_index\x18\x03 \x01(\x04R\tnextIndex\x1aP\n" +
 	"\fSchemasEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\x04R\x03key\x12*\n" +
-	"\x05value\x18\x02 \x01(\v2\x14.curntvalv.v1.SchemaR\x05value:\x028\x01\"\xc7\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x14.curntvalv.v1.SchemaR\x05value:\x028\x01\"\xe6\x01\n" +
 	"\vChangeEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x1d\n" +
@@ -546,7 +569,9 @@ const file_curntvalv_v1_subscribe_proto_rawDesc = "" +
 	"\x03seq\x18\x04 \x01(\rR\x03seq\x12\x10\n" +
 	"\x03xid\x18\x05 \x01(\rR\x03xid\x12$\n" +
 	"\x0ecommit_time_us\x18\x06 \x01(\x03R\fcommitTimeUs\x12)\n" +
-	"\x05event\x18\a \x01(\v2\x13.curntvalv.v1.EventR\x05event*w\n" +
+	"\x05event\x18\a \x01(\v2\x13.curntvalv.v1.EventR\x05event\x12\x1d\n" +
+	"\n" +
+	"tx_changes\x18\b \x01(\rR\ttxChanges*w\n" +
 	"\x11SubscriptionStart\x12\"\n" +
 	"\x1eSUBSCRIPTION_START_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bSUBSCRIPTION_START_EARLIEST\x10\x01\x12\x1d\n" +

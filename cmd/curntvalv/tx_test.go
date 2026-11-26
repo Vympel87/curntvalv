@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,7 +46,7 @@ func TestEndToEndTransactions(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	newE2EWith(t, f.env(), append(f.args(), "--sink", "name=hook,type=webhook,url="+srv.URL+",transactions=true")...)
+	c := newE2EWith(t, f.env(), append(f.args(), "--sink", "name=hook,type=webhook,url="+srv.URL+",transactions=true")...)
 	f.waitSlot()
 	f.insert(1, 2500, 2500) // three source batches, more than one delivery batch
 	f.insert(2501, 2510, 5)
@@ -59,5 +63,32 @@ func TestEndToEndTransactions(t *testing.T) {
 	}
 	if rows["1"] != 2500 || rows["2500"] != 2500 || rows["2501"] != 5 || rows["2510"] != 5 {
 		t.Fatalf("tx_changes: row 1 %d, 2500 %d, 2501 %d, 2510 %d", rows["1"], rows["2500"], rows["2501"], rows["2510"])
+	}
+
+	// The same through `curntvalv subscribe --transactions`.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.bin, "subscribe", "--addr", strings.Join(c.addrs, ","),
+		"--transactions", "--table", f.table, "--limit", "2501")
+	cmd.Env = append(os.Environ(), c.cliEnv...)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2505 { // stops after a whole transaction
+		t.Fatalf("%d lines", len(lines))
+	}
+	for i, line := range lines {
+		var ch struct {
+			TxChanges int `json:"tx_changes"`
+		}
+		want := 2500
+		if i >= 2500 {
+			want = 5
+		}
+		if err := json.Unmarshal([]byte(line), &ch); err != nil || ch.TxChanges != want {
+			t.Fatalf("line %d: %s", i, line)
+		}
 	}
 }

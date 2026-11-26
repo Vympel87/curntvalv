@@ -55,7 +55,7 @@ func (n *metaNode) Status(context.Context) (raft.Status, error) {
 }
 
 // serveNamed starts a subscribe server with named subscriptions.
-func serveNamed(t *testing.T, l *log, n *metaNode) string {
+func serveNamed(t *testing.T, l server.ChangeReader, n *metaNode) string {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

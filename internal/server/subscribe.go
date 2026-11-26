@@ -166,6 +166,11 @@ func (s *Subscribe) Subscribe(req *pb.SubscribeRequest, stream pb.SubscribeServi
 	sentSchemas := map[uint64]bool{}
 	from := req.GetFromIndex()
 	lastSend := time.Now()
+	var group *event.Grouper
+	if req.GetTransactions() {
+		group = event.NewGrouper(0)
+	}
+	resume := from // what to resume from after the responses sent so far
 	for {
 		res, err := s.reader.Read(ctx, from, subscribeEntries, filter)
 		switch {
@@ -179,14 +184,27 @@ func (s *Subscribe) Subscribe(req *pb.SubscribeRequest, stream pb.SubscribeServi
 			return status.Error(codes.Internal, err.Error())
 		}
 		from = res.Next
-		if len(res.Changes) == 0 && time.Since(lastSend) < progressEvery {
+		changes, next := res.Changes, res.Next
+		if group != nil {
+			changes = nil
+			for _, tx := range group.Add(res.Changes, res.Txs) {
+				changes = append(changes, tx...)
+			}
+			next = group.Safe(res.Next) + 1
+		}
+		if len(changes) == 0 && (time.Since(lastSend) < progressEvery || next == resume) {
 			continue
 		}
-		if err := sendChanges(stream, res, sentSchemas); err != nil {
+		if group != nil {
+			err = sendTransactions(stream, changes, resume, next, sentSchemas)
+		} else {
+			err = sendChanges(stream, res, sentSchemas)
+		}
+		if err != nil {
 			return err
 		}
-		s.sent.Add(uint64(len(res.Changes)))
-		lastSend = time.Now()
+		s.sent.Add(uint64(len(changes)))
+		resume, lastSend = next, time.Now()
 	}
 }
 
@@ -205,23 +223,7 @@ func sendChanges(stream pb.SubscribeService_SubscribeServer, res event.Result, s
 		return nil
 	}
 	for i, c := range res.Changes {
-		ce := &pb.ChangeEvent{
-			Id:           c.ID(),
-			Index:        c.Index,
-			CommitLsn:    c.CommitLSN,
-			Seq:          c.Seq,
-			Xid:          c.Xid,
-			CommitTimeUs: c.CommitTimeUs,
-			Event:        c.Event,
-		}
-		n := proto.Size(ce)
-		if id := c.Event.GetSchemaId(); c.Schema != nil && !sentSchemas[id] {
-			sentSchemas[id] = true
-			resp.Schemas[id] = c.Schema
-			n += proto.Size(c.Schema)
-		}
-		resp.Events = append(resp.Events, ce)
-		size += n
+		size += addChange(resp, c, sentSchemas)
 		// Split only between entries, so next_index never skips part of one.
 		last := i == len(res.Changes)-1
 		if !last && size >= subscribeMaxBytes && res.Changes[i+1].Index != c.Index {
@@ -231,4 +233,49 @@ func sendChanges(stream pb.SubscribeService_SubscribeServer, res event.Result, s
 		}
 	}
 	return flush(res.Next)
+}
+
+// addChange adds c to resp, with its schema if the stream has not sent it,
+// and returns the bytes added.
+func addChange(resp *pb.SubscribeResponse, c event.Change, sentSchemas map[uint64]bool) int {
+	ce := &pb.ChangeEvent{
+		Id:           c.ID(),
+		Index:        c.Index,
+		CommitLsn:    c.CommitLSN,
+		Seq:          c.Seq,
+		Xid:          c.Xid,
+		CommitTimeUs: c.CommitTimeUs,
+		Event:        c.Event,
+		TxChanges:    c.TxChanges,
+	}
+	n := proto.Size(ce)
+	if id := c.Event.GetSchemaId(); c.Schema != nil && !sentSchemas[id] {
+		sentSchemas[id] = true
+		resp.Schemas[id] = c.Schema
+		n += proto.Size(c.Schema)
+	}
+	resp.Events = append(resp.Events, ce)
+	return n
+}
+
+// sendTransactions sends whole transactions in responses of about
+// subscribeMaxBytes; a large transaction spans several. Only the last
+// response moves next_index on, to next: the others keep resume, where the
+// stream would have continued before, so resuming never starts inside a
+// transaction (design D30).
+func sendTransactions(stream pb.SubscribeService_SubscribeServer, changes []event.Change, resume, next uint64, sentSchemas map[uint64]bool) error {
+	resp := &pb.SubscribeResponse{Schemas: map[uint64]*pb.Schema{}}
+	size := 0
+	for i, c := range changes {
+		size += addChange(resp, c, sentSchemas)
+		if i < len(changes)-1 && size >= subscribeMaxBytes {
+			resp.NextIndex = resume
+			if err := stream.Send(resp); err != nil {
+				return err
+			}
+			resp, size = &pb.SubscribeResponse{Schemas: map[uint64]*pb.Schema{}}, 0
+		}
+	}
+	resp.NextIndex = next
+	return stream.Send(resp)
 }

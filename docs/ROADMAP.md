@@ -56,11 +56,11 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 - Poison changes: `on_error=skip` (design D28)
 - Rolling upgrade test from the previous release (design D29)
 
-## v0.8 (in progress)
+## v0.8 (done)
 
 - Whole transactions: `transactions=true`, Kafka transactions (design D30)
-- Transactions in `curntvalv subscribe` and the Go client: `tx_changes`
-  and a way to receive a transaction at a time
+- Transactions in `curntvalv subscribe` and the Go client (`tx_changes`,
+  `Client.Transactions`)
 
 ## v0.9: schema changes
 

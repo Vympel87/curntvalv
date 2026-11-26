@@ -317,7 +317,7 @@ func (r *Runner) session(ctx context.Context) error {
 
 	var pending uint64 // offset to store for entries without matching changes
 	lastCommit := time.Now()
-	tx := &txBuffer{max: r.cfg.MaxTxChanges}
+	tx := event.NewGrouper(r.cfg.MaxTxChanges)
 	for {
 		rctx, cancel := ctx, context.CancelFunc(func() {})
 		if pending > 0 {
@@ -348,11 +348,14 @@ func (r *Runner) session(ctx context.Context) error {
 		units := singles(changes)
 		safe := res.Next - 1
 		if r.cfg.Transactions {
-			units = tx.add(changes, res.Txs)
-			safe = tx.safe(res.Next)
-			if tx.split && len(units) > 0 && units[len(units)-1][0].CommitLSN == tx.open {
+			units = nil
+			for _, g := range tx.Add(changes, res.Txs) {
+				units = append(units, g)
+			}
+			safe = tx.Safe(res.Next)
+			if lsn := tx.Splitting(); lsn != 0 && len(units) > 0 && units[len(units)-1][0].CommitLSN == lsn {
 				r.log.Warn("transaction too large to deliver whole; delivering it in parts",
-					"lsn", event.FormatLSN(tx.open), "max_tx", r.cfg.MaxTxChanges)
+					"lsn", event.FormatLSN(lsn), "max_tx", r.cfg.MaxTxChanges)
 			}
 		}
 		if len(units) == 0 {
@@ -423,6 +426,19 @@ func (r *Runner) deliver(ctx context.Context, units []unit) error {
 		units = units[n:]
 	}
 	return nil
+}
+
+// unit is what a runner delivers in one piece: one change, or with
+// Transactions every change of one transaction the sink receives.
+type unit []event.Change
+
+// singles makes every change a unit.
+func singles(changes []event.Change) []unit {
+	out := make([]unit, len(changes))
+	for i := range changes {
+		out[i] = changes[i : i+1 : i+1]
+	}
+	return out
 }
 
 // flatten joins units into one slice of changes.

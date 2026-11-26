@@ -181,3 +181,80 @@ func TestSubscribeSplitsLargeReadsBetweenEntries(t *testing.T) {
 		t.Fatalf("responses %v next %v", got, next)
 	}
 }
+
+func TestSubscribeTransactions(t *testing.T) {
+	c, r := subscribeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := c.Subscribe(ctx, &pb.SubscribeRequest{FromIndex: 5, Transactions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recv := func() *pb.SubscribeResponse {
+		t.Helper()
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	// A whole transaction, then the start of one still open: only the
+	// first is sent, and next_index stays before the open one.
+	<-r.calls
+	r.results <- readResult{res: event.Result{
+		Changes: []event.Change{change(5, 0x100, 0), change(5, 0x100, 1), change(6, 0x200, 0)}, Next: 7, TxEntries: 2,
+		Txs: []event.Tx{{CommitLSN: 0x100, First: 5, Begin: true, End: true}, {CommitLSN: 0x200, First: 6, Begin: true}}}}
+	resp := recv()
+	if len(resp.Events) != 2 || resp.Events[1].TxChanges != 2 || resp.NextIndex != 6 {
+		t.Fatalf("first response %+v", resp)
+	}
+	// Its end arrives: the transaction is sent whole.
+	if call := <-r.calls; call.from != 7 {
+		t.Fatalf("second read from %d", call.from)
+	}
+	r.results <- readResult{res: event.Result{Changes: []event.Change{change(7, 0x200, 1)}, Next: 8, TxEntries: 1,
+		Txs: []event.Tx{{CommitLSN: 0x200, First: 7, End: true}}}}
+	resp = recv()
+	if len(resp.Events) != 2 || resp.Events[0].Id != "0/200:0" || resp.Events[0].TxChanges != 2 || resp.Events[1].TxChanges != 2 || resp.NextIndex != 8 {
+		t.Fatalf("second response %+v", resp)
+	}
+}
+
+func TestSubscribeSplitsLargeTransaction(t *testing.T) {
+	c, r := subscribeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := c.Subscribe(ctx, &pb.SubscribeRequest{FromIndex: 5, Transactions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := make([]byte, subscribeMaxBytes/2+1)
+	var changes []event.Change
+	for i := range 3 {
+		ch := change(uint64(5+i), 0x100, uint32(i))
+		ch.Event.After.Values[0].Data = big
+		changes = append(changes, ch)
+	}
+	<-r.calls
+	r.results <- readResult{res: event.Result{Changes: changes, Next: 8, TxEntries: 3,
+		Txs: []event.Tx{{CommitLSN: 0x100, First: 5, Begin: true, End: true}}}}
+	// Two changes per response; the first keeps next_index where the stream
+	// started, so a resume sends the transaction from its start.
+	var got []uint64
+	for n := 0; n < 3; {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		n += len(resp.Events)
+		got = append(got, resp.NextIndex)
+		for _, e := range resp.Events {
+			if e.TxChanges != 3 {
+				t.Fatalf("tx_changes %d", e.TxChanges)
+			}
+		}
+	}
+	if len(got) != 2 || got[0] != 5 || got[1] != 8 {
+		t.Fatalf("next indexes %v", got)
+	}
+}

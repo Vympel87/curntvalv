@@ -63,6 +63,11 @@ message SubscribeRequest {
   // Tables to receive, as "name" (any namespace) or "namespace.name".
   // Empty means all tables.
   repeated string tables = 2;
+  // Send whole transactions (design D30): every change of a transaction
+  // carries tx_changes, the number of its changes the stream sends. A
+  // transaction may span several responses; next_index never points into
+  // one, so resuming there sends it again from its start.
+  bool transactions = 3;
 }
 
 message SubscribeResponse {
@@ -86,4 +91,7 @@ message ChangeEvent {
   uint32 xid = 5;
   int64 commit_time_us = 6;
   Event event = 7;
+  // With transactions: how many changes of this transaction the stream
+  // sends. 0 for a change that stands alone (design D30).
+  uint32 tx_changes = 8;
 }

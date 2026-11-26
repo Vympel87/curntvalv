@@ -16,6 +16,10 @@ break compatibility.
   default `curntvalv-NAME`), for `read_committed` consumers. With
   `on_error=skip` a refused transaction is skipped whole. `max_tx` bounds
   the changes held in memory.
+- Whole transactions for subscribers: `SubscribeRequest.transactions` and
+  `ChangeEvent.tx_changes`; in the Go client `Options.Transactions`,
+  `Change.TxChanges` and `Client.Transactions`, which yields one
+  transaction at a time; `curntvalv subscribe --transactions`.
 
 ### Changed
 
@@ -25,6 +29,13 @@ break compatibility.
   itself, which Kafka transactions need; remove an older container with
   `make sinks-down`.
 - `make test-upgrade` upgrades from v0.7.0.
+
+### Upgrading from 0.7
+
+- Nothing new is stored, so nodes can be upgraded one at a time. A node
+  before 0.8 ignores a subscriber's request for transactions: its changes
+  then come without `tx_changes` (one at a time from
+  `Client.Transactions`).
 
 ## [0.7.0]
 
