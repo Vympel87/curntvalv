@@ -76,7 +76,7 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 - A rate limit per sink (`max_rate`), so a backfill does not flood a
   search index or a webhook; `batch` and `linger` (designs D32, D33)
 
-## v1.0: stable
+## v1.0: stable (next)
 
 - Compatibility promise: log entries, snapshots, the JSON form and the gRPC
   API change only compatibly within 1.x

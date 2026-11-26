@@ -71,7 +71,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Poison changes (`on_error=skip`), rolling upgrade test | ✅ implemented (v0.7) |
 | Whole transactions for sinks, Kafka and subscribers | ✅ implemented (v0.8) |
 | Schema change events, ClickHouse mirrors following type changes | ✅ implemented (v0.9) |
-| S3 archive sink, `batch`/`linger`/`max_rate` per sink | ✅ on main, for v0.10 |
+| S3 archive sink, `batch`/`linger`/`max_rate` per sink | ✅ implemented (v0.10) |
 
 ## Install
 
