@@ -128,7 +128,7 @@ test-failover:
 # Upgrades a running cluster from the release UPGRADE_FROM to this build,
 # one node at a time, with Postgres changes flowing (TestRollingUpgrade).
 # The old binary is built from its tag once and kept in .cache/.
-UPGRADE_FROM ?= v0.6.0
+UPGRADE_FROM ?= v0.7.0
 UPGRADE_DIR = $(CURDIR)/.cache/upgrade-$(UPGRADE_FROM)
 
 test-upgrade: pg-up

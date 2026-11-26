@@ -1025,7 +1025,7 @@ A backfill reads them from the table into the log, next to the stream.
   write new commands are used only once every node runs the new release;
   CHANGELOG says which ones.
 - **`make test-upgrade`** builds the previous release from its tag
-  (`UPGRADE_FROM`, default v0.6.0) and runs TestRollingUpgrade: a cluster
+  (`UPGRADE_FROM`, default v0.7.0) and runs TestRollingUpgrade: a cluster
   of the old release with Postgres and a webhook sink is upgraded one node
   at a time while rows are inserted; one old node is kept down until the
   log is cut past it and must install a snapshot from a new leader. Every
