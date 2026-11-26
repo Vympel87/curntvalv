@@ -114,7 +114,7 @@ func TestParseSinkSpec(t *testing.T) {
 		t.Fatal(err)
 	}
 	sh, err := parseSinkSpec("name=s,type=webhook,url=http://x,op=insert,op=update,where=status=paid,where=region!=eu,columns=id+note,drop=secret")
-	if err != nil || len(sh.shape.Ops) != 2 || len(sh.shape.Where) != 2 || !sh.shape.Where[1].Not ||
+	if err != nil || len(sh.shape.Ops) != 2 || len(sh.shape.Where) != 2 || sh.shape.Where[1].String() != "region!=eu" ||
 		fmt.Sprint(sh.shape.Columns) != "[id note]" || fmt.Sprint(sh.shape.Drop) != "[secret]" {
 		t.Fatalf("shape: %+v %v", sh.shape, err)
 	}
@@ -122,6 +122,19 @@ func TestParseSinkSpec(t *testing.T) {
 		t.Fatalf("config %+v", cfg.Shape)
 	}
 	for _, bad := range []string{"op=upsert", "where=status", "columns=a++b", "drop=", "columns=a,columns=b"} {
+		if _, err := parseSinkSpec("name=s,type=webhook,url=http://x," + bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	ex, err := parseSinkSpec(`name=s,type=webhook,url=http://x,where=status in (paid, 'a,b') and amount >= 10,mask=email+phone,rename=note:comment,table=orders`)
+	if err != nil || len(ex.shape.Where) != 1 || ex.shape.Where[0].String() != `status in (paid, 'a,b') and amount >= 10` ||
+		fmt.Sprint(ex.shape.Mask) != "[email phone]" || ex.shape.Rename["note"] != "comment" || fmt.Sprint(ex.tables) != "[orders]" {
+		t.Fatalf("expression spec: %+v %v", ex, err)
+	}
+	if got := splitSpec(`a=1,b=f(x, y),c='p,q',d="r,s",e=)`); fmt.Sprint(got) != `[a=1 b=f(x, y) c='p,q' d="r,s" e=)]` {
+		t.Fatalf("split %q", got)
+	}
+	for _, bad := range []string{"where=amount >=", "rename=a", "mask=a++b", "where=(a = 1"} {
 		if _, err := parseSinkSpec("name=s,type=webhook,url=http://x," + bad); err == nil {
 			t.Errorf("%s accepted", bad)
 		}

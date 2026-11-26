@@ -263,15 +263,22 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `stream`, `maxlen` | Redis stream key (default `curntvalv`; `{table}` gives one stream per table) and approximate trim length (default: keep all) |
 | `index` | Meilisearch index uid (default `{namespace}_{table}`) |
 | `op` | Only these operations, repeatable: `insert`, `update`, `delete`, `truncate`, `backfill` |
-| `where` | Only rows where `COLUMN=VALUE` or `COLUMN!=VALUE` (Postgres text form; the new row, the old one for deletes); repeat for AND |
+| `where` | Only rows matching an expression, on the new row (the old one for deletes): `status in (paid, shipped) and amount >= 100`, with `= != < <= > >=`, `[not] in (...)`, `[not] like 'a%'`, `is [not] null`, `and`, `or`, `not`, `( )`. Numeric columns compare as numbers. Repeat for AND |
 | `columns`, `drop` | Keep only these columns, or remove these (`columns=id+note`, `drop=password+ssn`); key columns always stay |
+| `mask` | Replace these columns' values with `***` (`mask=email+phone`); NULL stays NULL, key columns are not masked |
+| `rename` | Rename columns in what the sink receives (`rename=status:state+note:comment`) |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
 
 For example, paid orders only, without personal data, to a search index:
 
 ```bash
---sink 'name=search,type=meilisearch,url=http://:KEY@meili:7700,table=orders,where=status=paid,drop=email+phone'
+--sink 'name=search,type=meilisearch,url=http://:KEY@meili:7700,table=orders,where=status in (paid, shipped) and total >= 100,drop=email+phone'
+--sink 'name=bus,type=kafka,url=kafka://k1:9092,mask=email,rename=status:state'
 ```
+
+All options name columns by their Postgres names. A value that is not
+known (an unchanged TOASTed column) never matches; NULL matches `is null`,
+`!=` and `not in`.
 
 An update that moves a row out of a `where` filter is not delivered, so a
 mirror keeps the last matching version. Source resets pass every filter.

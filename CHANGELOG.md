@@ -5,6 +5,17 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- Filter expressions for sinks (design D23): `where=` takes comparisons
+  (`= != < <= > >=`, `in`, `like`, `is null`) combined with `and`, `or`,
+  `not` and parentheses; numeric columns compare as numbers. The first
+  `COLUMN=VALUE` form keeps working.
+- `mask=` replaces column values with `***`, `rename=` renames columns in
+  what a sink receives.
+
 ## [0.4.0]
 
 ### Added

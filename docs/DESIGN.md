@@ -822,8 +822,7 @@ A backfill reads them from the table into the log, next to the stream.
   sinks de-duplicate and mirror by them.
 - **Source resets always pass**: they tell a consumer that changes may be
   missing, which a filter must not hide.
-- **Not done.** Expressions beyond equality, renames, hashing or masking
-  of values.
+- **Expressions, renames and masks** followed in D23.
 
 ### D22. Named subscriptions
 
@@ -862,6 +861,36 @@ A backfill reads them from the table into the log, next to the stream.
   leader, with a reset and a delete while it runs; end to end a
   subscription continues exactly after the stored position across a
   leader kill, is replayed after a reset, and is deleted.
+
+### D23. Filter expressions, renames and masks
+
+- **`where` takes an expression**: comparisons `= != <> < <= > >=`,
+  `[not] in (...)`, `[not] like` (`%`, `_`), `is [not] null`, combined with
+  `and`, `or`, `not` and parentheses; values quoted `'...'` (`''` for a
+  quote) or bare words and numbers; column names bare or `"quoted"`. A
+  hand-written recursive-descent parser in `internal/sink`, no library.
+  Repeated `where=` options must all hold.
+- **Types.** Values are Postgres text; numeric columns compared with a
+  number literal compare exactly as numbers (`big.Rat`), boolean columns
+  take `true`/`false`, everything else compares as bytes.
+- **NULL and unknown.** NULL is a value of its own, as in D21: `=`, `<`,
+  `in`, `like` are false for it and `!=`, `not in`, `not like` true, so the
+  first form keeps its meaning. A value that is not known (an unchanged
+  TOASTed value, binary data, a column the table lacks) makes its test
+  unknown, combined with SQL's three-valued logic; a row passes only if the
+  whole expression is true.
+- **Compatibility.** A `where` that is not an expression but has the first
+  form `COLUMN=VALUE` / `COLUMN!=VALUE` keeps its literal value
+  (`name=John Smith`, `note=`). `--sink` values are split at commas outside
+  parentheses and quotes, so an `in` list fits in a flag.
+- **`mask=A+B`** replaces values with `***` (NULL stays NULL) and gives the
+  column type text in the schema the sink sees; key columns are never
+  masked, because sinks de-duplicate and mirror by them.
+- **`rename=OLD:NEW+...`** renames columns in what the sink receives, key
+  columns too (they stay keys). A rename to a name the table already has
+  is not applied for that table.
+- **Order.** Filters, then projection, masks and renames; every option
+  names columns by their Postgres names.
 
 ## 4. Data model
 

@@ -10,23 +10,27 @@ import (
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 )
 
+// where parses a where option or fails the test.
+func where(t *testing.T, src string) *Expr {
+	t.Helper()
+	e, err := ParseWhere(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
 func TestParseShape(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		want Condition
-	}{
-		{"status=paid", Condition{Column: "status", Value: "paid"}},
-		{"region!=eu", Condition{Column: "region", Value: "eu", Not: true}},
-		{"note=", Condition{Column: "note"}},
-		{"a=b=c", Condition{Column: "a", Value: "b=c"}},
-	} {
-		got, err := ParseCondition(tc.in)
-		if err != nil || got != tc.want {
-			t.Errorf("%q: %+v %v", tc.in, got, err)
+	// The first form keeps working, with values taken as they are.
+	row := &pb.Row{Values: []*pb.Value{text("John Smith"), text(""), text("b=c")}}
+	sc := &pb.Schema{Columns: []*pb.Column{{Name: "name"}, {Name: "note"}, {Name: "a"}}}
+	for _, src := range []string{"name=John Smith", "note=", "a=b=c", "name!=Bob", "note!=x"} {
+		if !where(t, src).Eval(sc, row) {
+			t.Errorf("%q does not match", src)
 		}
 	}
-	for _, bad := range []string{"status", "=x", "!=x"} {
-		if _, err := ParseCondition(bad); err == nil {
+	for _, bad := range []string{"status", "=x", "!=x", "a = (", "a in (1", "(a = 1", "a is nul", "not", "a = 1 or"} {
+		if _, err := ParseWhere(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}
@@ -73,11 +77,11 @@ func TestShapeFilters(t *testing.T) {
 		{Shape{Ops: []pb.Op{pb.Op_OP_INSERT, pb.Op_OP_BACKFILL}}, "[insert:1:paid insert:2:open backfill:3:paid reset]"},
 		// The new row decides; a delete is judged by its old row (here
 		// only the key is known, so note=paid fails), a truncate passes.
-		{Shape{Where: []Condition{{Column: "note", Value: "paid"}}}, "[insert:1:paid update:2:paid truncate backfill:3:paid reset]"},
-		{Shape{Where: []Condition{{Column: "id", Value: "1"}}}, "[insert:1:paid delete:1:<nil> truncate reset]"},
-		{Shape{Where: []Condition{{Column: "note", Value: "paid", Not: true}}}, "[insert:2:open delete:1:<nil> truncate reset]"},
-		{Shape{Where: []Condition{{Column: "missing", Value: "x", Not: true}}}, "[truncate reset]"},
-		{Shape{Ops: []pb.Op{pb.Op_OP_UPDATE}, Where: []Condition{{Column: "id", Value: "2"}}}, "[update:2:paid reset]"},
+		{Shape{Where: []*Expr{where(t, "note=paid")}}, "[insert:1:paid update:2:paid truncate backfill:3:paid reset]"},
+		{Shape{Where: []*Expr{where(t, "id=1")}}, "[insert:1:paid delete:1:<nil> truncate reset]"},
+		{Shape{Where: []*Expr{where(t, "note!=paid")}}, "[insert:2:open delete:1:<nil> truncate reset]"},
+		{Shape{Where: []*Expr{where(t, "missing!=x")}}, "[truncate reset]"},
+		{Shape{Ops: []pb.Op{pb.Op_OP_UPDATE}, Where: []*Expr{where(t, "id=2")}}, "[update:2:paid reset]"},
 	} {
 		got := normalize(shapeIDs(newShaper(tc.shape).Apply(changes)))
 		if fmt.Sprint(got) != tc.want {
@@ -155,7 +159,7 @@ func TestRunnerShapeSkips(t *testing.T) {
 		h.node.appendLocked(b)
 		h.node.mu.Unlock()
 	}
-	h.run(Config{Shape: Shape{Where: []Condition{{Column: "id", Value: "3", Not: true}}}})
+	h.run(Config{Shape: Shape{Where: []*Expr{where(t, "id != 3")}}})
 	h.waitRows("orders:1", "orders:2", "orders:4")
 	waitFor(t, "offset past the filtered entry", func() bool { return h.offset("test") >= 3 })
 }

@@ -40,6 +40,14 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0.
 - Filters and column projection per sink (design D21)
 - Named subscriptions: positions kept in the cluster (design D22)
 
+## v0.5 (in progress)
+
+- Filter expressions, renames and masks per sink (design D23)
+
 ## Next
 
-- More expressive filters and transforms (expressions, renames, masking)
+- ClickHouse mirror tables: one typed table per Postgres table, upserted
+  by primary key (design D12)
+- Kafka tombstones for deletes and key changes (design D20)
+- Hashing of column values with a secret key; deliver an update that
+  leaves a `where` filter as a delete (needs REPLICA IDENTITY FULL)

@@ -1,8 +1,8 @@
 package sink
 
 import (
-	"bytes"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -12,22 +12,32 @@ import (
 )
 
 // Shape filters and reshapes the changes of one sink before delivery
-// (design D21). Changes it removes are skipped like those of other tables:
-// the offset moves past them. Source resets always pass unchanged.
+// (designs D21, D23). Changes it removes are skipped like those of other
+// tables: the offset moves past them. Source resets always pass unchanged.
+// Every option names columns by their Postgres names.
 type Shape struct {
 	// Ops keeps only these operations; empty keeps all.
 	Ops []pb.Op
-	// Where keeps a change only if every condition holds on its new row
+	// Where keeps a change only if every expression is true on its new row
 	// (the old row for a delete). Truncates pass: they have no row.
-	Where []Condition
+	Where []*Expr
 	// Columns keeps only these columns, Drop removes these. Key columns
 	// are always kept: sinks need them to de-duplicate and mirror.
 	Columns []string
 	Drop    []string
+	// Mask replaces the values of these columns with "***" (NULL stays
+	// NULL). Key columns are not masked.
+	Mask []string
+	// Rename maps Postgres column names to the names the sink sees. It is
+	// not applied to a table that already has a column of the new name.
+	Rename map[string]string
 }
 
-// shaper applies a Shape, remembering projected schemas. Used by one
-// runner goroutine only.
+// maskValue replaces masked values.
+const maskValue = "***"
+
+// shaper applies a Shape, remembering reshaped schemas. Used by one runner
+// goroutine only.
 type shaper struct {
 	Shape
 	schemas map[uint64]*projection // by original schema id
@@ -35,28 +45,27 @@ type shaper struct {
 
 func newShaper(s Shape) *shaper { return &shaper{Shape: s, schemas: map[uint64]*projection{}} }
 
-// Condition compares a column's Postgres text value with Value. A NULL
-// equals nothing, so "!=" holds for it; an unchanged TOASTed value is
-// unknown and fails both.
-type Condition struct {
-	Column string
-	Value  string
-	Not    bool // "!=" instead of "="
-}
+// oldCondition is the first form of where (design D21): COLUMN=VALUE or
+// COLUMN!=VALUE with any value.
+var oldCondition = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)(!?=)(.*)$`)
 
-// ParseCondition parses "COLUMN=VALUE" or "COLUMN!=VALUE".
-func ParseCondition(s string) (Condition, error) {
-	i := strings.IndexByte(s, '=')
-	c := Condition{Value: s[i+1:]}
-	if i > 0 && s[i-1] == '!' {
-		c.Column, c.Not = s[:i-1], true
-	} else if i > 0 {
-		c.Column = s[:i]
+// ParseWhere compiles a where option: an expression (design D23), or a
+// COLUMN=VALUE / COLUMN!=VALUE of the first form whose value is taken as it
+// is (e.g. "name=John Smith", "note=").
+func ParseWhere(s string) (*Expr, error) {
+	e, err := ParseExpr(s)
+	if err == nil {
+		return e, nil
 	}
-	if i < 0 || c.Column == "" {
-		return Condition{}, fmt.Errorf("sink: bad condition %q (want COLUMN=VALUE or COLUMN!=VALUE)", s)
+	m := oldCondition.FindStringSubmatch(s)
+	if m == nil {
+		return nil, err
 	}
-	return c, nil
+	t := test{column: m[1], op: "=", values: []string{m[3]}}
+	if m[2] == "!=" {
+		t.op = "!="
+	}
+	return &Expr{src: s, root: t}, nil
 }
 
 // ParseOp parses an operation name as in the JSON form ("insert", ...).
@@ -68,18 +77,37 @@ func ParseOp(s string) (pb.Op, error) {
 	return pb.Op(op), nil
 }
 
-// projection maps a schema to its projected form.
+// ParseRename parses "OLD:NEW" pairs joined by "+".
+func ParseRename(s string) (map[string]string, error) {
+	out := map[string]string{}
+	seen := map[string]bool{}
+	for _, pair := range strings.Split(s, "+") {
+		from, to, ok := strings.Cut(pair, ":")
+		if !ok || from == "" || to == "" || from == to {
+			return nil, fmt.Errorf("sink: bad rename %q (want OLD:NEW, joined by +)", pair)
+		}
+		if _, dup := out[from]; dup || seen[to] {
+			return nil, fmt.Errorf("sink: rename %q: a column renamed twice, or two to one name", pair)
+		}
+		out[from], seen[to] = to, true
+	}
+	return out, nil
+}
+
+// projection maps a schema to its reshaped form.
 type projection struct {
 	schema *pb.Schema
-	keep   []int // indexes of the kept columns; nil keeps all
+	keep   []int  // indexes of the kept columns; nil keeps everything as is
+	mask   []bool // by kept position
 }
 
 // Empty reports whether the shape changes nothing.
 func (s Shape) Empty() bool {
-	return len(s.Ops) == 0 && len(s.Where) == 0 && len(s.Columns) == 0 && len(s.Drop) == 0
+	return len(s.Ops) == 0 && len(s.Where) == 0 && len(s.Columns) == 0 && len(s.Drop) == 0 &&
+		len(s.Mask) == 0 && len(s.Rename) == 0
 }
 
-// Apply returns the changes that pass, projected. It does not modify its
+// Apply returns the changes that pass, reshaped. It does not modify its
 // input.
 func (s *shaper) Apply(changes []event.Change) []event.Change {
 	if s.Empty() {
@@ -97,7 +125,7 @@ func (s *shaper) Apply(changes []event.Change) []event.Change {
 		if !s.matches(c) {
 			continue
 		}
-		out = append(out, s.project(c))
+		out = append(out, s.reshape(c))
 	}
 	return out
 }
@@ -110,78 +138,88 @@ func (s *shaper) matches(c event.Change) bool {
 	if c.Event.GetOp() == pb.Op_OP_DELETE {
 		row = c.Event.GetBefore()
 	}
-	if row == nil || c.Schema == nil {
-		return false
-	}
-	for _, cond := range s.Where {
-		i := slices.IndexFunc(c.Schema.GetColumns(), func(col *pb.Column) bool { return col.GetName() == cond.Column })
-		if i < 0 || i >= len(row.GetValues()) {
-			return false // the table has no such column
-		}
-		v := row.GetValues()[i]
-		var eq bool
-		switch v.GetKind() {
-		case pb.ValueKind_VALUE_KIND_NULL:
-			eq = false
-		case pb.ValueKind_VALUE_KIND_TEXT:
-			eq = bytes.Equal(v.GetData(), []byte(cond.Value))
-		default:
-			return false // unchanged TOAST or binary: unknown
-		}
-		if eq == cond.Not {
+	for _, e := range s.Where {
+		if !e.Eval(c.Schema, row) {
 			return false
 		}
 	}
 	return true
 }
 
-// project removes the columns the shape does not keep.
-func (s *shaper) project(c event.Change) event.Change {
-	if len(s.Columns) == 0 && len(s.Drop) == 0 || c.Schema == nil {
+// reshape projects, masks and renames.
+func (s *shaper) reshape(c event.Change) event.Change {
+	if len(s.Columns) == 0 && len(s.Drop) == 0 && len(s.Mask) == 0 && len(s.Rename) == 0 || c.Schema == nil {
 		return c
 	}
 	p := s.projectionOf(c.Schema)
 	if p.keep == nil {
 		return c
 	}
-	ev := &pb.Event{SchemaId: p.schema.GetId(), Op: c.Event.GetOp(), Before: pick(c.Event.GetBefore(), p.keep), After: pick(c.Event.GetAfter(), p.keep)}
+	ev := &pb.Event{SchemaId: p.schema.GetId(), Op: c.Event.GetOp(),
+		Before: pick(c.Event.GetBefore(), p.keep, p.mask), After: pick(c.Event.GetAfter(), p.keep, p.mask)}
 	c.Event, c.Schema = ev, p.schema
 	return c
 }
 
-func pick(r *pb.Row, keep []int) *pb.Row {
+func pick(r *pb.Row, keep []int, mask []bool) *pb.Row {
 	if r == nil {
 		return nil
 	}
 	out := &pb.Row{Values: make([]*pb.Value, 0, len(keep))}
-	for _, i := range keep {
-		if i < len(r.GetValues()) {
-			out.Values = append(out.Values, r.GetValues()[i])
+	for j, i := range keep {
+		if i >= len(r.GetValues()) {
+			continue
 		}
+		v := r.GetValues()[i]
+		if mask[j] && (v.GetKind() == pb.ValueKind_VALUE_KIND_TEXT || v.GetKind() == pb.ValueKind_VALUE_KIND_BINARY) {
+			v = &pb.Value{Kind: pb.ValueKind_VALUE_KIND_TEXT, Data: []byte(maskValue)}
+		}
+		out.Values = append(out.Values, v)
 	}
 	return out
 }
 
-// projectionOf returns the projected schema, computed once per schema.
+// oidText is the type a masked column gets in the reshaped schema.
+const oidText = 25
+
+// projectionOf returns the reshaped schema, computed once per schema.
 func (s *shaper) projectionOf(sc *pb.Schema) *projection {
 	if p, ok := s.schemas[sc.GetId()]; ok {
 		return p
 	}
-	p := &projection{schema: sc}
+	names := map[string]bool{}
+	for _, col := range sc.GetColumns() {
+		names[col.GetName()] = true
+	}
 	var keep []int
+	var mask []bool
 	var cols []*pb.Column
+	changed := false
 	for i, col := range sc.GetColumns() {
 		name := col.GetName()
-		if col.GetKey() || (len(s.Columns) == 0 || slices.Contains(s.Columns, name)) && !slices.Contains(s.Drop, name) {
-			keep = append(keep, i)
-			cols = append(cols, col)
+		if !col.GetKey() && (len(s.Columns) > 0 && !slices.Contains(s.Columns, name) || slices.Contains(s.Drop, name)) {
+			changed = true
+			continue
 		}
+		nc := &pb.Column{Name: name, TypeOid: col.GetTypeOid(), TypeModifier: col.GetTypeModifier(), Key: col.GetKey()}
+		m := !col.GetKey() && slices.Contains(s.Mask, name)
+		if m {
+			nc.TypeOid, nc.TypeModifier = oidText, -1
+		}
+		if to, ok := s.Rename[name]; ok && !names[to] {
+			nc.Name = to
+		}
+		if m || nc.Name != name {
+			changed = true
+		}
+		keep, mask, cols = append(keep, i), append(mask, m), append(cols, nc)
 	}
-	if len(keep) < len(sc.GetColumns()) {
+	p := &projection{schema: sc}
+	if changed {
 		ps := &pb.Schema{RelationOid: sc.GetRelationOid(), Namespace: sc.GetNamespace(), Name: sc.GetName(),
 			ReplicaIdentity: sc.GetReplicaIdentity(), Columns: cols}
 		ps.Id = fsm.SchemaID(ps)
-		p.schema, p.keep = ps, keep
+		p.schema, p.keep, p.mask = ps, keep, mask
 	}
 	s.schemas[sc.GetId()] = p
 	return p

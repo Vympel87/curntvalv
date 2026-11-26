@@ -43,7 +43,7 @@ type sinkSpec struct {
 }
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
-	"[,op=OP]...[,where=COL=VALUE|COL!=VALUE]...[,columns=A+B][,drop=A+B]" +
+	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,rename=OLD:NEW+...]" +
 	"[,database=DB][,into=TABLE] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
 	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512] (kafka)"
 
@@ -67,7 +67,7 @@ func sinkKeys(typ string) []string {
 func parseSinkSpec(s string) (sinkSpec, error) {
 	var sp sinkSpec
 	seen := map[string]bool{}
-	for _, part := range strings.Split(s, ",") {
+	for _, part := range splitSpec(s) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -125,11 +125,23 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			}
 			sp.shape.Ops = append(sp.shape.Ops, op)
 		case "where":
-			c, err := sink.ParseCondition(v)
+			e, err := sink.ParseWhere(v)
 			if err != nil {
 				return sinkSpec{}, usageErr("--sink: %v", err)
 			}
-			sp.shape.Where = append(sp.shape.Where, c)
+			sp.shape.Where = append(sp.shape.Where, e)
+		case "mask":
+			names := strings.Split(v, "+")
+			if slices.Contains(names, "") {
+				return sinkSpec{}, usageErr("--sink: mask wants column names joined by +")
+			}
+			sp.shape.Mask = names
+		case "rename":
+			m, err := sink.ParseRename(v)
+			if err != nil {
+				return sinkSpec{}, usageErr("--sink: %v", err)
+			}
+			sp.shape.Rename = m
 		case "columns", "drop":
 			names := strings.Split(v, "+")
 			if slices.Contains(names, "") {
@@ -164,6 +176,33 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 		}
 	}
 	return sp, nil
+}
+
+// splitSpec splits a --sink value at commas that are not inside
+// parentheses or quotes, so a where expression may hold "in (a, b)".
+func splitSpec(s string) []string {
+	var parts []string
+	depth, start := 0, 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')' && depth > 0:
+			depth--
+		case c == ',' && depth == 0:
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, s[start:])
 }
 
 // newSink builds the sink a spec describes. It does no I/O.
