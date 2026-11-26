@@ -125,7 +125,7 @@ func loadTable(ctx context.Context, conn *pgx.Conn, publication, name string, re
 // readChunk reads the rows after afterKey in primary key order, at most
 // limits.MaxEvents rows and about limits.MaxBytes, as Postgres text: the
 // form pgoutput sends. done means there are no more rows.
-func readChunk(ctx context.Context, conn *pgx.Conn, t tableInfo, afterKey [][]byte, limits Limits) (rows []*pb.Row, keys []string, lastKey [][]byte, done bool, err error) {
+func readChunk(ctx context.Context, conn queryer, t tableInfo, afterKey [][]byte, limits Limits) (rows []*pb.Row, keys []string, lastKey [][]byte, done bool, err error) {
 	cols := make([]string, 0, len(t.schema.GetColumns())+len(t.keyCols))
 	for _, c := range t.schema.GetColumns() {
 		cols = append(cols, pgx.Identifier{c.GetName()}.Sanitize())
@@ -189,6 +189,53 @@ func readChunk(ctx context.Context, conn *pgx.Conn, t tableInfo, afterKey [][]by
 		return nil, nil, nil, false, fmt.Errorf("pg: read %s: %w", t.qualified(), err)
 	}
 	return rows, keys, lastKey, !full && len(rows) < limits.MaxEvents, nil
+}
+
+// queryer runs a query: a connection or a transaction.
+type queryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// lateCommits counts the transactions that have committed but that the
+// snapshot of tx does not show. Postgres writes a commit record, then makes
+// the transaction visible: in between, it is in the snapshot's in-progress
+// list although its changes are in the WAL before anything written later.
+const lateCommits = `SELECT count(*) FROM pg_snapshot_xip(pg_current_snapshot()) AS x WHERE pg_xact_status(x) = 'committed'`
+
+// readChunkAfter reads a chunk in a snapshot that shows every transaction
+// committed before it was taken (see lateCommits), so no change stored
+// before the low watermark is missing from the rows (design D17). A
+// snapshot taken in such a moment is dropped and taken again.
+func readChunkAfter(ctx context.Context, conn *pgx.Conn, t tableInfo, afterKey [][]byte, limits Limits) (rows []*pb.Row, keys []string, lastKey [][]byte, done bool, err error) {
+	for attempt := 0; ; attempt++ {
+		tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return nil, nil, nil, false, fmt.Errorf("pg: read %s: %w", t.qualified(), err)
+		}
+		var late int
+		// The first statement takes the transaction's snapshot.
+		if err := tx.QueryRow(ctx, lateCommits).Scan(&late); err != nil {
+			tx.Rollback(ctx)
+			return nil, nil, nil, false, fmt.Errorf("pg: read %s: %w", t.qualified(), err)
+		}
+		if late > 0 {
+			tx.Rollback(ctx)
+			if attempt >= 1000 {
+				return nil, nil, nil, false, fmt.Errorf("pg: read %s: committed transactions stay invisible", t.qualified())
+			}
+			select {
+			case <-ctx.Done():
+				return nil, nil, nil, false, ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+			continue
+		}
+		rows, keys, lastKey, done, err = readChunk(ctx, tx, t, afterKey, limits)
+		if rerr := tx.Rollback(ctx); err == nil && rerr != nil {
+			err = fmt.Errorf("pg: read %s: %w", t.qualified(), rerr)
+		}
+		return rows, keys, lastKey, done, err
+	}
 }
 
 func emitWatermark(ctx context.Context, conn *pgx.Conn, content string) error {
@@ -315,7 +362,7 @@ func (s *Source) backfillChunk(ctx context.Context, conn *pgx.Conn, w *window, t
 	if err := emitWatermark(ctx, conn, "low "+c.nonce); err != nil {
 		return "", err
 	}
-	rows, keys, lastKey, done, err := readChunk(ctx, conn, t, c.afterKey, limits)
+	rows, keys, lastKey, done, err := readChunkAfter(ctx, conn, t, c.afterKey, limits)
 	if err != nil {
 		return "", err
 	}

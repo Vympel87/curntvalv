@@ -620,12 +620,26 @@ A backfill reads them from the table into the log, next to the stream.
   1. write the low watermark `low NONCE` and commit;
   2. `SELECT` the next rows after the stored key (`ORDER BY` the primary
      key, `LIMIT` 1000, stopping at 1 MiB), with the publication's row
-     filter and column list, in text format;
+     filter and column list, in text format, in a `REPEATABLE READ`
+     transaction whose snapshot shows every committed transaction (below);
   3. write the high watermark `high NONCE`.
   The stream sees the watermarks in commit order with everything else.
   Between them it remembers the primary keys of the table's changes; at the
   high watermark it drops chunk rows with those keys and stores the rest as
   `OP_BACKFILL` events of the watermark's transaction.
+- **A committed transaction the `SELECT` cannot see.** Postgres writes a
+  transaction's commit record, then makes it visible. A transaction W
+  whose commit record precedes the low watermark in the WAL but which is
+  not yet visible when the `SELECT` takes its snapshot is stored before
+  the window, so its keys are not dropped, yet the chunk holds the rows
+  without W: a replay would end with the older value. CI hit this once
+  (TestBackfillWithConcurrentWrites, v0.10 preparation); it is a window of
+  microseconds and did not show in many local runs. The read therefore
+  starts with `pg_snapshot_xip(pg_current_snapshot())` and
+  `pg_xact_status`: a snapshot that lists a committed transaction as in
+  progress is dropped and taken again (after 1 ms, at most 1000 times).
+  Transactions still running are no concern: they commit after the low
+  watermark, inside the window or after it.
 - **Why that is correct.** A chunk row whose key did not change between
   the watermarks had the same value at the `SELECT` (which ran between
   them) and at the high watermark, so storing it at the high watermark puts

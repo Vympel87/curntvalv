@@ -15,6 +15,14 @@ break compatibility.
 - Per-sink `batch`, `linger` and `max_rate` (design D33): larger
   deliveries, waiting for a full batch, and a bound on changes per second.
 
+### Fixed
+
+- Backfill (design D17): a transaction committing just before a chunk's
+  low watermark but not yet visible to the chunk's `SELECT` could leave a
+  row's older value as the last one in the log. Chunks are now read in a
+  snapshot checked to show every committed transaction. Affects 0.3 to
+  0.9.
+
 ### Changed
 
 - `make sinks-up` and CI start SeaweedFS as an S3-compatible store for the
