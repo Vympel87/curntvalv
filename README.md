@@ -241,7 +241,19 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `subject`, `stream` | NATS subject prefix (default `curntvalv`) and JetStream stream (default `curntvalv`, created if missing, capturing `<subject>.>`) |
 | `stream`, `maxlen` | Redis stream key (default `curntvalv`; `{table}` gives one stream per table) and approximate trim length (default: keep all) |
 | `index` | Meilisearch index uid (default `{namespace}_{table}`) |
+| `op` | Only these operations, repeatable: `insert`, `update`, `delete`, `truncate`, `backfill` |
+| `where` | Only rows where `COLUMN=VALUE` or `COLUMN!=VALUE` (Postgres text form; the new row, the old one for deletes); repeat for AND |
+| `columns`, `drop` | Keep only these columns, or remove these (`columns=id+note`, `drop=password+ssn`); key columns always stay |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
+
+For example, paid orders only, without personal data, to a search index:
+
+```bash
+--sink 'name=search,type=meilisearch,url=http://:KEY@meili:7700,table=orders,where=status=paid,drop=email+phone'
+```
+
+An update that moves a row out of a `where` filter is not delivered, so a
+mirror keeps the last matching version. Source resets pass every filter.
 
 Delivery is at-least-once: after a leader change some changes can arrive
 again. Every change has a stable `id` (`"<commit LSN>:<seq>"`). ClickHouse

@@ -53,6 +53,9 @@ type Config struct {
 	Type string
 	// Tables limits the changes delivered; empty means all tables.
 	Tables event.Filter
+	// Shape filters and projects the changes further (design D21); the
+	// zero value changes nothing.
+	Shape Shape
 	// StartLatest makes a new sink (one without a stored offset) skip the
 	// history and start with the next change. By default it starts with
 	// the oldest retained entry.
@@ -65,7 +68,7 @@ type Config struct {
 	// (defaults 100ms and 30s).
 	RetryMin, RetryMax time.Duration
 	// SkipCommitInterval is how often the offset is stored when entries are
-	// read but none of their changes pass Tables (default 1s).
+	// read but none of their changes pass Tables and Shape (default 1s).
 	SkipCommitInterval time.Duration
 	Logger             *slog.Logger
 }
@@ -102,6 +105,7 @@ type Runner struct {
 	node    Node
 	reader  Reader
 	offsets Offsets
+	shape   *shaper
 	log     *slog.Logger
 
 	mu     sync.Mutex
@@ -132,7 +136,7 @@ func NewRunner(cfg Config, s Sink, node Node, reader Reader, offsets Offsets) (*
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
 	return &Runner{
-		cfg: cfg, sink: s, node: node, reader: reader, offsets: offsets,
+		cfg: cfg, sink: s, node: node, reader: reader, offsets: offsets, shape: newShaper(cfg.Shape),
 		log:    cfg.Logger.With("component", "sink", "sink", cfg.Name),
 		status: Status{Name: cfg.Name, Type: cfg.Type, State: StateStandby},
 	}, nil
@@ -313,6 +317,7 @@ func (r *Runner) session(ctx context.Context) error {
 			return err
 		}
 		from = res.Next
+		res.Changes = r.shape.Apply(res.Changes)
 		if len(res.Changes) == 0 {
 			if res.TxEntries > 0 {
 				pending = res.Next - 1

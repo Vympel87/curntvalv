@@ -39,9 +39,11 @@ type sinkSpec struct {
 	maxLen            int64  // redis
 	index             string // meilisearch
 	topic, sasl       string // kafka
+	shape             sink.Shape
 }
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
+	"[,op=OP]...[,where=COL=VALUE|COL!=VALUE]...[,columns=A+B][,drop=A+B]" +
 	"[,database=DB][,into=TABLE] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
 	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512] (kafka)"
 
@@ -74,7 +76,7 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 		if !ok || v == "" {
 			return sinkSpec{}, usageErr("--sink: bad part %q, want KEY=VALUE (%s)", part, sinkUsage)
 		}
-		if seen[k] && k != "table" && k != "url" {
+		if seen[k] && !slices.Contains([]string{"table", "url", "op", "where"}, k) {
 			return sinkSpec{}, usageErr("--sink: %s given twice", k)
 		}
 		seen[k] = true
@@ -116,6 +118,28 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.maxLen = n
 		case "index":
 			sp.index = v
+		case "op":
+			op, err := sink.ParseOp(v)
+			if err != nil {
+				return sinkSpec{}, usageErr("--sink: %v", err)
+			}
+			sp.shape.Ops = append(sp.shape.Ops, op)
+		case "where":
+			c, err := sink.ParseCondition(v)
+			if err != nil {
+				return sinkSpec{}, usageErr("--sink: %v", err)
+			}
+			sp.shape.Where = append(sp.shape.Where, c)
+		case "columns", "drop":
+			names := strings.Split(v, "+")
+			if slices.Contains(names, "") {
+				return sinkSpec{}, usageErr("--sink: %s wants column names joined by +", k)
+			}
+			if k == "columns" {
+				sp.shape.Columns = names
+			} else {
+				sp.shape.Drop = names
+			}
 		case "topic":
 			sp.topic = v
 		case "sasl":
@@ -162,7 +186,7 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 }
 
 func sinkConfig(sp sinkSpec) sink.Config {
-	return sink.Config{Name: sp.name, Type: sp.typ, Tables: event.Filter(sp.tables), StartLatest: sp.startLatest}
+	return sink.Config{Name: sp.name, Type: sp.typ, Tables: event.Filter(sp.tables), StartLatest: sp.startLatest, Shape: sp.shape}
 }
 
 // repeatFlag collects every value of a repeated flag as is.

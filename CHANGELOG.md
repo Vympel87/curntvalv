@@ -17,6 +17,10 @@ break compatibility.
 - Kafka sink (`type=kafka`, design D20): a record per change keyed by the
   row's key, idempotent producer with `acks=all`, SASL PLAIN/SCRAM and TLS,
   several seed brokers. Adds the dependency franz-go v1.21.7.
+- Filters and projections per sink (design D21): `op=` and
+  `where=COL=VALUE` / `COL!=VALUE` keep only some changes, `columns=` and
+  `drop=` remove columns (key columns stay). Skipped changes still move
+  the sink's offset.
 - `make test-sinks` runs their tests against real servers in Docker; CI
   runs them too.
 

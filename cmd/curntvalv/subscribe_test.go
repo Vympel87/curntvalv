@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -111,6 +112,19 @@ func TestParseSinkSpec(t *testing.T) {
 	}
 	if _, err := newSink(sp); err != nil {
 		t.Fatal(err)
+	}
+	sh, err := parseSinkSpec("name=s,type=webhook,url=http://x,op=insert,op=update,where=status=paid,where=region!=eu,columns=id+note,drop=secret")
+	if err != nil || len(sh.shape.Ops) != 2 || len(sh.shape.Where) != 2 || !sh.shape.Where[1].Not ||
+		fmt.Sprint(sh.shape.Columns) != "[id note]" || fmt.Sprint(sh.shape.Drop) != "[secret]" {
+		t.Fatalf("shape: %+v %v", sh.shape, err)
+	}
+	if cfg := sinkConfig(sh); len(cfg.Shape.Ops) != 2 {
+		t.Fatalf("config %+v", cfg.Shape)
+	}
+	for _, bad := range []string{"op=upsert", "where=status", "columns=a++b", "drop=", "columns=a,columns=b"} {
+		if _, err := parseSinkSpec("name=s,type=webhook,url=http://x," + bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
 	}
 	kf, err := parseSinkSpec("name=bus,type=kafka,url=kafka://a:9092,url=kafka://b:9092,topic=cdc.{table},table=orders")
 	if err != nil || len(kf.urls) != 2 || kf.topic != "cdc.{table}" {

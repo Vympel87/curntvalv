@@ -38,6 +38,9 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0.
 - Sinks: NATS JetStream, Redis Streams, Meilisearch (design D19), Kafka
   (design D20)
 
+- Filters and column projection per sink (design D21)
+
 ## Next
 
-- Filters and simple transforms per sink
+- Server-side named subscriptions (offsets stored in the cluster)
+- More expressive filters and transforms (expressions, renames, masking)

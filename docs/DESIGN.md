@@ -800,6 +800,30 @@ A backfill reads them from the table into the log, next to the stream.
   reset, an unreachable broker. End to end with a leader kill: every change
   of the log is in the topic.
 
+### D21. Filters and projections per sink
+
+- **Where.** In the sink runner, after the log is read and the table filter
+  applied, before delivery, so every sink type has them and the log keeps
+  everything (a sink reset or a new sink can choose differently). Changes
+  a sink's shape removes are skipped like other tables' changes: the
+  offset moves past them, at most once a second while nothing passes.
+- **Filters.** `op=` (repeatable) keeps those operations. `where=COL=VALUE`
+  and `where=COL!=VALUE` (repeatable, all must hold) compare the column's
+  Postgres text value on the new row, or the old row for a delete; NULL
+  equals nothing, an unchanged TOASTed value is unknown and fails, a table
+  without the column fails, truncates pass (they have no row). An update
+  that moves a row out of the filter is not delivered, so a mirror keeps
+  the row as last seen: filtering on the old row too would need REPLICA
+  IDENTITY FULL, and the simple rule is predictable.
+- **Projection.** `columns=A+B` keeps only these columns, `drop=A+B`
+  removes them, in the row images and in the schema handed to the sink (a
+  new content-derived schema id). Key columns are always kept, because
+  sinks de-duplicate and mirror by them.
+- **Source resets always pass**: they tell a consumer that changes may be
+  missing, which a filter must not hide.
+- **Not done.** Expressions beyond equality, renames, hashing or masking
+  of values.
+
 ## 4. Data model
 
 ```
