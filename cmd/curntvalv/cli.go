@@ -537,15 +537,29 @@ func memberCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 		ctx, cancel := context.WithTimeout(ctx, cf.timeout)
 		defer cancel()
-		return onLeader(ctx, cf, func(ctx context.Context, c pb.AdminServiceClient) error {
-			r, err := c.RemoveMember(ctx, &pb.RemoveMemberRequest{Id: id})
-			if err == nil {
-				fmt.Fprintf(stdout, "node %d removed (index %d); stop it and remove its data directory\n", id, r.GetIndex())
-			}
-			return err
-		})
+		return removeMember(ctx, cf, max(2*time.Second, cf.timeout/3), id, stdout)
 	}
 	return usageErr(want)
+}
+
+// removeMember removes server id through the leader, waiting up to per for
+// each attempt. An attempt that timed out or lost its leader may still have
+// removed the server, so after one "not a member" means done.
+func removeMember(ctx context.Context, cf clientFlags, per time.Duration, id uint64, stdout io.Writer) error {
+	uncertain := false
+	return onLeaderWithin(ctx, cf, per, func(ctx context.Context, c pb.AdminServiceClient) error {
+		r, err := c.RemoveMember(ctx, &pb.RemoveMemberRequest{Id: id})
+		switch {
+		case err == nil:
+			fmt.Fprintf(stdout, "node %d removed (index %d); stop it and remove its data directory\n", id, r.GetIndex())
+		case uncertain && status.Code(err) == codes.InvalidArgument && strings.Contains(status.Convert(err).Message(), "is not a member"):
+			fmt.Fprintf(stdout, "node %d removed; stop it and remove its data directory\n", id)
+			return nil
+		case status.Code(err) == codes.Unavailable, status.Code(err) == codes.DeadlineExceeded:
+			uncertain = true
+		}
+		return err
+	})
 }
 
 // printMembers prints the cluster configuration as the leader sees it.

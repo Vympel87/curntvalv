@@ -30,6 +30,12 @@ break compatibility.
   `make sinks-down`.
 - `make test-upgrade` upgrades from v0.7.0.
 
+### Fixed
+
+- `curntvalv member remove` reported "not a member" when its first attempt
+  removed the server but answered after the per-attempt timeout; it now
+  reports the removal.
+
 ### Upgrading from 0.7
 
 - Nothing new is stored, so nodes can be upgraded one at a time. A node
