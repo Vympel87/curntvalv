@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
-## [Unreleased]
+## [0.9.0]
 
 ### Added
 
@@ -18,6 +18,13 @@ break compatibility.
 - ClickHouse mirror tables follow column type changes with
   `ALTER TABLE ... MODIFY COLUMN`; a changed key column stops the sink
   with an error instead of mirroring wrong values.
+
+### Upgrading from 0.8
+
+- Nothing new is stored, so nodes can be upgraded one at a time. A node
+  before 0.9 does not start with `schema_changes` in a `--sink`: add it
+  once every node runs 0.9. A subscriber asking an older node for schema
+  changes gets none.
 
 ## [0.8.0]
 

@@ -70,7 +70,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Hashed columns, rows leaving a filter as deletes | ✅ implemented (v0.6) |
 | Poison changes (`on_error=skip`), rolling upgrade test | ✅ implemented (v0.7) |
 | Whole transactions for sinks, Kafka and subscribers | ✅ implemented (v0.8) |
-| Schema change events, ClickHouse mirrors following type changes | ✅ on main, for v0.9 |
+| Schema change events, ClickHouse mirrors following type changes | ✅ implemented (v0.9) |
 
 ## Install
 

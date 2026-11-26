@@ -69,7 +69,7 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 - ClickHouse mirror tables follow type changes (`MODIFY COLUMN`); added
   columns were followed since v0.5
 
-## v0.10: archive and pacing
+## v0.10: archive and pacing (next)
 
 - An S3-compatible archive sink: JSON Lines, gzip, one object per table and
   time window, standard library only (SigV4 by hand)
