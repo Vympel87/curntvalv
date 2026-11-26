@@ -132,3 +132,53 @@ func TestKafkaReal(t *testing.T) {
 		t.Fatal("delivered to nowhere")
 	}
 }
+
+func TestKafkaTombstonesReal(t *testing.T) {
+	u := envOrSkip(t, "CURNTVALV_TEST_KAFKA_URL")
+	ctx := context.Background()
+	batch := changesOf(10,
+		op{op: pb.Op_OP_INSERT, id: "1", note: "a"},
+		op{op: pb.Op_OP_UPDATE, id: "2", note: "moved", oldID: "1"}, // key 1 -> 2
+		op{op: pb.Op_OP_UPDATE, id: "2", note: "again", oldID: "2"}, // same key (REPLICA IDENTITY FULL)
+		op{op: pb.Op_OP_DELETE, id: "2"},
+		op{op: pb.Op_OP_TRUNCATE})
+	for _, on := range []bool{true, false} {
+		name := uniqueName(t)
+		k, err := NewKafka(KafkaConfig{URLs: []string{u}, Topic: "test-" + name + ".{table}", Tombstones: on})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := k.Deliver(ctx, batch); err != nil {
+			t.Fatal(err)
+		}
+		k.Close()
+		var got []string
+		for _, r := range consumeAll(t, k.brokers, k.topicOf(batch[0])) {
+			v := "value"
+			if r.Value == nil {
+				v = "null"
+			}
+			got = append(got, fmt.Sprintf("%s %s %s", r.Key, header(r, "curntvalv-op"), v))
+		}
+		// One partition per key keeps its order; compare per key.
+		perKey := map[string][]string{}
+		for _, g := range got {
+			key, rest, _ := strings.Cut(g, " ")
+			perKey[key] = append(perKey[key], rest)
+		}
+		want := map[string]string{
+			`{"id":"1"}`: "[insert value tombstone null]",
+			`{"id":"2"}`: "[update value update value delete value tombstone null]",
+			``:           "[truncate value]",
+		}
+		if !on {
+			want[`{"id":"1"}`] = "[insert value]"
+			want[`{"id":"2"}`] = "[update value update value delete value]"
+		}
+		for key, w := range want {
+			if fmt.Sprint(perKey[key]) != w {
+				t.Errorf("tombstones=%v, key %q: %v, want %s", on, key, perKey[key], w)
+			}
+		}
+	}
+}

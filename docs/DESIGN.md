@@ -794,8 +794,7 @@ A backfill reads them from the table into the log, next to the stream.
   consumers de-duplicate on `curntvalv-id`. Transactions would fence an old
   leader's producer but not make the hand-over exactly once, because the
   sink offset lives in Raft, not in Kafka.
-- **Not done.** Deletes produce no tombstone, and a key change no
-  tombstone for the old key, so log-compacted topics keep deleted rows.
+- **Tombstones** for log-compacted topics are opt-in (D25).
 - **Testing.** Configuration, topics and keys in unit tests; against a
   real Kafka 3.9 (KRaft) with `make test-sinks`: order per key, headers, a
   reset, an unreachable broker. End to end with a leader kill: every change
@@ -927,6 +926,21 @@ A backfill reads them from the table into the log, next to the stream.
   truncate, a one-column and a two-column key. End to end with a leader
   kill: the mirror equals the Postgres table. A one-column key bug (ClickHouse
   does not take `('7')` as a tuple) was found only end to end.
+
+### D25. Kafka tombstones
+
+- **`tombstones=true`** on a Kafka sink follows each delete record with a
+  tombstone (the row's key, no value), and precedes an update that changes
+  the key with a tombstone for the old key, so a log-compacted topic drops
+  deleted and moved rows. Without it records are as in D20.
+- **Opt-in**, because the Kafka sink of v0.4.0 had none, and consumers that
+  do not expect records without a value would break.
+- A tombstone carries the change's `curntvalv-id` and `curntvalv-op:
+  tombstone`; it goes to the key's partition, so it follows the key's other
+  records. An update with REPLICA IDENTITY FULL whose key stays the same
+  gets none. Truncates and tables without a key get none (there is no key).
+- **Testing.** Against a real Kafka: the records of each key in order, with
+  and without the option; end to end in the stream sinks test.
 
 ## 4. Data model
 

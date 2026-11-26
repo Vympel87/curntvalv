@@ -1,6 +1,7 @@
 package sink
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -33,12 +34,13 @@ import (
 // after a leader change of the curntValv cluster a new producer may send
 // some changes again, and consumers de-duplicate on curntvalv-id.
 type Kafka struct {
-	brokers []string
-	shown   string
-	topic   string
-	tls     *tls.Config
-	mech    sasl.Mechanism
-	timeout time.Duration
+	brokers    []string
+	shown      string
+	topic      string
+	tombstones bool
+	tls        *tls.Config
+	mech       sasl.Mechanism
+	timeout    time.Duration
 
 	mu     sync.Mutex
 	client *kgo.Client
@@ -53,8 +55,12 @@ type KafkaConfig struct {
 	// "scram-sha-256" or "scram-sha-512".
 	SASL string
 	// Topic may contain "{table}". Default "curntvalv.{table}".
-	Topic   string
-	Timeout time.Duration
+	Topic string
+	// Tombstones follows each delete with a record without a value for the
+	// row's key, and precedes a key change with one for the old key, so log
+	// compaction removes deleted rows (design D25).
+	Tombstones bool
+	Timeout    time.Duration
 }
 
 // NewKafka returns a Kafka sink. It does no I/O.
@@ -62,7 +68,7 @@ func NewKafka(cfg KafkaConfig) (*Kafka, error) {
 	if len(cfg.URLs) == 0 {
 		return nil, errors.New("kafka: no broker url")
 	}
-	k := &Kafka{topic: cfg.Topic, timeout: cfg.Timeout}
+	k := &Kafka{topic: cfg.Topic, tombstones: cfg.Tombstones, timeout: cfg.Timeout}
 	var shown []string
 	for i, raw := range cfg.URLs {
 		u, err := url.Parse(raw)
@@ -139,11 +145,15 @@ func (k *Kafka) topicOf(c event.Change) string {
 // recordKey returns the row's key columns as a JSON object, or nil (no key
 // columns, truncate, source reset).
 func recordKey(c event.Change) ([]byte, error) {
-	s := c.Schema
 	row := c.Event.GetAfter()
 	if c.Event.GetOp() == pb.Op_OP_DELETE {
 		row = c.Event.GetBefore()
 	}
+	return rowKey(c.Schema, row)
+}
+
+// rowKey returns the key columns of a row as a JSON object, or nil.
+func rowKey(s *pb.Schema, row *pb.Row) ([]byte, error) {
 	if s == nil || row == nil {
 		return nil, nil
 	}
@@ -172,13 +182,21 @@ func recordKey(c event.Change) ([]byte, error) {
 	return b, nil
 }
 
+// tombstone returns a record without a value for key, so log compaction
+// removes the key's records (design D25).
+func tombstone(topic string, key []byte, c event.Change) *kgo.Record {
+	return &kgo.Record{Topic: topic, Key: key, Headers: []kgo.RecordHeader{
+		{Key: "curntvalv-id", Value: []byte(c.ID())}, {Key: "curntvalv-op", Value: []byte("tombstone")},
+	}}
+}
+
 // Deliver produces all changes and waits until every one is acknowledged.
 func (k *Kafka) Deliver(ctx context.Context, changes []event.Change) error {
 	if len(changes) == 0 {
 		return nil
 	}
-	recs := make([]*kgo.Record, len(changes))
-	for i, c := range changes {
+	recs := make([]*kgo.Record, 0, len(changes))
+	for _, c := range changes {
 		v, err := json.Marshal(c.JSON())
 		if err != nil {
 			return fmt.Errorf("kafka: encode: %w", err)
@@ -187,9 +205,23 @@ func (k *Kafka) Deliver(ctx context.Context, changes []event.Change) error {
 		if err != nil {
 			return err
 		}
-		recs[i] = &kgo.Record{Topic: k.topicOf(c), Key: key, Value: v, Headers: []kgo.RecordHeader{
+		topic := k.topicOf(c)
+		if k.tombstones && c.Event.GetOp() == pb.Op_OP_UPDATE && c.Event.GetBefore() != nil {
+			// The key changed: the old key's latest record must go.
+			old, err := rowKey(c.Schema, c.Event.GetBefore())
+			if err != nil {
+				return err
+			}
+			if old != nil && !bytes.Equal(old, key) {
+				recs = append(recs, tombstone(topic, old, c))
+			}
+		}
+		recs = append(recs, &kgo.Record{Topic: topic, Key: key, Value: v, Headers: []kgo.RecordHeader{
 			{Key: "curntvalv-id", Value: []byte(c.ID())}, {Key: "curntvalv-op", Value: []byte(c.Op())},
-		}}
+		}})
+		if k.tombstones && c.Event.GetOp() == pb.Op_OP_DELETE && key != nil {
+			recs = append(recs, tombstone(topic, key, c))
+		}
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()

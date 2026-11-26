@@ -269,6 +269,7 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `mask` | Replace these columns' values with `***` (`mask=email+phone`); NULL stays NULL, key columns are not masked |
 | `rename` | Rename columns in what the sink receives (`rename=status:state+note:comment`) |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
+| `tombstones` | Kafka: `true` sends a tombstone after each delete and for the old key of a key change (for compacted topics); default `false` |
 
 For example, paid orders only, without personal data, to a search index:
 
@@ -326,7 +327,9 @@ The other sinks:
   (`{"id":"5"}`) as record key so a row's changes stay in order, headers
   `curntvalv-id` and `curntvalv-op`. Idempotent producer with `acks=all`;
   after a leader change some records can repeat, so de-duplicate on
-  `curntvalv-id`. No tombstones for deletes yet.
+  `curntvalv-id`. With `tombstones=true` every delete is followed by a
+  tombstone (the key with a null value), and a key change sends one for the
+  old key, for log-compacted topics.
 
 ## Retention and replay
 

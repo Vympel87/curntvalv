@@ -20,6 +20,9 @@ break compatibility.
   (`ReplacingMergeTree(_version, _deleted)` by primary key), handling
   deletes, key changes, truncates, unchanged TOASTed values and new
   columns.
+- Kafka tombstones (design D25): `tombstones=true` follows each delete with
+  a tombstone and sends one for the old key of a key change, for
+  log-compacted topics. Off by default.
 
 ## [0.4.0]
 

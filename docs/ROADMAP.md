@@ -44,9 +44,9 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0.
 
 - Filter expressions, renames and masks per sink (design D23)
 - ClickHouse mirror tables (design D24)
+- Kafka tombstones (design D25)
 
 ## Next
 
-- Kafka tombstones for deletes and key changes (design D20)
 - Hashing of column values with a secret key; deliver an update that
   leaves a `where` filter as a delete (needs REPLICA IDENTITY FULL)

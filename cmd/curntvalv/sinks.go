@@ -40,13 +40,14 @@ type sinkSpec struct {
 	maxLen            int64  // redis
 	index             string // meilisearch
 	topic, sasl       string // kafka
+	tombstones        bool   // kafka
 	shape             sink.Shape
 }
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
 	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,rename=OLD:NEW+...]" +
 	"[,database=DB][,into=TABLE][,mode=changelog|mirror] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
-	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512] (kafka)"
+	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true] (kafka)"
 
 // sinkKeys lists the keys only some sink types take.
 func sinkKeys(typ string) []string {
@@ -60,7 +61,7 @@ func sinkKeys(typ string) []string {
 	case "meilisearch":
 		return []string{"index"}
 	case "kafka":
-		return []string{"topic", "sasl"}
+		return []string{"topic", "sasl", "tombstones"}
 	}
 	return nil
 }
@@ -162,6 +163,12 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.topic = v
 		case "sasl":
 			sp.sasl = v
+		case "tombstones":
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return sinkSpec{}, usageErr("--sink: tombstones must be true or false")
+			}
+			sp.tombstones = b
 		default:
 			return sinkSpec{}, usageErr("--sink: unknown key %q (%s)", k, sinkUsage)
 		}
@@ -176,7 +183,7 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 	case len(sp.urls) > 1 && sp.typ != "kafka":
 		return sinkSpec{}, usageErr("--sink %s: url given twice (only kafka takes several brokers)", sp.name)
 	}
-	for _, k := range []string{"database", "into", "mode", "subject", "stream", "maxlen", "index", "topic", "sasl"} {
+	for _, k := range []string{"database", "into", "mode", "subject", "stream", "maxlen", "index", "topic", "sasl", "tombstones"} {
 		if seen[k] && !slices.Contains(sinkKeys(sp.typ), k) {
 			return sinkSpec{}, usageErr("--sink %s: %s is not a %s option", sp.name, k, sp.typ)
 		}
@@ -225,7 +232,7 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 	case "meilisearch":
 		return sink.NewMeilisearch(sink.MeilisearchConfig{URL: sp.url, Index: sp.index})
 	case "kafka":
-		return sink.NewKafka(sink.KafkaConfig{URLs: sp.urls, Topic: sp.topic, SASL: sp.sasl})
+		return sink.NewKafka(sink.KafkaConfig{URLs: sp.urls, Topic: sp.topic, SASL: sp.sasl, Tombstones: sp.tombstones})
 	}
 	return nil, fmt.Errorf("unknown sink type %q", sp.typ)
 }

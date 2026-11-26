@@ -122,7 +122,7 @@ func TestEndToEndStreamSinks(t *testing.T) {
 		"--sink", "name=search,type=meilisearch,url="+meiliURL+",index="+name+"_{table}")
 	kafkaURL := os.Getenv("CURNTVALV_TEST_KAFKA_URL")
 	if kafkaURL != "" {
-		args = append(args, "--sink", "name=bus,type=kafka,url="+kafkaURL+",topic="+stream+".{table}")
+		args = append(args, "--sink", "name=bus,type=kafka,url="+kafkaURL+",topic="+stream+".{table},tombstones=true")
 	}
 	c := newE2EWith(t, f.env(), args...)
 	sub := c.subscribe("--table", f.table)

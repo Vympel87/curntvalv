@@ -139,6 +139,14 @@ func TestParseSinkSpec(t *testing.T) {
 			t.Errorf("%s accepted", bad)
 		}
 	}
+	if ts, err := parseSinkSpec("name=bus,type=kafka,url=kafka://a:9092,tombstones=true"); err != nil || !ts.tombstones {
+		t.Fatalf("tombstones: %+v %v", ts, err)
+	}
+	for _, bad := range []string{"name=bus,type=kafka,url=kafka://a,tombstones=maybe", "name=r,type=redis,url=redis://x,tombstones=true"} {
+		if _, err := parseSinkSpec(bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
 	mir, err := parseSinkSpec("name=olap,type=clickhouse,url=http://x,mode=mirror,into=pg_{table}")
 	if err != nil || !mir.mirror || mir.chTable != "pg_{table}" {
 		t.Fatalf("mirror: %+v %v", mir, err)
