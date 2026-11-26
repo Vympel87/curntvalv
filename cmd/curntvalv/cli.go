@@ -177,7 +177,8 @@ func statusCmd(ctx context.Context, args []string, stdout, stderr io.Writer) err
 // printPipeline prints the source and sinks as the leader (which runs them)
 // sees them. It is separated from the node table by an empty line.
 func printPipeline(out io.Writer, st *pb.StatusResponse) {
-	if st.GetSourceState() == "" && len(st.GetSinks()) == 0 && st.GetRetention() == nil && len(st.GetBackfills()) == 0 {
+	if st.GetSourceState() == "" && len(st.GetSinks()) == 0 && st.GetRetention() == nil && len(st.GetBackfills()) == 0 &&
+		len(st.GetSubscriptions()) == 0 {
 		return
 	}
 	fmt.Fprintln(out)
@@ -185,7 +186,11 @@ func printPipeline(out io.Writer, st *pb.StatusResponse) {
 		fmt.Fprintf(out, "RETENTION %s; log %s", retentionLimits(r), formatBytes(r.GetLogBytes()))
 		switch {
 		case r.GetBlockedBy() != "":
-			fmt.Fprintf(out, "; removable up to entry %d (held back by sink %s)", r.GetCompactLimit(), r.GetBlockedBy())
+			by := r.GetBlockedBy()
+			if !strings.HasPrefix(by, "subscription ") {
+				by = "sink " + by
+			}
+			fmt.Fprintf(out, "; removable up to entry %d (held back by %s)", r.GetCompactLimit(), by)
 		case r.GetCompactLimit() > 0:
 			fmt.Fprintf(out, "; removable up to entry %d", r.GetCompactLimit())
 		}
@@ -199,6 +204,9 @@ func printPipeline(out io.Writer, st *pb.StatusResponse) {
 		fmt.Fprintln(out)
 	}
 	printBackfills(out, st)
+	if len(st.GetSubscriptions()) > 0 {
+		printSubscriptions(out, st)
+	}
 	if len(st.GetSinks()) == 0 {
 		return
 	}
@@ -380,6 +388,76 @@ func backfillCmd(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		}
 		return err
 	})
+}
+
+// subscriptionCmd runs "subscription list", "subscription reset NAME --to
+// earliest|latest|INDEX" and "subscription delete NAME" (design D22).
+func subscriptionCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	const want = "want: subscription list | subscription reset NAME --to earliest|latest|INDEX | subscription delete NAME"
+	var to string
+	cf, pos, err := parseClientFlags("subscription", args, stderr, func(fs *flag.FlagSet) {
+		fs.StringVar(&to, "to", "", "with reset: earliest (everything retained), latest (skip to now) or a log index (the last entry counted as read)")
+	})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, cf.timeout)
+	defer cancel()
+	switch {
+	case len(pos) == 1 && pos[0] == "list":
+		return onLeader(ctx, cf, func(ctx context.Context, c pb.AdminServiceClient) error {
+			st, err := c.Status(ctx, &pb.StatusRequest{})
+			if err != nil {
+				return err
+			}
+			if st.GetState() != "leader" {
+				return status.Error(codes.FailedPrecondition, "not the leader")
+			}
+			printSubscriptions(stdout, st)
+			return nil
+		})
+	case len(pos) == 2 && pos[0] == "reset":
+		req := &pb.ResetSubscriptionRequest{Name: pos[1]}
+		switch to {
+		case "earliest":
+			req.Position = pb.ResetPosition_RESET_POSITION_EARLIEST
+		case "latest":
+			req.Position = pb.ResetPosition_RESET_POSITION_LATEST
+		default:
+			idx, err := strconv.ParseUint(to, 10, 64)
+			if err != nil {
+				return usageErr(want)
+			}
+			req.Position, req.Index = pb.ResetPosition_RESET_POSITION_INDEX, idx
+		}
+		return onLeader(ctx, cf, func(ctx context.Context, c pb.AdminServiceClient) error {
+			r, err := c.ResetSubscription(ctx, req)
+			if err == nil {
+				fmt.Fprintf(stdout, "subscription %s reset to offset %d, generation %d (index %d)\n", req.Name,
+					r.GetSubscription().GetOffset(), r.GetSubscription().GetGeneration(), r.GetIndex())
+			}
+			return err
+		})
+	case len(pos) == 2 && pos[0] == "delete":
+		return onLeader(ctx, cf, func(ctx context.Context, c pb.AdminServiceClient) error {
+			r, err := c.DeleteSubscription(ctx, &pb.DeleteSubscriptionRequest{Name: pos[1]})
+			if err == nil {
+				fmt.Fprintf(stdout, "subscription %s deleted (index %d)\n", pos[1], r.GetIndex())
+			}
+			return err
+		})
+	}
+	return usageErr(want)
+}
+
+// printSubscriptions lists the named subscriptions.
+func printSubscriptions(out io.Writer, st *pb.StatusResponse) {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SUBSCRIPTION\tPOLICY\tOFFSET\tLAG\tGENERATION")
+	for _, s := range st.GetSubscriptions() {
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\n", s.GetName(), s.GetPolicy(), s.GetOffset(), s.GetLag(), s.GetGeneration())
+	}
+	w.Flush()
 }
 
 // memberCmd runs "member add ID=HOST:PORT", "member remove ID" and
@@ -677,6 +755,9 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fs.SetOutput(stderr)
 	from := fs.Uint64("from", 0, "first log index (0 = oldest retained); use the last printed index + 1 to resume")
 	limit := fs.Int("limit", 0, "stop after this many events (0 = run until interrupted)")
+	name := fs.String("name", "", "a named subscription: the cluster keeps the position and the next run continues there (created on first use)")
+	start := fs.String("start", "earliest", "with a new --name: earliest (the oldest retained change) or latest (only new changes)")
+	policy := fs.String("policy", "block", "with a new --name: block (the log keeps what the subscription has not read) or drop")
 	var tables listFlag
 	fs.Var(&tables, "table", "table to receive, as NAME or NAMESPACE.NAME; repeat or comma separate (default: all)")
 	def := os.Getenv("CURNTVALV_ADDR")
@@ -691,6 +772,12 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if fs.NArg() > 0 {
 		return usageErr("subscribe takes no arguments")
 	}
+	if *start != "earliest" && *start != "latest" || *policy != "block" && *policy != "drop" {
+		return usageErr("--start is earliest or latest, --policy block or drop")
+	}
+	if *name != "" && *from != 0 {
+		return usageErr("--name continues from the stored position; leave out --from")
+	}
 	if err := cf.load(); err != nil {
 		return err
 	}
@@ -702,9 +789,10 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	enc := json.NewEncoder(stdout)
 	printed := 0
-	opts := client.Options{From: *from, Tables: tables, OnRetry: func(addr string, err error, next uint64) {
-		fmt.Fprintf(stderr, "subscribe: %s: %s; retrying from index %d\n", addr, status.Convert(err).Message(), next)
-	}}
+	opts := client.Options{From: *from, Tables: tables, Name: *name, StartLatest: *start == "latest", Drop: *policy == "drop",
+		OnRetry: func(addr string, err error, next uint64) {
+			fmt.Fprintf(stderr, "subscribe: %s: %s; retrying from index %d\n", addr, status.Convert(err).Message(), next)
+		}}
 	for ch, err := range c.Subscribe(ctx, opts) {
 		if err != nil {
 			return err

@@ -52,7 +52,7 @@ func subscribeClient(t *testing.T) (pb.SubscribeServiceClient, *scriptedReader) 
 	r := &scriptedReader{results: make(chan readResult, 10), calls: make(chan readCall, 100)}
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()
-	r.svc = NewSubscribe(r)
+	r.svc = NewSubscribe(r, nil, nil)
 	pb.RegisterSubscribeServiceServer(gs, r.svc)
 	go gs.Serve(lis)
 	t.Cleanup(gs.Stop)

@@ -203,6 +203,64 @@ func (ValueKind) EnumDescriptor() ([]byte, []int) {
 	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{2}
 }
 
+type SubscriptionCommand_Action int32
+
+const (
+	SubscriptionCommand_ACTION_UNSPECIFIED SubscriptionCommand_Action = 0
+	// Create name at offset with drop, unless it exists.
+	SubscriptionCommand_ACTION_CREATE SubscriptionCommand_Action = 1
+	// Move the offset forward, in generation only.
+	SubscriptionCommand_ACTION_COMMIT SubscriptionCommand_Action = 2
+	// Set the offset, also backwards, and start a new generation.
+	SubscriptionCommand_ACTION_RESET  SubscriptionCommand_Action = 3
+	SubscriptionCommand_ACTION_DELETE SubscriptionCommand_Action = 4
+)
+
+// Enum value maps for SubscriptionCommand_Action.
+var (
+	SubscriptionCommand_Action_name = map[int32]string{
+		0: "ACTION_UNSPECIFIED",
+		1: "ACTION_CREATE",
+		2: "ACTION_COMMIT",
+		3: "ACTION_RESET",
+		4: "ACTION_DELETE",
+	}
+	SubscriptionCommand_Action_value = map[string]int32{
+		"ACTION_UNSPECIFIED": 0,
+		"ACTION_CREATE":      1,
+		"ACTION_COMMIT":      2,
+		"ACTION_RESET":       3,
+		"ACTION_DELETE":      4,
+	}
+)
+
+func (x SubscriptionCommand_Action) Enum() *SubscriptionCommand_Action {
+	p := new(SubscriptionCommand_Action)
+	*p = x
+	return p
+}
+
+func (x SubscriptionCommand_Action) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SubscriptionCommand_Action) Descriptor() protoreflect.EnumDescriptor {
+	return file_curntvalv_v1_event_proto_enumTypes[3].Descriptor()
+}
+
+func (SubscriptionCommand_Action) Type() protoreflect.EnumType {
+	return &file_curntvalv_v1_event_proto_enumTypes[3]
+}
+
+func (x SubscriptionCommand_Action) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SubscriptionCommand_Action.Descriptor instead.
+func (SubscriptionCommand_Action) EnumDescriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{11, 0}
+}
+
 // TxBatch holds the row changes of one Postgres transaction, or a part of it.
 // A large transaction is split into several batches with consecutive event
 // sequence numbers; only the last one has final = true (design D1).
@@ -1035,6 +1093,166 @@ func (x *Column) GetKey() bool {
 	return false
 }
 
+// Subscription is the replicated state of a named subscription (design
+// D22): a position stored in the cluster for a subscriber.
+type Subscription struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Last log index the subscriber has processed; 0 means nothing: it
+	// starts with the oldest retained entry.
+	Offset uint64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	// Counts resets; a commit for another generation is ignored.
+	Generation uint64 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	// false: retention keeps what the subscription has not read (block).
+	Drop bool `protobuf:"varint,4,opt,name=drop,proto3" json:"drop,omitempty"`
+	// Raft index of the command that created it.
+	CreatedIndex  uint64 `protobuf:"varint,5,opt,name=created_index,json=createdIndex,proto3" json:"created_index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Subscription) Reset() {
+	*x = Subscription{}
+	mi := &file_curntvalv_v1_event_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Subscription) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Subscription) ProtoMessage() {}
+
+func (x *Subscription) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_event_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Subscription.ProtoReflect.Descriptor instead.
+func (*Subscription) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *Subscription) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Subscription) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *Subscription) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *Subscription) GetDrop() bool {
+	if x != nil {
+		return x.Drop
+	}
+	return false
+}
+
+func (x *Subscription) GetCreatedIndex() uint64 {
+	if x != nil {
+		return x.CreatedIndex
+	}
+	return 0
+}
+
+// SubscriptionCommand is the metadata command that changes subscriptions.
+type SubscriptionCommand struct {
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	Action        SubscriptionCommand_Action `protobuf:"varint,1,opt,name=action,proto3,enum=curntvalv.v1.SubscriptionCommand_Action" json:"action,omitempty"`
+	Name          string                     `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Offset        uint64                     `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	Generation    uint64                     `protobuf:"varint,4,opt,name=generation,proto3" json:"generation,omitempty"`
+	Drop          bool                       `protobuf:"varint,5,opt,name=drop,proto3" json:"drop,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscriptionCommand) Reset() {
+	*x = SubscriptionCommand{}
+	mi := &file_curntvalv_v1_event_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscriptionCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscriptionCommand) ProtoMessage() {}
+
+func (x *SubscriptionCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_event_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscriptionCommand.ProtoReflect.Descriptor instead.
+func (*SubscriptionCommand) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SubscriptionCommand) GetAction() SubscriptionCommand_Action {
+	if x != nil {
+		return x.Action
+	}
+	return SubscriptionCommand_ACTION_UNSPECIFIED
+}
+
+func (x *SubscriptionCommand) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SubscriptionCommand) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *SubscriptionCommand) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *SubscriptionCommand) GetDrop() bool {
+	if x != nil {
+		return x.Drop
+	}
+	return false
+}
+
 var File_curntvalv_v1_event_proto protoreflect.FileDescriptor
 
 const file_curntvalv_v1_event_proto_rawDesc = "" +
@@ -1106,7 +1324,29 @@ const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
 	"\btype_oid\x18\x02 \x01(\rR\atypeOid\x12#\n" +
 	"\rtype_modifier\x18\x03 \x01(\x05R\ftypeModifier\x12\x10\n" +
-	"\x03key\x18\x04 \x01(\bR\x03key*\x9d\x01\n" +
+	"\x03key\x18\x04 \x01(\bR\x03key\"\x93\x01\n" +
+	"\fSubscription\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x04R\x06offset\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x03 \x01(\x04R\n" +
+	"generation\x12\x12\n" +
+	"\x04drop\x18\x04 \x01(\bR\x04drop\x12#\n" +
+	"\rcreated_index\x18\x05 \x01(\x04R\fcreatedIndex\"\xa4\x02\n" +
+	"\x13SubscriptionCommand\x12@\n" +
+	"\x06action\x18\x01 \x01(\x0e2(.curntvalv.v1.SubscriptionCommand.ActionR\x06action\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x04R\x06offset\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x04 \x01(\x04R\n" +
+	"generation\x12\x12\n" +
+	"\x04drop\x18\x05 \x01(\bR\x04drop\"k\n" +
+	"\x06Action\x12\x16\n" +
+	"\x12ACTION_UNSPECIFIED\x10\x00\x12\x11\n" +
+	"\rACTION_CREATE\x10\x01\x12\x11\n" +
+	"\rACTION_COMMIT\x10\x02\x12\x10\n" +
+	"\fACTION_RESET\x10\x03\x12\x11\n" +
+	"\rACTION_DELETE\x10\x04*\x9d\x01\n" +
 	"\rBackfillState\x12\x1e\n" +
 	"\x1aBACKFILL_STATE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16BACKFILL_STATE_PENDING\x10\x01\x12\x17\n" +
@@ -1140,40 +1380,44 @@ func file_curntvalv_v1_event_proto_rawDescGZIP() []byte {
 	return file_curntvalv_v1_event_proto_rawDescData
 }
 
-var file_curntvalv_v1_event_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_curntvalv_v1_event_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_curntvalv_v1_event_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_curntvalv_v1_event_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_curntvalv_v1_event_proto_goTypes = []any{
-	(BackfillState)(0),      // 0: curntvalv.v1.BackfillState
-	(Op)(0),                 // 1: curntvalv.v1.Op
-	(ValueKind)(0),          // 2: curntvalv.v1.ValueKind
-	(*TxBatch)(nil),         // 3: curntvalv.v1.TxBatch
-	(*BackfillChunk)(nil),   // 4: curntvalv.v1.BackfillChunk
-	(*Backfill)(nil),        // 5: curntvalv.v1.Backfill
-	(*BackfillCommand)(nil), // 6: curntvalv.v1.BackfillCommand
-	(*Event)(nil),           // 7: curntvalv.v1.Event
-	(*SourceReset)(nil),     // 8: curntvalv.v1.SourceReset
-	(*Row)(nil),             // 9: curntvalv.v1.Row
-	(*Value)(nil),           // 10: curntvalv.v1.Value
-	(*Schema)(nil),          // 11: curntvalv.v1.Schema
-	(*Column)(nil),          // 12: curntvalv.v1.Column
+	(BackfillState)(0),              // 0: curntvalv.v1.BackfillState
+	(Op)(0),                         // 1: curntvalv.v1.Op
+	(ValueKind)(0),                  // 2: curntvalv.v1.ValueKind
+	(SubscriptionCommand_Action)(0), // 3: curntvalv.v1.SubscriptionCommand.Action
+	(*TxBatch)(nil),                 // 4: curntvalv.v1.TxBatch
+	(*BackfillChunk)(nil),           // 5: curntvalv.v1.BackfillChunk
+	(*Backfill)(nil),                // 6: curntvalv.v1.Backfill
+	(*BackfillCommand)(nil),         // 7: curntvalv.v1.BackfillCommand
+	(*Event)(nil),                   // 8: curntvalv.v1.Event
+	(*SourceReset)(nil),             // 9: curntvalv.v1.SourceReset
+	(*Row)(nil),                     // 10: curntvalv.v1.Row
+	(*Value)(nil),                   // 11: curntvalv.v1.Value
+	(*Schema)(nil),                  // 12: curntvalv.v1.Schema
+	(*Column)(nil),                  // 13: curntvalv.v1.Column
+	(*Subscription)(nil),            // 14: curntvalv.v1.Subscription
+	(*SubscriptionCommand)(nil),     // 15: curntvalv.v1.SubscriptionCommand
 }
 var file_curntvalv_v1_event_proto_depIdxs = []int32{
-	11, // 0: curntvalv.v1.TxBatch.schemas:type_name -> curntvalv.v1.Schema
-	7,  // 1: curntvalv.v1.TxBatch.events:type_name -> curntvalv.v1.Event
-	4,  // 2: curntvalv.v1.TxBatch.backfill:type_name -> curntvalv.v1.BackfillChunk
+	12, // 0: curntvalv.v1.TxBatch.schemas:type_name -> curntvalv.v1.Schema
+	8,  // 1: curntvalv.v1.TxBatch.events:type_name -> curntvalv.v1.Event
+	5,  // 2: curntvalv.v1.TxBatch.backfill:type_name -> curntvalv.v1.BackfillChunk
 	0,  // 3: curntvalv.v1.Backfill.state:type_name -> curntvalv.v1.BackfillState
 	1,  // 4: curntvalv.v1.Event.op:type_name -> curntvalv.v1.Op
-	9,  // 5: curntvalv.v1.Event.before:type_name -> curntvalv.v1.Row
-	9,  // 6: curntvalv.v1.Event.after:type_name -> curntvalv.v1.Row
-	8,  // 7: curntvalv.v1.Event.source_reset:type_name -> curntvalv.v1.SourceReset
-	10, // 8: curntvalv.v1.Row.values:type_name -> curntvalv.v1.Value
+	10, // 5: curntvalv.v1.Event.before:type_name -> curntvalv.v1.Row
+	10, // 6: curntvalv.v1.Event.after:type_name -> curntvalv.v1.Row
+	9,  // 7: curntvalv.v1.Event.source_reset:type_name -> curntvalv.v1.SourceReset
+	11, // 8: curntvalv.v1.Row.values:type_name -> curntvalv.v1.Value
 	2,  // 9: curntvalv.v1.Value.kind:type_name -> curntvalv.v1.ValueKind
-	12, // 10: curntvalv.v1.Schema.columns:type_name -> curntvalv.v1.Column
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	13, // 10: curntvalv.v1.Schema.columns:type_name -> curntvalv.v1.Column
+	3,  // 11: curntvalv.v1.SubscriptionCommand.action:type_name -> curntvalv.v1.SubscriptionCommand.Action
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_curntvalv_v1_event_proto_init() }
@@ -1186,8 +1430,8 @@ func file_curntvalv_v1_event_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_curntvalv_v1_event_proto_rawDesc), len(file_curntvalv_v1_event_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   10,
+			NumEnums:      4,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

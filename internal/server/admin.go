@@ -36,6 +36,8 @@ type Meta interface {
 	SinkPosition(name string) (fsm.SinkPosition, bool)
 	LastChange() uint64
 	Backfills() []*pb.Backfill
+	Subscriptions() []*pb.Subscription
+	Subscription(name string) (*pb.Subscription, bool)
 }
 
 // Health reports this node's pipeline components for Status.
@@ -127,6 +129,17 @@ func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResp
 		resp.Members = append(resp.Members, pm)
 	}
 	resp.LeaderAddr = a.addr(st, st.Leader)
+	last := a.meta.LastChange()
+	for _, sub := range a.meta.Subscriptions() {
+		ss := &pb.SubscriptionStatus{Name: sub.GetName(), Offset: sub.GetOffset(), Generation: sub.GetGeneration(), Policy: "block"}
+		if sub.GetDrop() {
+			ss.Policy = "drop"
+		}
+		if last > sub.GetOffset() {
+			ss.Lag = last - sub.GetOffset()
+		}
+		resp.Subscriptions = append(resp.Subscriptions, ss)
+	}
 	if a.health != nil {
 		resp.SourceState, resp.SourceError = a.health.Source()
 		resp.Sinks = a.health.Sinks()
@@ -318,6 +331,57 @@ func (a *Admin) CancelBackfill(ctx context.Context, req *pb.CancelBackfillReques
 		return nil, a.sourceError(err)
 	}
 	return &pb.CancelBackfillResponse{Index: idx, Tables: names}, nil
+}
+
+// ResetSubscription moves a named subscription and starts a new
+// generation; running subscribers notice on their next commit.
+func (a *Admin) ResetSubscription(ctx context.Context, req *pb.ResetSubscriptionRequest) (*pb.ResetSubscriptionResponse, error) {
+	idx, err := a.node.ReadIndex(ctx)
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	if _, ok := a.meta.Subscription(req.GetName()); !ok {
+		return nil, status.Errorf(codes.NotFound, "no subscription %q", req.GetName())
+	}
+	var offset uint64
+	switch req.GetPosition() {
+	case pb.ResetPosition_RESET_POSITION_EARLIEST:
+	case pb.ResetPosition_RESET_POSITION_LATEST:
+		offset = idx
+	case pb.ResetPosition_RESET_POSITION_INDEX:
+		offset = req.GetIndex()
+	default:
+		return nil, status.Error(codes.InvalidArgument, "position must be earliest, latest or an index")
+	}
+	data, err := fsm.EncodeSubscription(&pb.SubscriptionCommand{Action: pb.SubscriptionCommand_ACTION_RESET, Name: req.GetName(), Offset: offset})
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	at, err := a.node.Propose(ctx, data)
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	sub, _ := a.meta.Subscription(req.GetName())
+	return &pb.ResetSubscriptionResponse{Index: at, Subscription: sub}, nil
+}
+
+// DeleteSubscription removes a named subscription.
+func (a *Admin) DeleteSubscription(ctx context.Context, req *pb.DeleteSubscriptionRequest) (*pb.DeleteSubscriptionResponse, error) {
+	if _, err := a.node.ReadIndex(ctx); err != nil {
+		return nil, a.toStatus(err)
+	}
+	if _, ok := a.meta.Subscription(req.GetName()); !ok {
+		return nil, status.Errorf(codes.NotFound, "no subscription %q", req.GetName())
+	}
+	data, err := fsm.EncodeSubscription(&pb.SubscriptionCommand{Action: pb.SubscriptionCommand_ACTION_DELETE, Name: req.GetName()})
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	at, err := a.node.Propose(ctx, data)
+	if err != nil {
+		return nil, a.toStatus(err)
+	}
+	return &pb.DeleteSubscriptionResponse{Index: at}, nil
 }
 
 // AddMember adds a server as a learner and makes it a voter once it has

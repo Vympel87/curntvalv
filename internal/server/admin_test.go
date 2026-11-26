@@ -408,3 +408,83 @@ func TestMembers(t *testing.T) {
 		t.Fatalf("%v", mb)
 	}
 }
+
+func TestNamedSubscriptions(t *testing.T) {
+	f := fsm.New()
+	n := &fakeNode{f: f}
+	ctx := context.Background()
+	s := NewSubscribe(nil, n, f)
+	if _, err := NewSubscribe(nil, nil, nil).JoinSubscription(ctx, &pb.JoinSubscriptionRequest{Name: "a"}); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("without node: %v", err)
+	}
+	if _, err := s.JoinSubscription(ctx, &pb.JoinSubscriptionRequest{Name: "Bad"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("bad name: %v", err)
+	}
+	if _, err := s.JoinSubscription(ctx, &pb.JoinSubscriptionRequest{Name: "billing", MustExist: true}); status.Code(err) != codes.NotFound {
+		t.Fatalf("must exist: %v", err)
+	}
+	// Some entries, then a subscription from the latest one.
+	for range 3 {
+		b, _ := fsm.EncodePut("k", []byte("v"))
+		n.Propose(ctx, b)
+	}
+	j, err := s.JoinSubscription(ctx, &pb.JoinSubscriptionRequest{Name: "billing", Start: pb.SubscriptionStart_SUBSCRIPTION_START_LATEST})
+	if err != nil || !j.GetCreated() || j.GetSubscription().GetOffset() != 3 {
+		t.Fatalf("%v %v", j, err)
+	}
+	// Joining again changes nothing, whatever it asks for.
+	j, err = s.JoinSubscription(ctx, &pb.JoinSubscriptionRequest{Name: "billing", Drop: true})
+	if err != nil || j.GetCreated() || j.GetSubscription().GetOffset() != 3 || j.GetSubscription().GetDrop() {
+		t.Fatalf("again: %v %v", j, err)
+	}
+	if _, err := s.CommitSubscription(ctx, &pb.CommitSubscriptionRequest{Name: "billing", Offset: 9}); err != nil {
+		t.Fatal(err)
+	}
+	before := n.index
+	if _, err := s.CommitSubscription(ctx, &pb.CommitSubscriptionRequest{Name: "billing", Offset: 5}); err != nil || n.index != before {
+		t.Fatalf("a commit backwards must not write: %v", err)
+	}
+	if _, err := s.CommitSubscription(ctx, &pb.CommitSubscriptionRequest{Name: "nope", Offset: 5}); status.Code(err) != codes.NotFound {
+		t.Fatalf("unknown: %v", err)
+	}
+
+	a := NewAdmin(n, n, f, fakeHealth{}, nil, nil, nil)
+	r, err := a.ResetSubscription(ctx, &pb.ResetSubscriptionRequest{Name: "billing", Position: pb.ResetPosition_RESET_POSITION_EARLIEST})
+	if err != nil || r.GetSubscription().GetOffset() != 0 || r.GetSubscription().GetGeneration() != 1 {
+		t.Fatalf("reset %v %v", r, err)
+	}
+	if _, err := s.CommitSubscription(ctx, &pb.CommitSubscriptionRequest{Name: "billing", Generation: 0, Offset: 12}); status.Code(err) != codes.Aborted {
+		t.Fatalf("commit after a reset: %v", err)
+	}
+	if _, err := a.ResetSubscription(ctx, &pb.ResetSubscriptionRequest{Name: "billing", Position: pb.ResetPosition_RESET_POSITION_INDEX, Index: 2}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.Status(ctx, &pb.StatusRequest{})
+	if err != nil || len(st.GetSubscriptions()) != 1 {
+		t.Fatalf("%v %v", st, err)
+	}
+	if ss := st.GetSubscriptions()[0]; ss.GetName() != "billing" || ss.GetOffset() != 2 || ss.GetGeneration() != 2 || ss.GetPolicy() != "block" {
+		t.Fatalf("%v", ss)
+	}
+	if _, err := a.DeleteSubscription(ctx, &pb.DeleteSubscriptionRequest{Name: "billing"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range []error{
+		func() error {
+			_, err := a.DeleteSubscription(ctx, &pb.DeleteSubscriptionRequest{Name: "billing"})
+			return err
+		}(),
+		func() error {
+			_, err := a.ResetSubscription(ctx, &pb.ResetSubscriptionRequest{Name: "billing", Position: pb.ResetPosition_RESET_POSITION_LATEST})
+			return err
+		}(),
+		func() error {
+			_, err := s.CommitSubscription(ctx, &pb.CommitSubscriptionRequest{Name: "billing", Generation: 2, Offset: 20})
+			return err
+		}(),
+	} {
+		if status.Code(err) != codes.NotFound {
+			t.Errorf("after delete: %v", err)
+		}
+	}
+}

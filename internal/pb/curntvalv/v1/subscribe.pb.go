@@ -21,6 +21,276 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type SubscriptionStart int32
+
+const (
+	SubscriptionStart_SUBSCRIPTION_START_UNSPECIFIED SubscriptionStart = 0
+	// A new subscription starts with the oldest retained entry (default).
+	SubscriptionStart_SUBSCRIPTION_START_EARLIEST SubscriptionStart = 1
+	// A new subscription starts with the next committed entry.
+	SubscriptionStart_SUBSCRIPTION_START_LATEST SubscriptionStart = 2
+)
+
+// Enum value maps for SubscriptionStart.
+var (
+	SubscriptionStart_name = map[int32]string{
+		0: "SUBSCRIPTION_START_UNSPECIFIED",
+		1: "SUBSCRIPTION_START_EARLIEST",
+		2: "SUBSCRIPTION_START_LATEST",
+	}
+	SubscriptionStart_value = map[string]int32{
+		"SUBSCRIPTION_START_UNSPECIFIED": 0,
+		"SUBSCRIPTION_START_EARLIEST":    1,
+		"SUBSCRIPTION_START_LATEST":      2,
+	}
+)
+
+func (x SubscriptionStart) Enum() *SubscriptionStart {
+	p := new(SubscriptionStart)
+	*p = x
+	return p
+}
+
+func (x SubscriptionStart) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SubscriptionStart) Descriptor() protoreflect.EnumDescriptor {
+	return file_curntvalv_v1_subscribe_proto_enumTypes[0].Descriptor()
+}
+
+func (SubscriptionStart) Type() protoreflect.EnumType {
+	return &file_curntvalv_v1_subscribe_proto_enumTypes[0]
+}
+
+func (x SubscriptionStart) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SubscriptionStart.Descriptor instead.
+func (SubscriptionStart) EnumDescriptor() ([]byte, []int) {
+	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{0}
+}
+
+type JoinSubscriptionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// For a new subscription only.
+	Start SubscriptionStart `protobuf:"varint,2,opt,name=start,proto3,enum=curntvalv.v1.SubscriptionStart" json:"start,omitempty"`
+	Drop  bool              `protobuf:"varint,3,opt,name=drop,proto3" json:"drop,omitempty"`
+	// Do not create it: NOT_FOUND if it does not exist.
+	MustExist     bool `protobuf:"varint,4,opt,name=must_exist,json=mustExist,proto3" json:"must_exist,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinSubscriptionRequest) Reset() {
+	*x = JoinSubscriptionRequest{}
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinSubscriptionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinSubscriptionRequest) ProtoMessage() {}
+
+func (x *JoinSubscriptionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinSubscriptionRequest.ProtoReflect.Descriptor instead.
+func (*JoinSubscriptionRequest) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *JoinSubscriptionRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *JoinSubscriptionRequest) GetStart() SubscriptionStart {
+	if x != nil {
+		return x.Start
+	}
+	return SubscriptionStart_SUBSCRIPTION_START_UNSPECIFIED
+}
+
+func (x *JoinSubscriptionRequest) GetDrop() bool {
+	if x != nil {
+		return x.Drop
+	}
+	return false
+}
+
+func (x *JoinSubscriptionRequest) GetMustExist() bool {
+	if x != nil {
+		return x.MustExist
+	}
+	return false
+}
+
+type JoinSubscriptionResponse struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Subscription *Subscription          `protobuf:"bytes,1,opt,name=subscription,proto3" json:"subscription,omitempty"`
+	// The subscription did not exist before.
+	Created       bool `protobuf:"varint,2,opt,name=created,proto3" json:"created,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinSubscriptionResponse) Reset() {
+	*x = JoinSubscriptionResponse{}
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinSubscriptionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinSubscriptionResponse) ProtoMessage() {}
+
+func (x *JoinSubscriptionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinSubscriptionResponse.ProtoReflect.Descriptor instead.
+func (*JoinSubscriptionResponse) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *JoinSubscriptionResponse) GetSubscription() *Subscription {
+	if x != nil {
+		return x.Subscription
+	}
+	return nil
+}
+
+func (x *JoinSubscriptionResponse) GetCreated() bool {
+	if x != nil {
+		return x.Created
+	}
+	return false
+}
+
+type CommitSubscriptionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Generation    uint64                 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Offset        uint64                 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommitSubscriptionRequest) Reset() {
+	*x = CommitSubscriptionRequest{}
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommitSubscriptionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommitSubscriptionRequest) ProtoMessage() {}
+
+func (x *CommitSubscriptionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommitSubscriptionRequest.ProtoReflect.Descriptor instead.
+func (*CommitSubscriptionRequest) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CommitSubscriptionRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CommitSubscriptionRequest) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *CommitSubscriptionRequest) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+type CommitSubscriptionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CommitSubscriptionResponse) Reset() {
+	*x = CommitSubscriptionResponse{}
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CommitSubscriptionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CommitSubscriptionResponse) ProtoMessage() {}
+
+func (x *CommitSubscriptionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CommitSubscriptionResponse.ProtoReflect.Descriptor instead.
+func (*CommitSubscriptionResponse) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{3}
+}
+
 type SubscribeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// First log index to read; 0 means the oldest retained entry.
@@ -34,7 +304,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[0]
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -46,7 +316,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[0]
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -59,7 +329,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{0}
+	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SubscribeRequest) GetFromIndex() uint64 {
@@ -90,7 +360,7 @@ type SubscribeResponse struct {
 
 func (x *SubscribeResponse) Reset() {
 	*x = SubscribeResponse{}
-	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[1]
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -102,7 +372,7 @@ func (x *SubscribeResponse) String() string {
 func (*SubscribeResponse) ProtoMessage() {}
 
 func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[1]
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -115,7 +385,7 @@ func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{1}
+	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SubscribeResponse) GetEvents() []*ChangeEvent {
@@ -158,7 +428,7 @@ type ChangeEvent struct {
 
 func (x *ChangeEvent) Reset() {
 	*x = ChangeEvent{}
-	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[2]
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -170,7 +440,7 @@ func (x *ChangeEvent) String() string {
 func (*ChangeEvent) ProtoMessage() {}
 
 func (x *ChangeEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[2]
+	mi := &file_curntvalv_v1_subscribe_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -183,7 +453,7 @@ func (x *ChangeEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangeEvent.ProtoReflect.Descriptor instead.
 func (*ChangeEvent) Descriptor() ([]byte, []int) {
-	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{2}
+	return file_curntvalv_v1_subscribe_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ChangeEvent) GetId() string {
@@ -239,7 +509,23 @@ var File_curntvalv_v1_subscribe_proto protoreflect.FileDescriptor
 
 const file_curntvalv_v1_subscribe_proto_rawDesc = "" +
 	"\n" +
-	"\x1ccurntvalv/v1/subscribe.proto\x12\fcurntvalv.v1\x1a\x18curntvalv/v1/event.proto\"I\n" +
+	"\x1ccurntvalv/v1/subscribe.proto\x12\fcurntvalv.v1\x1a\x18curntvalv/v1/event.proto\"\x97\x01\n" +
+	"\x17JoinSubscriptionRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x125\n" +
+	"\x05start\x18\x02 \x01(\x0e2\x1f.curntvalv.v1.SubscriptionStartR\x05start\x12\x12\n" +
+	"\x04drop\x18\x03 \x01(\bR\x04drop\x12\x1d\n" +
+	"\n" +
+	"must_exist\x18\x04 \x01(\bR\tmustExist\"t\n" +
+	"\x18JoinSubscriptionResponse\x12>\n" +
+	"\fsubscription\x18\x01 \x01(\v2\x1a.curntvalv.v1.SubscriptionR\fsubscription\x12\x18\n" +
+	"\acreated\x18\x02 \x01(\bR\acreated\"g\n" +
+	"\x19CommitSubscriptionRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x04R\x06offset\"\x1c\n" +
+	"\x1aCommitSubscriptionResponse\"I\n" +
 	"\x10SubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"from_index\x18\x01 \x01(\x04R\tfromIndex\x12\x16\n" +
@@ -260,9 +546,15 @@ const file_curntvalv_v1_subscribe_proto_rawDesc = "" +
 	"\x03seq\x18\x04 \x01(\rR\x03seq\x12\x10\n" +
 	"\x03xid\x18\x05 \x01(\rR\x03xid\x12$\n" +
 	"\x0ecommit_time_us\x18\x06 \x01(\x03R\fcommitTimeUs\x12)\n" +
-	"\x05event\x18\a \x01(\v2\x13.curntvalv.v1.EventR\x05event2b\n" +
+	"\x05event\x18\a \x01(\v2\x13.curntvalv.v1.EventR\x05event*w\n" +
+	"\x11SubscriptionStart\x12\"\n" +
+	"\x1eSUBSCRIPTION_START_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bSUBSCRIPTION_START_EARLIEST\x10\x01\x12\x1d\n" +
+	"\x19SUBSCRIPTION_START_LATEST\x10\x022\xae\x02\n" +
 	"\x10SubscribeService\x12N\n" +
-	"\tSubscribe\x12\x1e.curntvalv.v1.SubscribeRequest\x1a\x1f.curntvalv.v1.SubscribeResponse0\x01B;Z9github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pbb\x06proto3"
+	"\tSubscribe\x12\x1e.curntvalv.v1.SubscribeRequest\x1a\x1f.curntvalv.v1.SubscribeResponse0\x01\x12a\n" +
+	"\x10JoinSubscription\x12%.curntvalv.v1.JoinSubscriptionRequest\x1a&.curntvalv.v1.JoinSubscriptionResponse\x12g\n" +
+	"\x12CommitSubscription\x12'.curntvalv.v1.CommitSubscriptionRequest\x1a(.curntvalv.v1.CommitSubscriptionResponseB;Z9github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1;pbb\x06proto3"
 
 var (
 	file_curntvalv_v1_subscribe_proto_rawDescOnce sync.Once
@@ -276,27 +568,40 @@ func file_curntvalv_v1_subscribe_proto_rawDescGZIP() []byte {
 	return file_curntvalv_v1_subscribe_proto_rawDescData
 }
 
-var file_curntvalv_v1_subscribe_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_curntvalv_v1_subscribe_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_curntvalv_v1_subscribe_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_curntvalv_v1_subscribe_proto_goTypes = []any{
-	(*SubscribeRequest)(nil),  // 0: curntvalv.v1.SubscribeRequest
-	(*SubscribeResponse)(nil), // 1: curntvalv.v1.SubscribeResponse
-	(*ChangeEvent)(nil),       // 2: curntvalv.v1.ChangeEvent
-	nil,                       // 3: curntvalv.v1.SubscribeResponse.SchemasEntry
-	(*Event)(nil),             // 4: curntvalv.v1.Event
-	(*Schema)(nil),            // 5: curntvalv.v1.Schema
+	(SubscriptionStart)(0),             // 0: curntvalv.v1.SubscriptionStart
+	(*JoinSubscriptionRequest)(nil),    // 1: curntvalv.v1.JoinSubscriptionRequest
+	(*JoinSubscriptionResponse)(nil),   // 2: curntvalv.v1.JoinSubscriptionResponse
+	(*CommitSubscriptionRequest)(nil),  // 3: curntvalv.v1.CommitSubscriptionRequest
+	(*CommitSubscriptionResponse)(nil), // 4: curntvalv.v1.CommitSubscriptionResponse
+	(*SubscribeRequest)(nil),           // 5: curntvalv.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),          // 6: curntvalv.v1.SubscribeResponse
+	(*ChangeEvent)(nil),                // 7: curntvalv.v1.ChangeEvent
+	nil,                                // 8: curntvalv.v1.SubscribeResponse.SchemasEntry
+	(*Subscription)(nil),               // 9: curntvalv.v1.Subscription
+	(*Event)(nil),                      // 10: curntvalv.v1.Event
+	(*Schema)(nil),                     // 11: curntvalv.v1.Schema
 }
 var file_curntvalv_v1_subscribe_proto_depIdxs = []int32{
-	2, // 0: curntvalv.v1.SubscribeResponse.events:type_name -> curntvalv.v1.ChangeEvent
-	3, // 1: curntvalv.v1.SubscribeResponse.schemas:type_name -> curntvalv.v1.SubscribeResponse.SchemasEntry
-	4, // 2: curntvalv.v1.ChangeEvent.event:type_name -> curntvalv.v1.Event
-	5, // 3: curntvalv.v1.SubscribeResponse.SchemasEntry.value:type_name -> curntvalv.v1.Schema
-	0, // 4: curntvalv.v1.SubscribeService.Subscribe:input_type -> curntvalv.v1.SubscribeRequest
-	1, // 5: curntvalv.v1.SubscribeService.Subscribe:output_type -> curntvalv.v1.SubscribeResponse
-	5, // [5:6] is the sub-list for method output_type
-	4, // [4:5] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	0,  // 0: curntvalv.v1.JoinSubscriptionRequest.start:type_name -> curntvalv.v1.SubscriptionStart
+	9,  // 1: curntvalv.v1.JoinSubscriptionResponse.subscription:type_name -> curntvalv.v1.Subscription
+	7,  // 2: curntvalv.v1.SubscribeResponse.events:type_name -> curntvalv.v1.ChangeEvent
+	8,  // 3: curntvalv.v1.SubscribeResponse.schemas:type_name -> curntvalv.v1.SubscribeResponse.SchemasEntry
+	10, // 4: curntvalv.v1.ChangeEvent.event:type_name -> curntvalv.v1.Event
+	11, // 5: curntvalv.v1.SubscribeResponse.SchemasEntry.value:type_name -> curntvalv.v1.Schema
+	5,  // 6: curntvalv.v1.SubscribeService.Subscribe:input_type -> curntvalv.v1.SubscribeRequest
+	1,  // 7: curntvalv.v1.SubscribeService.JoinSubscription:input_type -> curntvalv.v1.JoinSubscriptionRequest
+	3,  // 8: curntvalv.v1.SubscribeService.CommitSubscription:input_type -> curntvalv.v1.CommitSubscriptionRequest
+	6,  // 9: curntvalv.v1.SubscribeService.Subscribe:output_type -> curntvalv.v1.SubscribeResponse
+	2,  // 10: curntvalv.v1.SubscribeService.JoinSubscription:output_type -> curntvalv.v1.JoinSubscriptionResponse
+	4,  // 11: curntvalv.v1.SubscribeService.CommitSubscription:output_type -> curntvalv.v1.CommitSubscriptionResponse
+	9,  // [9:12] is the sub-list for method output_type
+	6,  // [6:9] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_curntvalv_v1_subscribe_proto_init() }
@@ -310,13 +615,14 @@ func file_curntvalv_v1_subscribe_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_curntvalv_v1_subscribe_proto_rawDesc), len(file_curntvalv_v1_subscribe_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   4,
+			NumEnums:      1,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_curntvalv_v1_subscribe_proto_goTypes,
 		DependencyIndexes: file_curntvalv_v1_subscribe_proto_depIdxs,
+		EnumInfos:         file_curntvalv_v1_subscribe_proto_enumTypes,
 		MessageInfos:      file_curntvalv_v1_subscribe_proto_msgTypes,
 	}.Build()
 	File_curntvalv_v1_subscribe_proto = out.File

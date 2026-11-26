@@ -36,11 +36,12 @@ const (
 type op uint8
 
 const (
-	opPut        op = 1
-	opDelete     op = 2
-	opSinkOffset op = 3
-	opSinkReset  op = 4
-	opBackfill   op = 5
+	opPut          op = 1
+	opDelete       op = 2
+	opSinkOffset   op = 3
+	opSinkReset    op = 4
+	opBackfill     op = 5
+	opSubscription op = 6
 )
 
 const (
@@ -49,7 +50,7 @@ const (
 	// MaxValueSize is the largest allowed value in bytes.
 	MaxValueSize = 1 << 20
 
-	snapshotVersion = 6
+	snapshotVersion = 7
 )
 
 var (
@@ -115,6 +116,8 @@ type FSM struct {
 	sinks   map[string]SinkPosition
 	// backfills by table ("namespace.name"), design D17.
 	backfills map[string]*pb.Backfill
+	// subs are the named subscriptions by name, design D22.
+	subs map[string]*pb.Subscription
 	// lastChange is the index of the last applied entry with row changes.
 	lastChange uint64
 	applied    uint64
@@ -125,7 +128,7 @@ type FSM struct {
 // New returns an empty state machine.
 func New() *FSM {
 	return &FSM{kv: map[string][]byte{}, schemas: map[uint64]*pb.Schema{}, sinks: map[string]SinkPosition{},
-		backfills: map[string]*pb.Backfill{}, changed: make(chan struct{})}
+		backfills: map[string]*pb.Backfill{}, subs: map[string]*pb.Subscription{}, changed: make(chan struct{})}
 }
 
 // Applied returns the index of the last applied entry and a channel that is
@@ -196,6 +199,11 @@ func (f *FSM) applyMeta(index uint64, b []byte) error {
 			return fmt.Errorf("%w: backfill command with key %q", ErrCorrupt, key)
 		}
 		return f.applyBackfillCommand(index, rest)
+	case opSubscription:
+		if string(key) != subscriptionKey {
+			return fmt.Errorf("%w: subscription command with key %q", ErrCorrupt, key)
+		}
+		return f.applySubscriptionCommand(index, rest)
 	default:
 		return fmt.Errorf("%w: unknown meta op %d", ErrCorrupt, b[0])
 	}
@@ -239,10 +247,12 @@ func (f *FSM) AppliedIndex() uint64 {
 //	| sink count uvarint | (sink name, offset u64, generation u64)* |
 //	| last change index u64 |
 //	| backfill count uvarint | backfill* |
+//	| subscription count uvarint | subscription* |
 //
 // with keys in sorted order, schemas in id order, sinks in name order, and
-// backfills in table order, and each key, value, schema, backfill (both
-// protobuf) and sink name length-prefixed. Version 5 (without backfills), 4
+// backfills in table order, subscriptions in name order, and each key,
+// value, schema, backfill, subscription (protobuf) and sink name
+// length-prefixed. Version 6 (without subscriptions), 5 (without backfills), 4
 // (without system_id and timeline), 3 (sinks without generation) and 2
 // (without the sink section) are still restored.
 func (f *FSM) Snapshot() ([]byte, error) {
@@ -304,6 +314,19 @@ func (f *FSM) Snapshot() ([]byte, error) {
 			return nil, fmt.Errorf("fsm: snapshot backfill %s: %w", t, err)
 		}
 		b = appendBytes(b, bb)
+	}
+	names = names[:0]
+	for n := range f.subs {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	b = binary.AppendUvarint(b, uint64(len(names)))
+	for _, n := range names {
+		sb, err := marshalOpts.Marshal(f.subs[n])
+		if err != nil {
+			return nil, fmt.Errorf("fsm: snapshot subscription %s: %w", n, err)
+		}
+		b = appendBytes(b, sb)
 	}
 	return b, nil
 }
@@ -418,12 +441,32 @@ func (f *FSM) Restore(b []byte) error {
 			rest = r
 		}
 	}
+	subs := map[string]*pb.Subscription{}
+	if b[0] >= 7 {
+		ns, k := binary.Uvarint(rest)
+		if k <= 0 {
+			return fmt.Errorf("%w: bad subscription count", ErrCorrupt)
+		}
+		rest = rest[k:]
+		for range ns {
+			sb, r, ok := readBytes(rest)
+			if !ok {
+				return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+			}
+			sub := &pb.Subscription{}
+			if err := proto.Unmarshal(sb, sub); err != nil {
+				return fmt.Errorf("%w: snapshot subscription: %v", ErrCorrupt, err)
+			}
+			subs[sub.GetName()] = sub
+			rest = r
+		}
+	}
 	if len(rest) != 0 {
 		return fmt.Errorf("%w: trailing bytes in snapshot", ErrCorrupt)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kv, f.src, f.schemas, f.sinks, f.lastChange, f.backfills = kv, src, schemas, sinks, lastChange, backfills
+	f.kv, f.src, f.schemas, f.sinks, f.lastChange, f.backfills, f.subs = kv, src, schemas, sinks, lastChange, backfills, subs
 	f.setApplied(applied)
 	return nil
 }

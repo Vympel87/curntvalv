@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/Vympel87/curntvalv/internal/event"
+	"github.com/Vympel87/curntvalv/internal/fsm"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
 )
@@ -21,10 +22,18 @@ type ChangeReader interface {
 	Read(ctx context.Context, from uint64, max int, filter event.Filter) (event.Result, error)
 }
 
+// Subscriptions reads named subscriptions (design D22). *fsm.FSM
+// implements it.
+type Subscriptions interface {
+	Subscription(name string) (*pb.Subscription, bool)
+}
+
 // Subscribe implements pb.SubscribeServiceServer.
 type Subscribe struct {
 	pb.UnimplementedSubscribeServiceServer
 	reader ChangeReader
+	node   RaftNode      // nil: no named subscriptions
+	subs   Subscriptions // nil with node
 	active atomic.Int64
 	sent   atomic.Uint64
 }
@@ -40,9 +49,96 @@ func (s *Subscribe) Stats() SubscribeStats {
 	return SubscribeStats{Active: s.active.Load(), Sent: s.sent.Load()}
 }
 
-// NewSubscribe returns the subscribe service of one node.
-func NewSubscribe(reader ChangeReader) *Subscribe {
-	return &Subscribe{reader: reader}
+// NewSubscribe returns the subscribe service of one node. node and subs
+// serve named subscriptions; both may be nil, which disables them.
+func NewSubscribe(reader ChangeReader, node RaftNode, subs Subscriptions) *Subscribe {
+	return &Subscribe{reader: reader, node: node, subs: subs}
+}
+
+// JoinSubscription returns a named subscription, creating it if needed.
+func (s *Subscribe) JoinSubscription(ctx context.Context, req *pb.JoinSubscriptionRequest) (*pb.JoinSubscriptionResponse, error) {
+	if s.node == nil {
+		return nil, status.Error(codes.Unimplemented, "named subscriptions are not available on this node")
+	}
+	if !fsm.ValidSinkName(req.GetName()) {
+		return nil, status.Errorf(codes.InvalidArgument, "bad subscription name %q (lower case letters, digits, _ and -)", req.GetName())
+	}
+	// A linearizable read, so an existing subscription is never created
+	// again with other settings.
+	idx, err := s.node.ReadIndex(ctx)
+	if err != nil {
+		return nil, subscriptionError(err)
+	}
+	if sub, ok := s.subs.Subscription(req.GetName()); ok {
+		return &pb.JoinSubscriptionResponse{Subscription: sub}, nil
+	}
+	if req.GetMustExist() {
+		return nil, status.Errorf(codes.NotFound, "no subscription %q", req.GetName())
+	}
+	cmd := &pb.SubscriptionCommand{Action: pb.SubscriptionCommand_ACTION_CREATE, Name: req.GetName(), Drop: req.GetDrop()}
+	if req.GetStart() == pb.SubscriptionStart_SUBSCRIPTION_START_LATEST {
+		cmd.Offset = idx
+	}
+	data, err := fsm.EncodeSubscription(cmd)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	at, err := s.node.Propose(ctx, data)
+	if err != nil {
+		return nil, subscriptionError(err)
+	}
+	sub, ok := s.subs.Subscription(req.GetName())
+	if !ok {
+		return nil, status.Error(codes.Aborted, "subscription deleted while it was created")
+	}
+	return &pb.JoinSubscriptionResponse{Subscription: sub, Created: sub.GetCreatedIndex() == at}, nil
+}
+
+// CommitSubscription stores a subscriber's position.
+func (s *Subscribe) CommitSubscription(ctx context.Context, req *pb.CommitSubscriptionRequest) (*pb.CommitSubscriptionResponse, error) {
+	if s.node == nil {
+		return nil, status.Error(codes.Unimplemented, "named subscriptions are not available on this node")
+	}
+	st, err := s.node.Status(ctx)
+	if err != nil {
+		return nil, subscriptionError(err)
+	}
+	if st.State != raft.StateLeader {
+		return nil, subscriptionError(&raft.NotLeaderError{Leader: st.Leader})
+	}
+	sub, ok := s.subs.Subscription(req.GetName())
+	switch {
+	case !ok:
+		return nil, status.Errorf(codes.NotFound, "no subscription %q (deleted?)", req.GetName())
+	case sub.GetGeneration() != req.GetGeneration():
+		return nil, status.Errorf(codes.Aborted, "subscription %q was reset (generation %d, not %d); join again", req.GetName(), sub.GetGeneration(), req.GetGeneration())
+	case req.GetOffset() <= sub.GetOffset():
+		return &pb.CommitSubscriptionResponse{}, nil
+	}
+	data, err := fsm.EncodeSubscription(&pb.SubscriptionCommand{Action: pb.SubscriptionCommand_ACTION_COMMIT,
+		Name: req.GetName(), Generation: req.GetGeneration(), Offset: req.GetOffset()})
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if _, err := s.node.Propose(ctx, data); err != nil {
+		return nil, subscriptionError(err)
+	}
+	return &pb.CommitSubscriptionResponse{}, nil
+}
+
+// subscriptionError maps Raft errors; a client tries the next node on
+// FAILED_PRECONDITION and UNAVAILABLE.
+func subscriptionError(err error) error {
+	var nl *raft.NotLeaderError
+	switch {
+	case errors.As(err, &nl):
+		return status.Errorf(codes.FailedPrecondition, "not the leader; leader is node %d", nl.Leader)
+	case errors.Is(err, raft.ErrLeadershipLost), errors.Is(err, raft.ErrStopped):
+		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return status.FromContextError(err).Err()
+	}
+	return status.Error(codes.Internal, err.Error())
 }
 
 const (

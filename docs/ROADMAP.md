@@ -39,8 +39,8 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0.
   (design D20)
 
 - Filters and column projection per sink (design D21)
+- Named subscriptions: positions kept in the cluster (design D22)
 
 ## Next
 
-- Server-side named subscriptions (offsets stored in the cluster)
 - More expressive filters and transforms (expressions, renames, masking)

@@ -214,7 +214,26 @@ for ch, err := range c.Subscribe(ctx, client.Options{Tables: []string{"orders"}}
 `Subscribe` moves to another node when one fails, so changes can arrive
 again around a failure: de-duplicate on `ch.ID`. To resume after a restart,
 subscribe with `From` set to the `Index` of the last change you fully
-processed.
+processed, or let the cluster keep the position with a named
+subscription:
+
+```go
+for ch, err := range c.Subscribe(ctx, client.Options{Name: "billing", Tables: []string{"orders"}}) {
+	// the position is stored about once a second and when the loop ends;
+	// the next run continues there (the change in progress may come again)
+}
+```
+
+```bash
+curntvalv subscribe --name billing --table orders   # continues where the last run stopped
+curntvalv subscription list                          # offset, lag, policy
+curntvalv subscription reset billing --to earliest   # replay
+curntvalv subscription delete billing
+```
+
+A named subscription holds back log retention until it has read the
+changes (`--policy drop` / `Options.Drop` does not); delete the ones you no
+longer use. Use one consumer per name.
 
 ## Sinks
 

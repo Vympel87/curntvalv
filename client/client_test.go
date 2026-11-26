@@ -86,7 +86,7 @@ func serve(t *testing.T, r server.ChangeReader) (string, func()) {
 		t.Fatal(err)
 	}
 	gs := grpc.NewServer()
-	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(r))
+	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(r, nil, nil))
 	go gs.Serve(lis)
 	t.Cleanup(gs.Stop)
 	return lis.Addr().String(), gs.Stop
@@ -264,7 +264,7 @@ func TestSubscribeWithToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	gs := grpc.NewServer(security.Guard{Token: "s3cret"}.ServerOptions(nil)...)
-	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(l))
+	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(l, nil, nil))
 	go gs.Serve(lis)
 	t.Cleanup(gs.Stop)
 	addr := lis.Addr().String()

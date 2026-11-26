@@ -153,6 +153,12 @@ func writeMetrics(st *pb.StatusResponse, c Counters, version string) []byte {
 		}
 	}
 
+	for _, s := range st.GetSubscriptions() {
+		l := label{"subscription", s.GetName()}
+		m.gauge("curntvalv_subscription_offset", "Last log index the named subscription has processed (replicated).", float64(s.GetOffset()), l)
+		m.gauge("curntvalv_subscription_lag_entries", "Log entries between a named subscription's offset and the newest entry with changes.", float64(s.GetLag()), l)
+	}
+
 	m.gauge("curntvalv_subscribe_streams", "Open subscribe streams on this node.", float64(c.SubscribeStreams))
 	m.counter("curntvalv_subscribe_events_sent_total", "Changes sent to subscribers by this node.", float64(c.SubscribeSent))
 

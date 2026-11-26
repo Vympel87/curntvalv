@@ -1,6 +1,7 @@
 // Package retention decides how much of the log a node keeps (design D5).
-// Old segments become removable by age or by total size; sinks with the
-// block policy keep everything they have not delivered yet. Raft asks for
+// Old segments become removable by age or by total size; sinks and named
+// subscriptions (D22) with the block policy keep everything they have not
+// delivered or read yet. Raft asks for
 // the limit and cuts the log at the newest snapshot below it.
 package retention
 
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Vympel87/curntvalv/internal/fsm"
+	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/wal"
 )
 
@@ -17,9 +19,11 @@ type Segments interface {
 	Segments() []wal.SegmentInfo
 }
 
-// Positions reads stored sink positions. *fsm.FSM implements it.
+// Positions reads stored sink and subscription positions. *fsm.FSM
+// implements it.
 type Positions interface {
 	SinkPosition(name string) (fsm.SinkPosition, bool)
+	Subscriptions() []*pb.Subscription
 }
 
 // Config configures a Policy. The zero value keeps everything.
@@ -60,7 +64,7 @@ type Status struct {
 	// Wanted is the limit from age and size alone, before sinks.
 	Wanted uint64
 	// BlockedBy names the block sink that holds the limit below Wanted,
-	// if any.
+	// if any, or "subscription NAME".
 	BlockedBy string
 }
 
@@ -101,6 +105,11 @@ func (p *Policy) Status() Status {
 		pos, _ := p.pos.SinkPosition(name)
 		if pos.Offset < st.Limit {
 			st.Limit, st.BlockedBy = pos.Offset, name
+		}
+	}
+	for _, sub := range p.pos.Subscriptions() {
+		if !sub.GetDrop() && sub.GetOffset() < st.Limit {
+			st.Limit, st.BlockedBy = sub.GetOffset(), "subscription "+sub.GetName()
 		}
 	}
 	return st

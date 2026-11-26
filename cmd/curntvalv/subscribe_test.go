@@ -51,7 +51,7 @@ func serveSubscribe(t *testing.T, r server.ChangeReader) string {
 		t.Fatal(err)
 	}
 	gs := grpc.NewServer()
-	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(r))
+	pb.RegisterSubscribeServiceServer(gs, server.NewSubscribe(r, nil, nil))
 	go gs.Serve(lis)
 	t.Cleanup(gs.Stop)
 	return lis.Addr().String()

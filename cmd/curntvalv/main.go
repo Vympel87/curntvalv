@@ -11,6 +11,7 @@
 //	curntvalv source reset --to-slot [--addr ...]
 //	curntvalv backfill start|cancel TABLE... [--addr ...]
 //	curntvalv member add ID=HOST:PORT | remove ID | list [--addr ...]
+//	curntvalv subscription list | reset NAME --to ... | delete NAME [--addr ...]
 //	curntvalv version
 package main
 
@@ -79,7 +80,7 @@ const usage = `usage:
   curntvalv kv get KEY [--addr HOST:PORT,...]
   curntvalv kv del KEY [--addr HOST:PORT,...]
   curntvalv log [--from N] [--follow] [--addr HOST:PORT,...]
-  curntvalv subscribe [--table NAME]... [--from N] [--addr HOST:PORT,...]
+  curntvalv subscribe [--table NAME]... [--from N | --name NAME] [--addr HOST:PORT,...]
   curntvalv sink reset NAME --to earliest|latest|INDEX [--addr HOST:PORT,...]
   curntvalv source reset --to-slot [--addr HOST:PORT,...]   after a failover check stopped ingest
   curntvalv backfill start TABLE... [--addr HOST:PORT,...]  copy existing rows into the log
@@ -87,6 +88,9 @@ const usage = `usage:
   curntvalv member add ID=HOST:PORT [--addr HOST:PORT,...]  add a node started with --join
   curntvalv member remove ID [--addr HOST:PORT,...]
   curntvalv member list [--addr HOST:PORT,...]
+  curntvalv subscription list [--addr HOST:PORT,...]  named subscriptions (subscribe --name)
+  curntvalv subscription reset NAME --to earliest|latest|INDEX [--addr HOST:PORT,...]
+  curntvalv subscription delete NAME [--addr HOST:PORT,...]
   curntvalv certs [--out DIR] NODE...           a CA and node certificates for TLS
   curntvalv version
 
@@ -131,6 +135,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = backfillCmd(ctx, args[1:], stdout, stderr)
 	case "member":
 		err = memberCmd(ctx, args[1:], stdout, stderr)
+	case "subscription":
+		err = subscriptionCmd(ctx, args[1:], stdout, stderr)
 	case "certs":
 		err = certsCmd(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -508,7 +514,7 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		resetter = src
 	}
 	admin := server.NewAdmin(node, node, meta, health, resetter, node, cfg.peers)
-	subscribe := server.NewSubscribe(reader)
+	subscribe := server.NewSubscribe(reader, node, meta)
 	pb.RegisterAdminServiceServer(gs, admin)
 	pb.RegisterSubscribeServiceServer(gs, subscribe)
 

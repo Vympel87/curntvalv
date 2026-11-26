@@ -66,7 +66,7 @@ function renderPipeline(p) {
     if (r.max_bytes) limits.push("size " + bytes(r.max_bytes));
     $("retention").textContent = limits.length ? limits.join(", ") : "keep everything";
     let sub = "log " + bytes(r.log_bytes) + " on node " + p.node;
-    if (r.blocked_by) sub += " · held back by sink " + r.blocked_by;
+    if (r.blocked_by) sub += " · held back by " + (r.blocked_by.startsWith("subscription ") ? "" : "sink ") + r.blocked_by;
     else if (r.compact_limit) sub += " · removable up to entry " + r.compact_limit;
     $("retention-sub").textContent = sub;
   }

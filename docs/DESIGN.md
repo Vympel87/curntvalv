@@ -475,7 +475,8 @@ then only the initial configuration.
   splits responses at about 1 MiB between log entries, and waits for new
   entries through a notification from the state machine instead of
   polling. Offsets are managed by the client: `next_index` in each response
-  is where to resume. Server-side named consumers may follow later.
+  is where to resume, or the cluster keeps it for a named subscription
+  (D22).
   The public Go package `client` wraps it: `Subscribe` returns an
   iterator of changes, moves to the next node when a stream fails and
   continues from the last `next_index`, and ends with `ErrCompacted` or
@@ -824,6 +825,44 @@ A backfill reads them from the table into the log, next to the stream.
 - **Not done.** Expressions beyond equality, renames, hashing or masking
   of values.
 
+### D22. Named subscriptions
+
+- **A position kept in the cluster** for a subscriber, under a name, like a
+  sink offset (D12): `Subscription{offset, generation, drop}` in the state
+  machine, changed by a metadata command (create, commit, reset, delete).
+  Commits only move forward within a generation; a reset sets any offset
+  and starts a new generation. Snapshot format v7 adds them.
+- **RPCs.** `JoinSubscription` returns the stored position and creates the
+  subscription if it is new (after a ReadIndex, so a second join never
+  creates it again with other settings; `must_exist` refuses to create).
+  `CommitSubscription` stores a position: ABORTED after a reset, NOT_FOUND
+  after a delete. Both are leader only; the stream itself is still the
+  ordinary Subscribe from `offset + 1`, served by any node.
+  `AdminService.ResetSubscription` and `DeleteSubscription` manage them;
+  `Status` lists them with their lag.
+- **At least once.** The client counts a log entry as processed when the
+  loop asks for a change of a later entry (or the stream moved past it),
+  and stores that position about once a second and when the loop ends.
+  After a crash the entry in progress is delivered again; `Change.ID`
+  identifies the copies. `ManualCommit` and `Client.Commit` let the
+  program decide instead. A reset is noticed on the next commit: the
+  client joins again and continues from the new position. One consumer per
+  name: two would each read everything and store the larger position.
+- **Created on first use.** A new name creates the subscription, at the
+  oldest retained entry or (StartLatest) at the current commit index.
+- **Retention.** With policy block (the default) the log is not cut past
+  the offset, as for block sinks (D5); `status` names the subscription
+  holding it. Unused subscriptions must be deleted. With drop, a
+  subscriber left behind gets ErrCompacted.
+- **CLI.** `curntvalv subscribe --name NAME [--start latest] [--policy
+  drop]`; `curntvalv subscription list|reset NAME --to ...|delete NAME`.
+  Metrics `curntvalv_subscription_offset` and `_lag_entries`.
+- **Testing.** State machine and retention unit tests; RPCs against an
+  in-memory node; the client against servers where only one is the
+  leader, with a reset and a delete while it runs; end to end a
+  subscription continues exactly after the stored position across a
+  leader kill, is replayed after a reset, and is deleted.
+
 ## 4. Data model
 
 ```
@@ -886,8 +925,6 @@ The checker runs in two forms (`cmd/curntvalv`, with Postgres):
 
 ## 6. Open questions
 
-- Subscribe API: client-managed offsets are done (D12). Server-side named
-  consumers (offset stored in curntValv, like a sink) may follow.
 - Entry encoding: the Raft entry header is hand-written binary (D9),
   node-to-node messages are protobuf (D10). The encoding of `TxBatch`
   payloads is decided in M4.

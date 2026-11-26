@@ -21,6 +21,16 @@ break compatibility.
   `where=COL=VALUE` / `COL!=VALUE` keep only some changes, `columns=` and
   `drop=` remove columns (key columns stay). Skipped changes still move
   the sink's offset.
+- Named subscriptions (design D22): `client.Options{Name: ...}` and
+  `curntvalv subscribe --name` keep the position in the cluster and
+  continue there; auto-commit or `Client.Commit`; created on first use,
+  hold back retention unless `Drop`; `curntvalv subscription
+  list|reset|delete`, shown in `status` and `/metrics`.
+
+### Upgrading from 0.3
+
+- Snapshots are now version 7, which v0.3 nodes cannot read: upgrade all
+  nodes before the first named subscription.
 - `make test-sinks` runs their tests against real servers in Docker; CI
   runs them too.
 

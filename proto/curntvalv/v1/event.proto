@@ -171,3 +171,37 @@ message Column {
   // Part of the replica identity key.
   bool key = 4;
 }
+
+// Subscription is the replicated state of a named subscription (design
+// D22): a position stored in the cluster for a subscriber.
+message Subscription {
+  string name = 1;
+  // Last log index the subscriber has processed; 0 means nothing: it
+  // starts with the oldest retained entry.
+  uint64 offset = 2;
+  // Counts resets; a commit for another generation is ignored.
+  uint64 generation = 3;
+  // false: retention keeps what the subscription has not read (block).
+  bool drop = 4;
+  // Raft index of the command that created it.
+  uint64 created_index = 5;
+}
+
+// SubscriptionCommand is the metadata command that changes subscriptions.
+message SubscriptionCommand {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    // Create name at offset with drop, unless it exists.
+    ACTION_CREATE = 1;
+    // Move the offset forward, in generation only.
+    ACTION_COMMIT = 2;
+    // Set the offset, also backwards, and start a new generation.
+    ACTION_RESET = 3;
+    ACTION_DELETE = 4;
+  }
+  Action action = 1;
+  string name = 2;
+  uint64 offset = 3;
+  uint64 generation = 4;
+  bool drop = 5;
+}

@@ -1,10 +1,12 @@
 package retention
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Vympel87/curntvalv/internal/fsm"
+	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
 	"github.com/Vympel87/curntvalv/internal/wal"
 )
@@ -24,6 +26,21 @@ type fakePos map[string]uint64
 func (f fakePos) SinkPosition(name string) (fsm.SinkPosition, bool) {
 	off, ok := f[name]
 	return fsm.SinkPosition{Offset: off}, ok
+}
+
+// Subscriptions returns the entries named "sub:NAME" (block) and
+// "drop:NAME" (drop) as subscriptions.
+func (f fakePos) Subscriptions() []*pb.Subscription {
+	var out []*pb.Subscription
+	for k, off := range f {
+		if name, ok := strings.CutPrefix(k, "sub:"); ok {
+			out = append(out, &pb.Subscription{Name: name, Offset: off})
+		}
+		if name, ok := strings.CutPrefix(k, "drop:"); ok {
+			out = append(out, &pb.Subscription{Name: name, Offset: off, Drop: true})
+		}
+	}
+	return out
 }
 
 var now = time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
@@ -62,6 +79,10 @@ func TestPolicy(t *testing.T) {
 		{"block sink without a position keeps everything", Config{MaxAge: time.Hour, Block: []string{"new"}}, segs(),
 			fakePos{}, Status{Limit: 0, Wanted: 300, BlockedBy: "new"}},
 		{"drop sinks are not listed", Config{MaxAge: time.Hour}, segs(), fakePos{"ch": 5}, Status{Limit: 300, Wanted: 300}},
+		{"block subscription behind", Config{MaxAge: time.Hour, Block: []string{"ch"}}, segs(),
+			fakePos{"ch": 250, "sub:billing": 90, "drop:audit": 10}, Status{Limit: 90, Wanted: 300, BlockedBy: "subscription billing"}},
+		{"new block subscription keeps everything", Config{MaxAge: time.Hour}, segs(),
+			fakePos{"sub:new": 0}, Status{Limit: 0, Wanted: 300, BlockedBy: "subscription new"}},
 		{"single segment", Config{MaxAge: time.Nanosecond, MaxBytes: 1}, segs()[:1], nil, Status{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

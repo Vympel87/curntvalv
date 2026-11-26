@@ -19,7 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SubscribeService_Subscribe_FullMethodName = "/curntvalv.v1.SubscribeService/Subscribe"
+	SubscribeService_Subscribe_FullMethodName          = "/curntvalv.v1.SubscribeService/Subscribe"
+	SubscribeService_JoinSubscription_FullMethodName   = "/curntvalv.v1.SubscribeService/JoinSubscription"
+	SubscribeService_CommitSubscription_FullMethodName = "/curntvalv.v1.SubscribeService/CommitSubscription"
 )
 
 // SubscribeServiceClient is the client API for SubscribeService service.
@@ -28,7 +30,8 @@ const (
 //
 // SubscribeService streams row changes to applications. Any node can serve
 // it; a follower may be a little behind the leader. Offsets are managed by
-// the client: to resume, subscribe again with the last next_index received.
+// the client: to resume, subscribe again with the last next_index received,
+// or keep them in the cluster with a named subscription (design D22).
 // Delivery is at-least-once around a resume; ChangeEvent.id identifies a
 // change across redeliveries (design D4).
 type SubscribeServiceClient interface {
@@ -36,6 +39,13 @@ type SubscribeServiceClient interface {
 	// stream open and sends new changes as they are committed. It fails with
 	// OUT_OF_RANGE if from_index was removed by log compaction.
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeResponse], error)
+	// JoinSubscription returns the stored position of a named subscription,
+	// creating it if it does not exist. Leader only.
+	JoinSubscription(ctx context.Context, in *JoinSubscriptionRequest, opts ...grpc.CallOption) (*JoinSubscriptionResponse, error)
+	// CommitSubscription stores that the subscriber processed everything up
+	// to and including offset. ABORTED if the subscription was reset (join
+	// again), NOT_FOUND if it was deleted. Leader only.
+	CommitSubscription(ctx context.Context, in *CommitSubscriptionRequest, opts ...grpc.CallOption) (*CommitSubscriptionResponse, error)
 }
 
 type subscribeServiceClient struct {
@@ -65,13 +75,34 @@ func (c *subscribeServiceClient) Subscribe(ctx context.Context, in *SubscribeReq
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type SubscribeService_SubscribeClient = grpc.ServerStreamingClient[SubscribeResponse]
 
+func (c *subscribeServiceClient) JoinSubscription(ctx context.Context, in *JoinSubscriptionRequest, opts ...grpc.CallOption) (*JoinSubscriptionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(JoinSubscriptionResponse)
+	err := c.cc.Invoke(ctx, SubscribeService_JoinSubscription_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *subscribeServiceClient) CommitSubscription(ctx context.Context, in *CommitSubscriptionRequest, opts ...grpc.CallOption) (*CommitSubscriptionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommitSubscriptionResponse)
+	err := c.cc.Invoke(ctx, SubscribeService_CommitSubscription_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SubscribeServiceServer is the server API for SubscribeService service.
 // All implementations must embed UnimplementedSubscribeServiceServer
 // for forward compatibility.
 //
 // SubscribeService streams row changes to applications. Any node can serve
 // it; a follower may be a little behind the leader. Offsets are managed by
-// the client: to resume, subscribe again with the last next_index received.
+// the client: to resume, subscribe again with the last next_index received,
+// or keep them in the cluster with a named subscription (design D22).
 // Delivery is at-least-once around a resume; ChangeEvent.id identifies a
 // change across redeliveries (design D4).
 type SubscribeServiceServer interface {
@@ -79,6 +110,13 @@ type SubscribeServiceServer interface {
 	// stream open and sends new changes as they are committed. It fails with
 	// OUT_OF_RANGE if from_index was removed by log compaction.
 	Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error
+	// JoinSubscription returns the stored position of a named subscription,
+	// creating it if it does not exist. Leader only.
+	JoinSubscription(context.Context, *JoinSubscriptionRequest) (*JoinSubscriptionResponse, error)
+	// CommitSubscription stores that the subscriber processed everything up
+	// to and including offset. ABORTED if the subscription was reset (join
+	// again), NOT_FOUND if it was deleted. Leader only.
+	CommitSubscription(context.Context, *CommitSubscriptionRequest) (*CommitSubscriptionResponse, error)
 	mustEmbedUnimplementedSubscribeServiceServer()
 }
 
@@ -91,6 +129,12 @@ type UnimplementedSubscribeServiceServer struct{}
 
 func (UnimplementedSubscribeServiceServer) Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error {
 	return status.Error(codes.Unimplemented, "method Subscribe not implemented")
+}
+func (UnimplementedSubscribeServiceServer) JoinSubscription(context.Context, *JoinSubscriptionRequest) (*JoinSubscriptionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method JoinSubscription not implemented")
+}
+func (UnimplementedSubscribeServiceServer) CommitSubscription(context.Context, *CommitSubscriptionRequest) (*CommitSubscriptionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CommitSubscription not implemented")
 }
 func (UnimplementedSubscribeServiceServer) mustEmbedUnimplementedSubscribeServiceServer() {}
 func (UnimplementedSubscribeServiceServer) testEmbeddedByValue()                          {}
@@ -124,13 +168,58 @@ func _SubscribeService_Subscribe_Handler(srv interface{}, stream grpc.ServerStre
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type SubscribeService_SubscribeServer = grpc.ServerStreamingServer[SubscribeResponse]
 
+func _SubscribeService_JoinSubscription_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinSubscriptionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SubscribeServiceServer).JoinSubscription(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SubscribeService_JoinSubscription_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SubscribeServiceServer).JoinSubscription(ctx, req.(*JoinSubscriptionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SubscribeService_CommitSubscription_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CommitSubscriptionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SubscribeServiceServer).CommitSubscription(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SubscribeService_CommitSubscription_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SubscribeServiceServer).CommitSubscription(ctx, req.(*CommitSubscriptionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SubscribeService_ServiceDesc is the grpc.ServiceDesc for SubscribeService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var SubscribeService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "curntvalv.v1.SubscribeService",
 	HandlerType: (*SubscribeServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "JoinSubscription",
+			Handler:    _SubscribeService_JoinSubscription_Handler,
+		},
+		{
+			MethodName: "CommitSubscription",
+			Handler:    _SubscribeService_CommitSubscription_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Subscribe",

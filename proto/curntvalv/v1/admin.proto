@@ -41,6 +41,12 @@ service AdminService {
   // RemoveMember removes a server. Removing the leader makes it step down.
   // Leader only.
   rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
+  // ResetSubscription moves a named subscription (design D22), also
+  // backwards, and starts a new generation. Leader only.
+  rpc ResetSubscription(ResetSubscriptionRequest) returns (ResetSubscriptionResponse);
+  // DeleteSubscription removes a named subscription, so it no longer holds
+  // the log. Leader only.
+  rpc DeleteSubscription(DeleteSubscriptionRequest) returns (DeleteSubscriptionResponse);
 }
 
 message StatusRequest {}
@@ -70,6 +76,38 @@ message StatusResponse {
   // Log index of the configuration's entry; 0 if it comes from a snapshot
   // or from --peers.
   uint64 config_index = 17;
+  // Named subscriptions (replicated), by name.
+  repeated SubscriptionStatus subscriptions = 18;
+}
+
+message SubscriptionStatus {
+  string name = 1;
+  uint64 offset = 2;
+  uint64 generation = 3;
+  // "block" or "drop".
+  string policy = 4;
+  // Log entries between the offset and the newest entry with row changes.
+  uint64 lag = 5;
+}
+
+message ResetSubscriptionRequest {
+  string name = 1;
+  ResetPosition position = 2;
+  // With RESET_POSITION_INDEX: the new offset.
+  uint64 index = 3;
+}
+
+message ResetSubscriptionResponse {
+  uint64 index = 1;
+  Subscription subscription = 2;
+}
+
+message DeleteSubscriptionRequest {
+  string name = 1;
+}
+
+message DeleteSubscriptionResponse {
+  uint64 index = 1;
 }
 
 message Member {

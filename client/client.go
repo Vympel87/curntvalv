@@ -13,7 +13,15 @@
 // on the next one from where it stopped, so changes can be delivered again
 // around a failure; use Change.ID to drop copies. The position is kept by
 // the program: to resume later, subscribe From the Index of the last change
-// it has fully processed (that entry's changes arrive again).
+// it has fully processed (that entry's changes arrive again). Or let the
+// cluster keep it with a named subscription:
+//
+//	for ch, err := range c.Subscribe(ctx, client.Options{Name: "billing"}) { ... }
+//
+// The position of the changes the loop has moved past is stored about once
+// a second and when the loop ends, so after a restart the subscription
+// continues there (at least once: the change being processed may come
+// again). Use one consumer per name.
 //
 // A cluster that uses TLS or a token needs WithTLS and WithToken.
 package client
@@ -46,6 +54,9 @@ var (
 	// ErrUnauthenticated means the cluster wants a token (WithToken) or
 	// the token is wrong.
 	ErrUnauthenticated = errors.New("client: missing or wrong token")
+	// ErrSubscriptionDeleted means the named subscription was deleted while
+	// it was in use.
+	ErrSubscriptionDeleted = errors.New("client: subscription was deleted")
 )
 
 // Op is the kind of a row change.
@@ -117,6 +128,22 @@ type Options struct {
 	// OnRetry, if set, is called when a stream to a node failed and
 	// Subscribe tries again, from index next.
 	OnRetry func(addr string, err error, next uint64)
+
+	// Name makes this a named subscription (design D22): the cluster keeps
+	// its position and Subscribe continues from there; From must be 0. A
+	// new name creates the subscription. Lower case letters, digits, _ and
+	// -.
+	Name string
+	// StartLatest makes a new named subscription start with the next
+	// change instead of the oldest retained one.
+	StartLatest bool
+	// Drop makes a new named subscription not hold back log retention
+	// (policy drop); by default the cluster keeps what it has not read, so
+	// delete subscriptions that are no longer used.
+	Drop bool
+	// ManualCommit turns off storing the position automatically; call
+	// Commit.
+	ManualCommit bool
 }
 
 // Client connects to the nodes of one cluster. It is safe for concurrent
@@ -175,22 +202,59 @@ const (
 func (c *Client) Subscribe(ctx context.Context, opts Options) iter.Seq2[Change, error] {
 	return func(yield func(Change, error) bool) {
 		next := opts.From
+		var pos *position // named subscriptions only
+		if opts.Name != "" {
+			if opts.From != 0 {
+				yield(Change{}, fmt.Errorf("%w: a named subscription continues from its stored position; leave From 0", ErrInvalid))
+				return
+			}
+			var err error
+			if pos, err = c.join(ctx, opts); err != nil {
+				if ctx.Err() == nil {
+					yield(Change{}, err)
+				}
+				return
+			}
+			next = pos.from()
+			defer pos.final(c)
+		}
 		backoff := minBackoff
 		for attempt := 0; ; attempt++ {
 			addr := c.addrs[attempt%len(c.addrs)]
-			received := false
+			received, restart := false, false
+			var failed error
 			stop, err := c.stream(ctx, addr, &pb.SubscribeRequest{FromIndex: next, Tables: opts.Tables},
 				func(resp *pb.SubscribeResponse, schemas map[uint64]*pb.Schema) bool {
 					received = true
 					for _, ce := range resp.GetEvents() {
+						if pos != nil {
+							// Everything before this change's entry is done.
+							if restart, failed = pos.advance(ctx, c, ce.GetIndex()-1); restart || failed != nil {
+								return false
+							}
+						}
 						if !yield(convert(ce, schemas), nil) {
 							return false
 						}
 					}
 					next = resp.GetNextIndex()
+					if pos != nil {
+						if restart, failed = pos.advance(ctx, c, next-1); restart || failed != nil {
+							return false
+						}
+					}
 					return true
 				})
-			if stop || ctx.Err() != nil {
+			switch {
+			case failed != nil:
+				yield(Change{}, failed)
+				return
+			case restart:
+				// Reset by an operator: continue from the new position.
+				next = pos.from()
+				attempt--
+				continue
+			case stop || ctx.Err() != nil:
 				return
 			}
 			switch status.Code(err) {

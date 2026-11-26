@@ -8,7 +8,8 @@ import "curntvalv/v1/event.proto";
 
 // SubscribeService streams row changes to applications. Any node can serve
 // it; a follower may be a little behind the leader. Offsets are managed by
-// the client: to resume, subscribe again with the last next_index received.
+// the client: to resume, subscribe again with the last next_index received,
+// or keep them in the cluster with a named subscription (design D22).
 // Delivery is at-least-once around a resume; ChangeEvent.id identifies a
 // change across redeliveries (design D4).
 service SubscribeService {
@@ -16,7 +17,45 @@ service SubscribeService {
   // stream open and sends new changes as they are committed. It fails with
   // OUT_OF_RANGE if from_index was removed by log compaction.
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+  // JoinSubscription returns the stored position of a named subscription,
+  // creating it if it does not exist. Leader only.
+  rpc JoinSubscription(JoinSubscriptionRequest) returns (JoinSubscriptionResponse);
+  // CommitSubscription stores that the subscriber processed everything up
+  // to and including offset. ABORTED if the subscription was reset (join
+  // again), NOT_FOUND if it was deleted. Leader only.
+  rpc CommitSubscription(CommitSubscriptionRequest) returns (CommitSubscriptionResponse);
 }
+
+enum SubscriptionStart {
+  SUBSCRIPTION_START_UNSPECIFIED = 0;
+  // A new subscription starts with the oldest retained entry (default).
+  SUBSCRIPTION_START_EARLIEST = 1;
+  // A new subscription starts with the next committed entry.
+  SUBSCRIPTION_START_LATEST = 2;
+}
+
+message JoinSubscriptionRequest {
+  string name = 1;
+  // For a new subscription only.
+  SubscriptionStart start = 2;
+  bool drop = 3;
+  // Do not create it: NOT_FOUND if it does not exist.
+  bool must_exist = 4;
+}
+
+message JoinSubscriptionResponse {
+  Subscription subscription = 1;
+  // The subscription did not exist before.
+  bool created = 2;
+}
+
+message CommitSubscriptionRequest {
+  string name = 1;
+  uint64 generation = 2;
+  uint64 offset = 3;
+}
+
+message CommitSubscriptionResponse {}
 
 message SubscribeRequest {
   // First log index to read; 0 means the oldest retained entry.

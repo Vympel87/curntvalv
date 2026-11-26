@@ -19,17 +19,19 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AdminService_Status_FullMethodName         = "/curntvalv.v1.AdminService/Status"
-	AdminService_Put_FullMethodName            = "/curntvalv.v1.AdminService/Put"
-	AdminService_Get_FullMethodName            = "/curntvalv.v1.AdminService/Get"
-	AdminService_Delete_FullMethodName         = "/curntvalv.v1.AdminService/Delete"
-	AdminService_ReadLog_FullMethodName        = "/curntvalv.v1.AdminService/ReadLog"
-	AdminService_ResetSink_FullMethodName      = "/curntvalv.v1.AdminService/ResetSink"
-	AdminService_ResetSource_FullMethodName    = "/curntvalv.v1.AdminService/ResetSource"
-	AdminService_StartBackfill_FullMethodName  = "/curntvalv.v1.AdminService/StartBackfill"
-	AdminService_CancelBackfill_FullMethodName = "/curntvalv.v1.AdminService/CancelBackfill"
-	AdminService_AddMember_FullMethodName      = "/curntvalv.v1.AdminService/AddMember"
-	AdminService_RemoveMember_FullMethodName   = "/curntvalv.v1.AdminService/RemoveMember"
+	AdminService_Status_FullMethodName             = "/curntvalv.v1.AdminService/Status"
+	AdminService_Put_FullMethodName                = "/curntvalv.v1.AdminService/Put"
+	AdminService_Get_FullMethodName                = "/curntvalv.v1.AdminService/Get"
+	AdminService_Delete_FullMethodName             = "/curntvalv.v1.AdminService/Delete"
+	AdminService_ReadLog_FullMethodName            = "/curntvalv.v1.AdminService/ReadLog"
+	AdminService_ResetSink_FullMethodName          = "/curntvalv.v1.AdminService/ResetSink"
+	AdminService_ResetSource_FullMethodName        = "/curntvalv.v1.AdminService/ResetSource"
+	AdminService_StartBackfill_FullMethodName      = "/curntvalv.v1.AdminService/StartBackfill"
+	AdminService_CancelBackfill_FullMethodName     = "/curntvalv.v1.AdminService/CancelBackfill"
+	AdminService_AddMember_FullMethodName          = "/curntvalv.v1.AdminService/AddMember"
+	AdminService_RemoveMember_FullMethodName       = "/curntvalv.v1.AdminService/RemoveMember"
+	AdminService_ResetSubscription_FullMethodName  = "/curntvalv.v1.AdminService/ResetSubscription"
+	AdminService_DeleteSubscription_FullMethodName = "/curntvalv.v1.AdminService/DeleteSubscription"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -71,6 +73,12 @@ type AdminServiceClient interface {
 	// RemoveMember removes a server. Removing the leader makes it step down.
 	// Leader only.
 	RemoveMember(ctx context.Context, in *RemoveMemberRequest, opts ...grpc.CallOption) (*RemoveMemberResponse, error)
+	// ResetSubscription moves a named subscription (design D22), also
+	// backwards, and starts a new generation. Leader only.
+	ResetSubscription(ctx context.Context, in *ResetSubscriptionRequest, opts ...grpc.CallOption) (*ResetSubscriptionResponse, error)
+	// DeleteSubscription removes a named subscription, so it no longer holds
+	// the log. Leader only.
+	DeleteSubscription(ctx context.Context, in *DeleteSubscriptionRequest, opts ...grpc.CallOption) (*DeleteSubscriptionResponse, error)
 }
 
 type adminServiceClient struct {
@@ -191,6 +199,26 @@ func (c *adminServiceClient) RemoveMember(ctx context.Context, in *RemoveMemberR
 	return out, nil
 }
 
+func (c *adminServiceClient) ResetSubscription(ctx context.Context, in *ResetSubscriptionRequest, opts ...grpc.CallOption) (*ResetSubscriptionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResetSubscriptionResponse)
+	err := c.cc.Invoke(ctx, AdminService_ResetSubscription_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) DeleteSubscription(ctx context.Context, in *DeleteSubscriptionRequest, opts ...grpc.CallOption) (*DeleteSubscriptionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteSubscriptionResponse)
+	err := c.cc.Invoke(ctx, AdminService_DeleteSubscription_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -230,6 +258,12 @@ type AdminServiceServer interface {
 	// RemoveMember removes a server. Removing the leader makes it step down.
 	// Leader only.
 	RemoveMember(context.Context, *RemoveMemberRequest) (*RemoveMemberResponse, error)
+	// ResetSubscription moves a named subscription (design D22), also
+	// backwards, and starts a new generation. Leader only.
+	ResetSubscription(context.Context, *ResetSubscriptionRequest) (*ResetSubscriptionResponse, error)
+	// DeleteSubscription removes a named subscription, so it no longer holds
+	// the log. Leader only.
+	DeleteSubscription(context.Context, *DeleteSubscriptionRequest) (*DeleteSubscriptionResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -272,6 +306,12 @@ func (UnimplementedAdminServiceServer) AddMember(context.Context, *AddMemberRequ
 }
 func (UnimplementedAdminServiceServer) RemoveMember(context.Context, *RemoveMemberRequest) (*RemoveMemberResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveMember not implemented")
+}
+func (UnimplementedAdminServiceServer) ResetSubscription(context.Context, *ResetSubscriptionRequest) (*ResetSubscriptionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResetSubscription not implemented")
+}
+func (UnimplementedAdminServiceServer) DeleteSubscription(context.Context, *DeleteSubscriptionRequest) (*DeleteSubscriptionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteSubscription not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -492,6 +532,42 @@ func _AdminService_RemoveMember_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_ResetSubscription_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResetSubscriptionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ResetSubscription(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ResetSubscription_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ResetSubscription(ctx, req.(*ResetSubscriptionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_DeleteSubscription_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteSubscriptionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).DeleteSubscription(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_DeleteSubscription_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).DeleteSubscription(ctx, req.(*DeleteSubscriptionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -542,6 +618,14 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RemoveMember",
 			Handler:    _AdminService_RemoveMember_Handler,
+		},
+		{
+			MethodName: "ResetSubscription",
+			Handler:    _AdminService_ResetSubscription_Handler,
+		},
+		{
+			MethodName: "DeleteSubscription",
+			Handler:    _AdminService_DeleteSubscription_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
