@@ -5,6 +5,20 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- The compatibility promise for 1.x (design D34), enforced by tests:
+  baselines of the public surface in `compat/` (gRPC API, JSON form,
+  webhook body, Go client, commands and flags, `--sink` options, metrics)
+  and data files written by this release in `internal/fsm/testdata/v1`
+  that later releases must read. `make baseline` records new surface.
+
+### Fixed
+
+- `curntvalv` usage lists `sink skipped`.
+
 ## [0.10.0]
 
 ### Added

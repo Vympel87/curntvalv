@@ -1,0 +1,88 @@
+# Public surface baseline (design D34). Lines may be added with `make baseline`;
+# removing or changing one breaks the 1.x compatibility promise.
+const OpBackfill Op = "backfill"
+const OpDelete Op = "delete"
+const OpInsert Op = "insert"
+const OpSchema Op = "schema"
+const OpSourceReset Op = "source_reset"
+const OpTruncate Op = "truncate"
+const OpUpdate Op = "update"
+field Change.After map[string]*string
+field Change.Before map[string]*string
+field Change.Columns []Column
+field Change.CommitTime time.Time
+field Change.ID string
+field Change.Index uint64
+field Change.LSN string
+field Change.Op Op
+field Change.Reset *Reset
+field Change.Seq uint32
+field Change.Table string
+field Change.TxChanges uint32
+field Change.Unchanged []string
+field Change.Xid uint32
+field Column.Key bool
+field Column.Name string
+field Column.Type string
+field Column.TypeModifier int32
+field Column.TypeOID uint32
+field Options.Drop bool
+field Options.From uint64
+field Options.ManualCommit bool
+field Options.Name string
+field Options.OnRetry func(addr string, err error, next uint64)
+field Options.SchemaChanges bool
+field Options.StartLatest bool
+field Options.Tables []string
+field Options.Transactions bool
+field Reset.LSN string
+field Reset.PreviousLSN string
+field Reset.PreviousSystemID uint64
+field Reset.PreviousTimeline uint32
+field Reset.Reason string
+field Reset.SystemID uint64
+field Reset.Timeline uint32
+func (*Client) Close() error
+func (*Client) Commit(ctx context.Context, name string, index uint64) error
+func (*Client) Subscribe(ctx context.Context, opts Options) iter.Seq2[Change, error]
+func (*Client) Transactions(ctx context.Context, opts Options) iter.Seq2[[]Change, error]
+func New(addrs []string, opts ...Option) (*Client, error)
+func WithTLS(cfg *tls.Config) Option
+func WithToken(token string) Option
+json Change.after map[string]*string omitempty
+json Change.before map[string]*string omitempty
+json Change.columns []client.Column omitempty
+json Change.columns[].key bool omitempty
+json Change.columns[].name string
+json Change.columns[].type string omitempty
+json Change.columns[].type_modifier int32
+json Change.columns[].type_oid uint32
+json Change.commit_time time.Time
+json Change.id string
+json Change.index uint64
+json Change.lsn string
+json Change.op client.Op
+json Change.reset *client.Reset omitempty
+json Change.reset.lsn string
+json Change.reset.previous_lsn string
+json Change.reset.previous_system_id uint64 string
+json Change.reset.previous_timeline uint32
+json Change.reset.reason string omitempty
+json Change.reset.system_id uint64 string
+json Change.reset.timeline uint32
+json Change.seq uint32
+json Change.table string
+json Change.tx_changes uint32 omitempty
+json Change.unchanged []string omitempty
+json Change.xid uint32
+type Change struct
+type Client struct
+type Column struct
+type Op string
+type Option func(*Client)
+type Options struct
+type Reset struct
+var ErrCompacted
+var ErrInvalid
+var ErrSubscriptionDeleted
+var ErrUnauthenticated

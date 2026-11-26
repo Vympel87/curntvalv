@@ -1,4 +1,4 @@
-.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-sinks sinks-up sinks-down test-ext chaos failover-up failover-down test-failover test-upgrade
+.PHONY: test build baseline proto test-pg pg-up pg-down test-ch ch-up ch-down test-sinks sinks-up sinks-down test-ext chaos failover-up failover-down test-failover test-upgrade
 
 test:
 	go vet ./...
@@ -6,6 +6,11 @@ test:
 
 build:
 	go build -o bin/curntvalv ./cmd/curntvalv
+
+# Records new public surface in compat/ and writes missing on-disk fixtures
+# (design D34). It never removes a line or rewrites a fixture.
+baseline:
+	CURNTVALV_UPDATE_BASELINE=1 go test -count=1 -run 'Compat|FormatFixtures' ./...
 
 # Regenerates internal/pb from proto/. Needs buf, protoc-gen-go and
 # protoc-gen-go-grpc on PATH (see docs/DESIGN.md D10 for versions).

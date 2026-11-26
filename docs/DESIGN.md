@@ -1196,6 +1196,63 @@ A backfill reads them from the table into the log, next to the stream.
   full batch delivered at once with nothing stored before, 60 changes at
   20/s taking two seconds in batches of at most 20.
 
+### D34. Compatibility within 1.x
+
+From 1.0 on, minor and patch releases of 1.x keep what users and their
+programs depend on. What breaks it waits for 2.0.
+
+- **Data on disk.** A 1.x node reads every data directory an earlier 1.x
+  release wrote (WAL, Raft state, snapshots, state machine commands and
+  snapshots), and those of 0.10. A cluster can be upgraded one node at a
+  time from the previous minor release (and any patch of it), and stopped
+  and started on any later 1.x. Snapshots stay in the oldest format that
+  holds their state (D29). A feature that writes new log commands is used
+  only once every node runs the release that knows them; CHANGELOG says
+  which ("Upgrading from"). Downgrades are supported between patch
+  releases only.
+- **gRPC API** (`curntvalv.v1`, between clients and nodes and between
+  nodes): no service, method, message, field or enum value is removed,
+  renumbered, renamed or retyped, and existing fields keep their meaning.
+  New ones may be added; old nodes and clients ignore them. A breaking
+  change would be a new package, `curntvalv.v2`.
+- **The JSON form of a change** (webhook, Kafka, NATS, Redis, S3, the CLI):
+  fields are not removed, renamed or retyped; new fields may appear, so
+  consumers ignore unknown ones. New kinds of events (like `schema`) come
+  only to consumers that ask for them.
+- **Command line and configuration**: commands, flags (which are also
+  config file keys), environment variables, `--sink` keys and their values
+  stay, as do exit codes (0 ok, 1 error, 2 usage). Text meant for people
+  (`status` tables, log messages) may change. A default may change in a
+  minor release when CHANGELOG says so.
+- **Metrics**: names, types and labels stay; new ones may be added.
+- **The Go client** (`github.com/Vympel87/curntvalv/client`) follows
+  semantic versioning with the server: nothing exported is removed or
+  changes signature. Packages under `internal/` are not covered.
+- **Postgres**: 14 and later. Support for a Postgres major version ends
+  only in a minor release after the community stopped supporting it, with
+  notice in CHANGELOG one release before.
+- **Deprecation**: something to be removed in 2.0 logs a warning, and
+  says so in CHANGELOG, for at least one minor release first.
+- **Enforced by tests, not by care.**
+  - `compat/` lists the public surface, one item per line: the gRPC API
+    (from the generated descriptors), the JSON form and the webhook body
+    (from the struct tags), the Go client (from its source), commands,
+    flags and environment variables (from `-h`), `--sink` keys and values,
+    and metric families. A test per part fails when a listed line is
+    missing, and also when a new one is not listed: `make baseline`
+    records it, so it is protected from then on. Recording only adds
+    lines; removing one takes an edit a reviewer sees.
+  - `internal/fsm/testdata/v1` holds files written by 1.0: the data
+    directory of a one-node cluster (entries of every kind, a membership
+    change, a snapshot with its configuration, entries after it) and a
+    state machine snapshot with every section. A node must restart from a
+    copy, every WAL entry must apply to an empty state, and the snapshot
+    must restore, each to the state in `expect.txt`. `make baseline`
+    writes the files only when missing; they are never rewritten. Each
+    later release that changes a format adds its own fixture next to them.
+  - `make test-upgrade` runs a rolling upgrade from the previous release
+    (D29).
+
 ## 4. Data model
 
 ```

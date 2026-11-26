@@ -1,0 +1,28 @@
+# Public surface baseline (design D34). Lines may be added with `make baseline`;
+# removing or changing one breaks the 1.x compatibility promise.
+change.after map[string]interface {} omitempty
+change.before map[string]interface {} omitempty
+change.columns []event.ColumnJSON omitempty
+change.columns[].key bool omitempty
+change.columns[].name string
+change.columns[].type string omitempty
+change.columns[].type_modifier int32
+change.columns[].type_oid uint32
+change.commit_time string
+change.id string
+change.index uint64
+change.lsn string
+change.op string
+change.reset *event.ResetJSON omitempty
+change.reset.lsn string
+change.reset.previous_lsn string
+change.reset.previous_system_id uint64 string
+change.reset.previous_timeline uint32
+change.reset.reason string omitempty
+change.reset.system_id uint64 string
+change.reset.timeline uint32
+change.seq uint32
+change.table string
+change.tx_changes uint32 omitempty
+change.unchanged []string omitempty
+change.xid uint32

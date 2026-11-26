@@ -1,0 +1,78 @@
+# Public surface baseline (design D34). Lines may be added with `make baseline`;
+# removing or changing one breaks the 1.x compatibility promise.
+key batch
+key columns
+key database
+key drop
+key endpoint
+key hash
+key hash_key_file
+key index
+key into
+key linger
+key mask
+key max_rate
+key max_tx
+key maxlen
+key mode
+key name
+key on_error
+key on_leave
+key op
+key policy
+key region
+key rename
+key sasl
+key schema_changes
+key start
+key stream
+key subject
+key table
+key tombstones
+key topic
+key transactional_id
+key transactions
+key type
+key url
+key where
+type clickhouse
+type clickhouse key database
+type clickhouse key into
+type clickhouse key mode
+type kafka
+type kafka key sasl
+type kafka key tombstones
+type kafka key topic
+type kafka key transactional_id
+type meilisearch
+type meilisearch key index
+type nats
+type nats key stream
+type nats key subject
+type redis
+type redis key maxlen
+type redis key stream
+type s3
+type s3 key endpoint
+type s3 key region
+type webhook
+value mode=changelog
+value mode=mirror
+value on_error=retry
+value on_error=skip
+value on_leave=delete
+value on_leave=skip
+value policy=block
+value policy=drop
+value sasl=plain
+value sasl=scram-sha-256
+value sasl=scram-sha-512
+value start=earliest
+value start=latest
+value type=clickhouse
+value type=kafka
+value type=meilisearch
+value type=nats
+value type=redis
+value type=s3
+value type=webhook

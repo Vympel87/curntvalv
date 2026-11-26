@@ -1,0 +1,30 @@
+# Public surface baseline (design D34). Lines may be added with `make baseline`;
+# removing or changing one breaks the 1.x compatibility promise.
+webhook.events []event.JSON
+webhook.events[].after map[string]interface {} omitempty
+webhook.events[].before map[string]interface {} omitempty
+webhook.events[].columns []event.ColumnJSON omitempty
+webhook.events[].columns[].key bool omitempty
+webhook.events[].columns[].name string
+webhook.events[].columns[].type string omitempty
+webhook.events[].columns[].type_modifier int32
+webhook.events[].columns[].type_oid uint32
+webhook.events[].commit_time string
+webhook.events[].id string
+webhook.events[].index uint64
+webhook.events[].lsn string
+webhook.events[].op string
+webhook.events[].reset *event.ResetJSON omitempty
+webhook.events[].reset.lsn string
+webhook.events[].reset.previous_lsn string
+webhook.events[].reset.previous_system_id uint64 string
+webhook.events[].reset.previous_timeline uint32
+webhook.events[].reset.reason string omitempty
+webhook.events[].reset.system_id uint64 string
+webhook.events[].reset.timeline uint32
+webhook.events[].seq uint32
+webhook.events[].table string
+webhook.events[].tx_changes uint32 omitempty
+webhook.events[].unchanged []string omitempty
+webhook.events[].xid uint32
+webhook.sink string

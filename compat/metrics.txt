@@ -1,0 +1,39 @@
+# Public surface baseline (design D34). Lines may be added with `make baseline`;
+# removing or changing one breaks the 1.x compatibility promise.
+metric curntvalv_backfill_rows gauge table
+metric curntvalv_backfill_state gauge state,table
+metric curntvalv_info gauge node,version
+metric curntvalv_log_bytes gauge
+metric curntvalv_raft_applied_index gauge
+metric curntvalv_raft_became_leader_total counter
+metric curntvalv_raft_commit_index gauge
+metric curntvalv_raft_elections_total counter
+metric curntvalv_raft_first_index gauge
+metric curntvalv_raft_last_index gauge
+metric curntvalv_raft_leader_known gauge
+metric curntvalv_raft_snapshot_index gauge
+metric curntvalv_raft_snapshots_installed_total counter
+metric curntvalv_raft_snapshots_taken_total counter
+metric curntvalv_raft_state gauge state
+metric curntvalv_raft_term gauge
+metric curntvalv_retention_blocked gauge sink
+metric curntvalv_retention_compact_limit gauge
+metric curntvalv_retention_max_age_seconds gauge
+metric curntvalv_retention_max_bytes gauge
+metric curntvalv_sink_delivered_total counter sink,type
+metric curntvalv_sink_failures_total counter sink,type
+metric curntvalv_sink_generation gauge sink,type
+metric curntvalv_sink_lag_entries gauge sink,type
+metric curntvalv_sink_offset gauge sink,type
+metric curntvalv_sink_skipped_total counter sink,type
+metric curntvalv_sink_state gauge sink,state,type
+metric curntvalv_source_batches_total counter
+metric curntvalv_source_events_total counter
+metric curntvalv_source_state gauge state
+metric curntvalv_source_transactions_total counter
+metric curntvalv_subscribe_events_sent_total counter
+metric curntvalv_subscribe_streams gauge
+metric go_gc_cycles_total counter
+metric go_goroutines gauge
+metric go_memstats_heap_alloc_bytes gauge
+metric go_memstats_sys_bytes gauge

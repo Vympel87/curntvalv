@@ -1,0 +1,114 @@
+# Public surface baseline (design D34). Lines may be added with `make baseline`;
+# removing or changing one breaks the 1.x compatibility promise.
+command backfill cancel
+command backfill start
+command certs
+command dev
+command kv del
+command kv get
+command kv put
+command log
+command member add
+command member list
+command member remove
+command server
+command sink reset
+command sink skipped
+command source reset
+command status
+command subscribe
+command subscription delete
+command subscription list
+command subscription reset
+command version
+env CURNTVALV_ADDR
+env CURNTVALV_AUTH_TOKEN
+env CURNTVALV_CONFIG
+env CURNTVALV_PG_URL
+env CURNTVALV_TLS_CA
+env CURNTVALV_TOKEN
+flag backfill --addr string
+flag backfill --timeout duration
+flag backfill --tls-ca string
+flag backfill --token-file string
+flag certs --days int
+flag certs --out string
+flag dev --data-dir string
+flag dev --http-listen string
+flag dev --listen string
+flag dev --log-level string
+flag dev --no-open
+flag dev --pg-publication string
+flag dev --pg-slot string
+flag dev --pg-url string
+flag dev --sink value
+flag kv --addr string
+flag kv --timeout duration
+flag kv --tls-ca string
+flag kv --token-file string
+flag log --addr string
+flag log --follow
+flag log --from uint
+flag log --limit int
+flag log --tls-ca string
+flag log --token-file string
+flag member --addr string
+flag member --timeout duration
+flag member --tls-ca string
+flag member --token-file string
+flag server --auth-token-file string
+flag server --backfill-initial
+flag server --check
+flag server --config string
+flag server --data-dir string
+flag server --election-ticks int
+flag server --heartbeat-ticks int
+flag server --http-listen string
+flag server --id uint
+flag server --listen string
+flag server --log-level string
+flag server --peers string
+flag server --pg-publication string
+flag server --pg-slot string
+flag server --pg-url string
+flag server --pre-vote
+flag server --retention-age string
+flag server --retention-bytes string
+flag server --sink value
+flag server --snapshot-entries int
+flag server --tick duration
+flag server --tls-ca string
+flag server --tls-cert string
+flag server --tls-key string
+flag server --unsafe-no-fsync
+flag server --wal-segment-bytes string
+flag sink --addr string
+flag sink --timeout duration
+flag sink --tls-ca string
+flag sink --to string
+flag sink --token-file string
+flag source --addr string
+flag source --timeout duration
+flag source --tls-ca string
+flag source --to-slot
+flag source --token-file string
+flag status --addr string
+flag status --timeout duration
+flag status --tls-ca string
+flag status --token-file string
+flag subscribe --addr string
+flag subscribe --from uint
+flag subscribe --limit int
+flag subscribe --name string
+flag subscribe --policy string
+flag subscribe --schema-changes
+flag subscribe --start string
+flag subscribe --table value
+flag subscribe --tls-ca string
+flag subscribe --token-file string
+flag subscribe --transactions
+flag subscription --addr string
+flag subscription --timeout duration
+flag subscription --tls-ca string
+flag subscription --to string
+flag subscription --token-file string

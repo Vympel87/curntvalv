@@ -1,0 +1,10 @@
+kv a=1
+kv c=3
+source commit=150 end=151 partial=200 next_seq=2 anomalies=0 system=7300000000000000001 timeline=1
+schema 14112650181720617726 public.orders oid=16384 identity=d id:23:-1:true,note:25:-1:false
+last_change 14
+sink hook offset=2 gen=1
+skip hook total=1 index=5 id=0/64:1 error="rejected" time=1700000003000000
+subscription billing offset=4 gen=0 drop=false created=8
+backfill public.orders id=10 state=BACKFILL_STATE_PENDING rows=1 last_key=2 end=0
+member 1 addr=127.0.0.1:7001 voter=true

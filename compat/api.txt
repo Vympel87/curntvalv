@@ -1,0 +1,320 @@
+# Public surface baseline (design D34). Lines may be added with `make baseline`;
+# removing or changing one breaks the 1.x compatibility promise.
+enum curntvalv.v1.BackfillState 0 BACKFILL_STATE_UNSPECIFIED
+enum curntvalv.v1.BackfillState 1 BACKFILL_STATE_PENDING
+enum curntvalv.v1.BackfillState 2 BACKFILL_STATE_DONE
+enum curntvalv.v1.BackfillState 3 BACKFILL_STATE_CANCELLED
+enum curntvalv.v1.BackfillState 4 BACKFILL_STATE_FAILED
+enum curntvalv.v1.EntryKind 0 ENTRY_KIND_UNSPECIFIED
+enum curntvalv.v1.EntryKind 1 ENTRY_KIND_NOOP
+enum curntvalv.v1.EntryKind 2 ENTRY_KIND_META
+enum curntvalv.v1.EntryKind 3 ENTRY_KIND_TX_BATCH
+enum curntvalv.v1.EntryKind 4 ENTRY_KIND_CONFIG
+enum curntvalv.v1.Op 0 OP_UNSPECIFIED
+enum curntvalv.v1.Op 1 OP_INSERT
+enum curntvalv.v1.Op 2 OP_UPDATE
+enum curntvalv.v1.Op 3 OP_DELETE
+enum curntvalv.v1.Op 4 OP_TRUNCATE
+enum curntvalv.v1.Op 5 OP_SOURCE_RESET
+enum curntvalv.v1.Op 6 OP_BACKFILL
+enum curntvalv.v1.Op 7 OP_SCHEMA
+enum curntvalv.v1.ResetPosition 0 RESET_POSITION_UNSPECIFIED
+enum curntvalv.v1.ResetPosition 1 RESET_POSITION_EARLIEST
+enum curntvalv.v1.ResetPosition 2 RESET_POSITION_LATEST
+enum curntvalv.v1.ResetPosition 3 RESET_POSITION_INDEX
+enum curntvalv.v1.SubscriptionCommand.Action 0 ACTION_UNSPECIFIED
+enum curntvalv.v1.SubscriptionCommand.Action 1 ACTION_CREATE
+enum curntvalv.v1.SubscriptionCommand.Action 2 ACTION_COMMIT
+enum curntvalv.v1.SubscriptionCommand.Action 3 ACTION_RESET
+enum curntvalv.v1.SubscriptionCommand.Action 4 ACTION_DELETE
+enum curntvalv.v1.SubscriptionStart 0 SUBSCRIPTION_START_UNSPECIFIED
+enum curntvalv.v1.SubscriptionStart 1 SUBSCRIPTION_START_EARLIEST
+enum curntvalv.v1.SubscriptionStart 2 SUBSCRIPTION_START_LATEST
+enum curntvalv.v1.ValueKind 0 VALUE_KIND_UNSPECIFIED
+enum curntvalv.v1.ValueKind 1 VALUE_KIND_NULL
+enum curntvalv.v1.ValueKind 2 VALUE_KIND_TEXT
+enum curntvalv.v1.ValueKind 3 VALUE_KIND_UNCHANGED
+enum curntvalv.v1.ValueKind 4 VALUE_KIND_BINARY
+field curntvalv.v1.AddMemberRequest 1 id uint64
+field curntvalv.v1.AddMemberRequest 2 addr string
+field curntvalv.v1.AddMemberResponse 1 index uint64
+field curntvalv.v1.Backfill 1 table string
+field curntvalv.v1.Backfill 2 id uint64
+field curntvalv.v1.Backfill 3 state curntvalv.v1.BackfillState
+field curntvalv.v1.Backfill 4 last_key repeated bytes
+field curntvalv.v1.Backfill 5 rows uint64
+field curntvalv.v1.Backfill 6 end_index uint64
+field curntvalv.v1.Backfill 7 error string
+field curntvalv.v1.BackfillChunk 1 table string
+field curntvalv.v1.BackfillChunk 2 id uint64
+field curntvalv.v1.BackfillChunk 3 after_key repeated bytes
+field curntvalv.v1.BackfillChunk 4 last_key repeated bytes
+field curntvalv.v1.BackfillChunk 5 done bool
+field curntvalv.v1.BackfillCommand 1 start repeated string
+field curntvalv.v1.BackfillCommand 2 cancel repeated string
+field curntvalv.v1.BackfillCommand 3 fail_table string
+field curntvalv.v1.BackfillCommand 4 fail_id uint64
+field curntvalv.v1.BackfillCommand 5 fail_error string
+field curntvalv.v1.CancelBackfillRequest 1 tables repeated string
+field curntvalv.v1.CancelBackfillResponse 1 index uint64
+field curntvalv.v1.CancelBackfillResponse 2 tables repeated string
+field curntvalv.v1.ChangeEvent 1 id string
+field curntvalv.v1.ChangeEvent 2 index uint64
+field curntvalv.v1.ChangeEvent 3 commit_lsn uint64
+field curntvalv.v1.ChangeEvent 4 seq uint32
+field curntvalv.v1.ChangeEvent 5 xid uint32
+field curntvalv.v1.ChangeEvent 6 commit_time_us int64
+field curntvalv.v1.ChangeEvent 7 event curntvalv.v1.Event
+field curntvalv.v1.ChangeEvent 8 tx_changes uint32
+field curntvalv.v1.Column 1 name string
+field curntvalv.v1.Column 2 type_oid uint32
+field curntvalv.v1.Column 3 type_modifier int32
+field curntvalv.v1.Column 4 key bool
+field curntvalv.v1.CommitSubscriptionRequest 1 name string
+field curntvalv.v1.CommitSubscriptionRequest 2 generation uint64
+field curntvalv.v1.CommitSubscriptionRequest 3 offset uint64
+field curntvalv.v1.DeleteRequest 1 key string
+field curntvalv.v1.DeleteResponse 1 index uint64
+field curntvalv.v1.DeleteSubscriptionRequest 1 name string
+field curntvalv.v1.DeleteSubscriptionResponse 1 index uint64
+field curntvalv.v1.Entry 1 index uint64
+field curntvalv.v1.Entry 2 term uint64
+field curntvalv.v1.Entry 3 type uint32
+field curntvalv.v1.Entry 4 data bytes
+field curntvalv.v1.Event 1 schema_id uint64
+field curntvalv.v1.Event 2 op curntvalv.v1.Op
+field curntvalv.v1.Event 3 before curntvalv.v1.Row
+field curntvalv.v1.Event 4 after curntvalv.v1.Row
+field curntvalv.v1.Event 5 source_reset curntvalv.v1.SourceReset
+field curntvalv.v1.GetRequest 1 key string
+field curntvalv.v1.GetResponse 1 found bool
+field curntvalv.v1.GetResponse 2 value bytes
+field curntvalv.v1.GetResponse 3 read_index uint64
+field curntvalv.v1.JoinSubscriptionRequest 1 name string
+field curntvalv.v1.JoinSubscriptionRequest 2 start curntvalv.v1.SubscriptionStart
+field curntvalv.v1.JoinSubscriptionRequest 3 drop bool
+field curntvalv.v1.JoinSubscriptionRequest 4 must_exist bool
+field curntvalv.v1.JoinSubscriptionResponse 1 subscription curntvalv.v1.Subscription
+field curntvalv.v1.JoinSubscriptionResponse 2 created bool
+field curntvalv.v1.LogEntry 1 index uint64
+field curntvalv.v1.LogEntry 2 term uint64
+field curntvalv.v1.LogEntry 3 kind curntvalv.v1.EntryKind
+field curntvalv.v1.LogEntry 4 tx_batch curntvalv.v1.TxBatch
+field curntvalv.v1.Member 1 id uint64
+field curntvalv.v1.Member 2 addr string
+field curntvalv.v1.Member 3 voter bool
+field curntvalv.v1.Member 4 match_index uint64
+field curntvalv.v1.PutRequest 1 key string
+field curntvalv.v1.PutRequest 2 value bytes
+field curntvalv.v1.PutResponse 1 index uint64
+field curntvalv.v1.RaftMessage 1 type uint32
+field curntvalv.v1.RaftMessage 10 leader_commit uint64
+field curntvalv.v1.RaftMessage 11 vote_granted bool
+field curntvalv.v1.RaftMessage 12 success bool
+field curntvalv.v1.RaftMessage 13 match_index uint64
+field curntvalv.v1.RaftMessage 14 snapshot curntvalv.v1.Snapshot
+field curntvalv.v1.RaftMessage 15 read_id uint64
+field curntvalv.v1.RaftMessage 2 from uint64
+field curntvalv.v1.RaftMessage 3 to uint64
+field curntvalv.v1.RaftMessage 4 term uint64
+field curntvalv.v1.RaftMessage 5 last_log_index uint64
+field curntvalv.v1.RaftMessage 6 last_log_term uint64
+field curntvalv.v1.RaftMessage 7 prev_log_index uint64
+field curntvalv.v1.RaftMessage 8 prev_log_term uint64
+field curntvalv.v1.RaftMessage 9 entries repeated curntvalv.v1.Entry
+field curntvalv.v1.ReadLogRequest 1 from_index uint64
+field curntvalv.v1.ReadLogRequest 2 limit uint32
+field curntvalv.v1.ReadLogResponse 1 entries repeated curntvalv.v1.LogEntry
+field curntvalv.v1.ReadLogResponse 2 first_index uint64
+field curntvalv.v1.ReadLogResponse 3 commit_index uint64
+field curntvalv.v1.ReadLogResponse 4 schemas map<uint64, curntvalv.v1.Schema>
+field curntvalv.v1.RemoveMemberRequest 1 id uint64
+field curntvalv.v1.RemoveMemberResponse 1 index uint64
+field curntvalv.v1.ResetSinkRequest 1 name string
+field curntvalv.v1.ResetSinkRequest 2 position curntvalv.v1.ResetPosition
+field curntvalv.v1.ResetSinkRequest 3 index uint64
+field curntvalv.v1.ResetSinkResponse 1 index uint64
+field curntvalv.v1.ResetSinkResponse 2 offset uint64
+field curntvalv.v1.ResetSinkResponse 3 generation uint64
+field curntvalv.v1.ResetSourceResponse 1 index uint64
+field curntvalv.v1.ResetSourceResponse 2 source_reset curntvalv.v1.SourceReset
+field curntvalv.v1.ResetSubscriptionRequest 1 name string
+field curntvalv.v1.ResetSubscriptionRequest 2 position curntvalv.v1.ResetPosition
+field curntvalv.v1.ResetSubscriptionRequest 3 index uint64
+field curntvalv.v1.ResetSubscriptionResponse 1 index uint64
+field curntvalv.v1.ResetSubscriptionResponse 2 subscription curntvalv.v1.Subscription
+field curntvalv.v1.RetentionStatus 1 max_age_seconds int64
+field curntvalv.v1.RetentionStatus 2 max_bytes int64
+field curntvalv.v1.RetentionStatus 3 log_bytes int64
+field curntvalv.v1.RetentionStatus 4 compact_limit uint64
+field curntvalv.v1.RetentionStatus 5 blocked_by string
+field curntvalv.v1.Row 1 values repeated curntvalv.v1.Value
+field curntvalv.v1.Schema 1 id uint64
+field curntvalv.v1.Schema 2 relation_oid uint32
+field curntvalv.v1.Schema 3 namespace string
+field curntvalv.v1.Schema 4 name string
+field curntvalv.v1.Schema 5 replica_identity uint32
+field curntvalv.v1.Schema 6 columns repeated curntvalv.v1.Column
+field curntvalv.v1.SinkSkip 1 sink string
+field curntvalv.v1.SinkSkip 2 index uint64
+field curntvalv.v1.SinkSkip 3 id string
+field curntvalv.v1.SinkSkip 4 error string
+field curntvalv.v1.SinkSkip 5 time_us int64
+field curntvalv.v1.SinkSkipsRequest 1 name string
+field curntvalv.v1.SinkSkipsResponse 1 total uint64
+field curntvalv.v1.SinkSkipsResponse 2 recent repeated curntvalv.v1.SinkSkip
+field curntvalv.v1.SinkStatus 1 name string
+field curntvalv.v1.SinkStatus 10 failures uint64
+field curntvalv.v1.SinkStatus 11 skipped uint64
+field curntvalv.v1.SinkStatus 12 on_error string
+field curntvalv.v1.SinkStatus 2 type string
+field curntvalv.v1.SinkStatus 3 state string
+field curntvalv.v1.SinkStatus 4 offset uint64
+field curntvalv.v1.SinkStatus 5 lag uint64
+field curntvalv.v1.SinkStatus 6 delivered uint64
+field curntvalv.v1.SinkStatus 7 last_error string
+field curntvalv.v1.SinkStatus 8 policy string
+field curntvalv.v1.SinkStatus 9 generation uint64
+field curntvalv.v1.Snapshot 1 index uint64
+field curntvalv.v1.Snapshot 2 term uint64
+field curntvalv.v1.Snapshot 3 data bytes
+field curntvalv.v1.SourceReset 1 previous_lsn uint64
+field curntvalv.v1.SourceReset 2 previous_system_id uint64
+field curntvalv.v1.SourceReset 3 previous_timeline uint32
+field curntvalv.v1.SourceReset 4 lsn uint64
+field curntvalv.v1.SourceReset 5 system_id uint64
+field curntvalv.v1.SourceReset 6 timeline uint32
+field curntvalv.v1.SourceReset 7 reason string
+field curntvalv.v1.StartBackfillRequest 1 tables repeated string
+field curntvalv.v1.StartBackfillResponse 1 index uint64
+field curntvalv.v1.StartBackfillResponse 2 tables repeated string
+field curntvalv.v1.StatusResponse 1 id uint64
+field curntvalv.v1.StatusResponse 10 snapshot_index uint64
+field curntvalv.v1.StatusResponse 11 source_state string
+field curntvalv.v1.StatusResponse 12 source_error string
+field curntvalv.v1.StatusResponse 13 sinks repeated curntvalv.v1.SinkStatus
+field curntvalv.v1.StatusResponse 14 retention curntvalv.v1.RetentionStatus
+field curntvalv.v1.StatusResponse 15 backfills repeated curntvalv.v1.Backfill
+field curntvalv.v1.StatusResponse 16 members repeated curntvalv.v1.Member
+field curntvalv.v1.StatusResponse 17 config_index uint64
+field curntvalv.v1.StatusResponse 18 subscriptions repeated curntvalv.v1.SubscriptionStatus
+field curntvalv.v1.StatusResponse 2 term uint64
+field curntvalv.v1.StatusResponse 3 state string
+field curntvalv.v1.StatusResponse 4 leader uint64
+field curntvalv.v1.StatusResponse 5 leader_addr string
+field curntvalv.v1.StatusResponse 6 first_index uint64
+field curntvalv.v1.StatusResponse 7 last_index uint64
+field curntvalv.v1.StatusResponse 8 commit_index uint64
+field curntvalv.v1.StatusResponse 9 last_applied uint64
+field curntvalv.v1.StreamRequest 1 message curntvalv.v1.RaftMessage
+field curntvalv.v1.SubscribeRequest 1 from_index uint64
+field curntvalv.v1.SubscribeRequest 2 tables repeated string
+field curntvalv.v1.SubscribeRequest 3 transactions bool
+field curntvalv.v1.SubscribeRequest 4 schema_changes bool
+field curntvalv.v1.SubscribeResponse 1 events repeated curntvalv.v1.ChangeEvent
+field curntvalv.v1.SubscribeResponse 2 schemas map<uint64, curntvalv.v1.Schema>
+field curntvalv.v1.SubscribeResponse 3 next_index uint64
+field curntvalv.v1.Subscription 1 name string
+field curntvalv.v1.Subscription 2 offset uint64
+field curntvalv.v1.Subscription 3 generation uint64
+field curntvalv.v1.Subscription 4 drop bool
+field curntvalv.v1.Subscription 5 created_index uint64
+field curntvalv.v1.SubscriptionCommand 1 action curntvalv.v1.SubscriptionCommand.Action
+field curntvalv.v1.SubscriptionCommand 2 name string
+field curntvalv.v1.SubscriptionCommand 3 offset uint64
+field curntvalv.v1.SubscriptionCommand 4 generation uint64
+field curntvalv.v1.SubscriptionCommand 5 drop bool
+field curntvalv.v1.SubscriptionStatus 1 name string
+field curntvalv.v1.SubscriptionStatus 2 offset uint64
+field curntvalv.v1.SubscriptionStatus 3 generation uint64
+field curntvalv.v1.SubscriptionStatus 4 policy string
+field curntvalv.v1.SubscriptionStatus 5 lag uint64
+field curntvalv.v1.TxBatch 1 commit_lsn uint64
+field curntvalv.v1.TxBatch 10 timeline uint32
+field curntvalv.v1.TxBatch 11 backfill curntvalv.v1.BackfillChunk
+field curntvalv.v1.TxBatch 2 end_lsn uint64
+field curntvalv.v1.TxBatch 3 commit_time_us int64
+field curntvalv.v1.TxBatch 4 xid uint32
+field curntvalv.v1.TxBatch 5 first_seq uint32
+field curntvalv.v1.TxBatch 6 final bool
+field curntvalv.v1.TxBatch 7 schemas repeated curntvalv.v1.Schema
+field curntvalv.v1.TxBatch 8 events repeated curntvalv.v1.Event
+field curntvalv.v1.TxBatch 9 system_id uint64
+field curntvalv.v1.Value 1 kind curntvalv.v1.ValueKind
+field curntvalv.v1.Value 2 data bytes
+message curntvalv.v1.AddMemberRequest
+message curntvalv.v1.AddMemberResponse
+message curntvalv.v1.Backfill
+message curntvalv.v1.BackfillChunk
+message curntvalv.v1.BackfillCommand
+message curntvalv.v1.CancelBackfillRequest
+message curntvalv.v1.CancelBackfillResponse
+message curntvalv.v1.ChangeEvent
+message curntvalv.v1.Column
+message curntvalv.v1.CommitSubscriptionRequest
+message curntvalv.v1.CommitSubscriptionResponse
+message curntvalv.v1.DeleteRequest
+message curntvalv.v1.DeleteResponse
+message curntvalv.v1.DeleteSubscriptionRequest
+message curntvalv.v1.DeleteSubscriptionResponse
+message curntvalv.v1.Entry
+message curntvalv.v1.Event
+message curntvalv.v1.GetRequest
+message curntvalv.v1.GetResponse
+message curntvalv.v1.JoinSubscriptionRequest
+message curntvalv.v1.JoinSubscriptionResponse
+message curntvalv.v1.LogEntry
+message curntvalv.v1.Member
+message curntvalv.v1.PutRequest
+message curntvalv.v1.PutResponse
+message curntvalv.v1.RaftMessage
+message curntvalv.v1.ReadLogRequest
+message curntvalv.v1.ReadLogResponse
+message curntvalv.v1.RemoveMemberRequest
+message curntvalv.v1.RemoveMemberResponse
+message curntvalv.v1.ResetSinkRequest
+message curntvalv.v1.ResetSinkResponse
+message curntvalv.v1.ResetSourceRequest
+message curntvalv.v1.ResetSourceResponse
+message curntvalv.v1.ResetSubscriptionRequest
+message curntvalv.v1.ResetSubscriptionResponse
+message curntvalv.v1.RetentionStatus
+message curntvalv.v1.Row
+message curntvalv.v1.Schema
+message curntvalv.v1.SinkSkip
+message curntvalv.v1.SinkSkipsRequest
+message curntvalv.v1.SinkSkipsResponse
+message curntvalv.v1.SinkStatus
+message curntvalv.v1.Snapshot
+message curntvalv.v1.SourceReset
+message curntvalv.v1.StartBackfillRequest
+message curntvalv.v1.StartBackfillResponse
+message curntvalv.v1.StatusRequest
+message curntvalv.v1.StatusResponse
+message curntvalv.v1.StreamRequest
+message curntvalv.v1.StreamResponse
+message curntvalv.v1.SubscribeRequest
+message curntvalv.v1.SubscribeResponse
+message curntvalv.v1.Subscription
+message curntvalv.v1.SubscriptionCommand
+message curntvalv.v1.SubscriptionStatus
+message curntvalv.v1.TxBatch
+message curntvalv.v1.Value
+rpc AdminService.AddMember(curntvalv.v1.AddMemberRequest) returns (curntvalv.v1.AddMemberResponse)
+rpc AdminService.CancelBackfill(curntvalv.v1.CancelBackfillRequest) returns (curntvalv.v1.CancelBackfillResponse)
+rpc AdminService.Delete(curntvalv.v1.DeleteRequest) returns (curntvalv.v1.DeleteResponse)
+rpc AdminService.DeleteSubscription(curntvalv.v1.DeleteSubscriptionRequest) returns (curntvalv.v1.DeleteSubscriptionResponse)
+rpc AdminService.Get(curntvalv.v1.GetRequest) returns (curntvalv.v1.GetResponse)
+rpc AdminService.Put(curntvalv.v1.PutRequest) returns (curntvalv.v1.PutResponse)
+rpc AdminService.ReadLog(curntvalv.v1.ReadLogRequest) returns (curntvalv.v1.ReadLogResponse)
+rpc AdminService.RemoveMember(curntvalv.v1.RemoveMemberRequest) returns (curntvalv.v1.RemoveMemberResponse)
+rpc AdminService.ResetSink(curntvalv.v1.ResetSinkRequest) returns (curntvalv.v1.ResetSinkResponse)
+rpc AdminService.ResetSource(curntvalv.v1.ResetSourceRequest) returns (curntvalv.v1.ResetSourceResponse)
+rpc AdminService.ResetSubscription(curntvalv.v1.ResetSubscriptionRequest) returns (curntvalv.v1.ResetSubscriptionResponse)
+rpc AdminService.SinkSkips(curntvalv.v1.SinkSkipsRequest) returns (curntvalv.v1.SinkSkipsResponse)
+rpc AdminService.StartBackfill(curntvalv.v1.StartBackfillRequest) returns (curntvalv.v1.StartBackfillResponse)
+rpc AdminService.Status(curntvalv.v1.StatusRequest) returns (curntvalv.v1.StatusResponse)
+rpc RaftService.Stream(stream curntvalv.v1.StreamRequest) returns (curntvalv.v1.StreamResponse)
+rpc SubscribeService.CommitSubscription(curntvalv.v1.CommitSubscriptionRequest) returns (curntvalv.v1.CommitSubscriptionResponse)
+rpc SubscribeService.JoinSubscription(curntvalv.v1.JoinSubscriptionRequest) returns (curntvalv.v1.JoinSubscriptionResponse)
+rpc SubscribeService.Subscribe(curntvalv.v1.SubscribeRequest) returns (stream curntvalv.v1.SubscribeResponse)

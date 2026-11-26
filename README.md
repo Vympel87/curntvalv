@@ -577,6 +577,16 @@ make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 
 Requires Go 1.25+.
 
+## Compatibility
+
+From 1.0 on, 1.x releases keep: data directories (a node reads what any
+earlier 1.x wrote; upgrade one node at a time from the previous minor
+release), the gRPC API, the JSON form of a change (new fields may appear),
+commands, flags, config keys, environment variables and `--sink` options,
+metric names, and the Go client's API. Tests enforce it: `compat/` lists
+the public surface and `internal/fsm/testdata/v1` holds data files written
+by 1.0 that every later release must read. Details: design D34.
+
 ## License
 
 MIT

@@ -82,6 +82,7 @@ const usage = `usage:
   curntvalv log [--from N] [--follow] [--addr HOST:PORT,...]
   curntvalv subscribe [--table NAME]... [--from N | --name NAME] [--addr HOST:PORT,...]
   curntvalv sink reset NAME --to earliest|latest|INDEX [--addr HOST:PORT,...]
+  curntvalv sink skipped NAME [--addr HOST:PORT,...]  changes passed over (on_error=skip)
   curntvalv source reset --to-slot [--addr HOST:PORT,...]   after a failover check stopped ingest
   curntvalv backfill start TABLE... [--addr HOST:PORT,...]  copy existing rows into the log
   curntvalv backfill cancel TABLE... [--addr HOST:PORT,...]

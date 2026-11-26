@@ -78,10 +78,19 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 
 ## v1.0: stable (next)
 
-- Compatibility promise: log entries, snapshots, the JSON form and the gRPC
-  API change only compatibly within 1.x
+- Compatibility promise (design D34): enforced by baselines in `compat/`
+  and data fixtures written by 1.0 (done)
 - Rolling upgrade test from every 0.x release that is still supported
 - Operations guide (sizing, backups, recovery, monitoring), benchmarks
 - Longer chaos runs in CI
 - README: drop the early-development warning; a new demo GIF recorded from
   a script in the repo, so it can be made again
+
+## After 1.0
+
+- More sources than Postgres. Every database captures changes its own
+  way, so each is a source of its own next to `internal/source/pg`, with
+  positions, failover and backfill worked out for it: MySQL and MariaDB
+  (binlog, GTIDs) first, then SQL Server (CDC tables) and others as asked.
+  The log, sinks and subscribers stay as they are; LSN-based fields of the
+  JSON form get a source-neutral counterpart.
