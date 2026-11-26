@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
-## [Unreleased]
+## [0.7.0]
 
 ### Added
 
@@ -241,6 +241,7 @@ First release. Early development: not ready for production.
 - No Postgres failover handling yet (design D7), no initial table
   snapshot, static membership.
 
+[0.7.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.4.0

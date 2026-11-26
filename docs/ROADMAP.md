@@ -2,7 +2,7 @@
 
 Each milestone ends with something that can be run and shown.
 
-Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0.
+Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 
 | # | Milestone | Done when |
 |---|---|---|
@@ -51,7 +51,7 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0.
 - Hashed columns with a secret key (design D26)
 - Updates leaving a filter delivered as deletes (design D27)
 
-## v0.7 (in progress)
+## v0.7 (done)
 
 - Poison changes: `on_error=skip` (design D28)
 - Rolling upgrade test from the previous release (design D29)

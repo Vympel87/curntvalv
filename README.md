@@ -68,6 +68,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Filters and column projection per sink, named subscriptions | ✅ implemented (v0.4) |
 | Filter expressions, masks, renames, ClickHouse mirror tables, Kafka tombstones | ✅ implemented (v0.5) |
 | Hashed columns, rows leaving a filter as deletes | ✅ implemented (v0.6) |
+| Poison changes (`on_error=skip`), rolling upgrade test | ✅ implemented (v0.7) |
 
 ## Install
 
