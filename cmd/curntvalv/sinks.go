@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,15 +24,37 @@ import (
 //
 //	name=NAME,type=webhook,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]
 //	name=NAME,type=clickhouse,url=URL[,database=DB][,into=TABLE][,table=T]...[,start=...][,policy=...]
+//	name=NAME,type=nats,url=nats://HOST:PORT[,subject=PREFIX][,stream=STREAM]...
+//	name=NAME,type=redis,url=redis://HOST:PORT[/DB][,stream=KEY][,maxlen=N]...
+//	name=NAME,type=meilisearch,url=http://[:KEY@]HOST:PORT[,index=UID]...
 type sinkSpec struct {
 	name, typ, url    string
 	tables            []string
 	startLatest       bool
 	drop              bool // policy=drop: retention does not wait for this sink
 	database, chTable string
+	subject, stream   string // nats; stream also redis
+	maxLen            int64  // redis
+	index             string // meilisearch
 }
 
-const sinkUsage = "name=NAME,type=webhook|clickhouse,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop][,database=DB][,into=TABLE]"
+const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
+	"[,database=DB][,into=TABLE] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)"
+
+// sinkKeys lists the keys only some sink types take.
+func sinkKeys(typ string) []string {
+	switch typ {
+	case "clickhouse":
+		return []string{"database", "into"}
+	case "nats":
+		return []string{"subject", "stream"}
+	case "redis":
+		return []string{"stream", "maxlen"}
+	case "meilisearch":
+		return []string{"index"}
+	}
+	return nil
+}
 
 func parseSinkSpec(s string) (sinkSpec, error) {
 	var sp sinkSpec
@@ -71,6 +95,18 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.database = v
 		case "into":
 			sp.chTable = v
+		case "subject":
+			sp.subject = v
+		case "stream":
+			sp.stream = v
+		case "maxlen":
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n < 0 {
+				return sinkSpec{}, usageErr("--sink: maxlen must be a number of entries")
+			}
+			sp.maxLen = n
+		case "index":
+			sp.index = v
 		default:
 			return sinkSpec{}, usageErr("--sink: unknown key %q (%s)", k, sinkUsage)
 		}
@@ -78,12 +114,15 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 	switch {
 	case !fsm.ValidSinkName(sp.name):
 		return sinkSpec{}, usageErr("--sink: name %q must be lower case letters, digits, _ and - (%s)", sp.name, sinkUsage)
-	case sp.typ != "webhook" && sp.typ != "clickhouse":
-		return sinkSpec{}, usageErr("--sink %s: type must be webhook or clickhouse", sp.name)
+	case !slices.Contains([]string{"webhook", "clickhouse", "nats", "redis", "meilisearch"}, sp.typ):
+		return sinkSpec{}, usageErr("--sink %s: type must be webhook, clickhouse, nats, redis or meilisearch", sp.name)
 	case sp.url == "":
 		return sinkSpec{}, usageErr("--sink %s: url is required", sp.name)
-	case sp.typ != "clickhouse" && (sp.database != "" || sp.chTable != ""):
-		return sinkSpec{}, usageErr("--sink %s: database and into are for clickhouse sinks", sp.name)
+	}
+	for _, k := range []string{"database", "into", "subject", "stream", "maxlen", "index"} {
+		if seen[k] && !slices.Contains(sinkKeys(sp.typ), k) {
+			return sinkSpec{}, usageErr("--sink %s: %s is not a %s option", sp.name, k, sp.typ)
+		}
 	}
 	return sp, nil
 }
@@ -95,6 +134,12 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 		return sink.NewWebhook(sink.WebhookConfig{Name: sp.name, URL: sp.url})
 	case "clickhouse":
 		return sink.NewClickHouse(sink.ClickHouseConfig{URL: sp.url, Database: sp.database, Table: sp.chTable})
+	case "nats":
+		return sink.NewNATS(sink.NATSConfig{URL: sp.url, Subject: sp.subject, Stream: sp.stream})
+	case "redis":
+		return sink.NewRedis(sink.RedisConfig{URL: sp.url, Stream: sp.stream, MaxLen: sp.maxLen})
+	case "meilisearch":
+		return sink.NewMeilisearch(sink.MeilisearchConfig{URL: sp.url, Index: sp.index})
 	}
 	return nil, fmt.Errorf("unknown sink type %q", sp.typ)
 }

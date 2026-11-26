@@ -32,7 +32,21 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
+      redis:
+        image: redis:7.4
+        ports:
+          - 6379:6379
+      meilisearch:
+        image: getmeili/meilisearch:v1.11
+        env:
+          MEILI_MASTER_KEY: curntvalv-test-key
+          MEILI_NO_ANALYTICS: "true"
+        ports:
+          - 7700:7700
     env:
+      CURNTVALV_TEST_REDIS_URL: redis://localhost:6379
+      CURNTVALV_TEST_MEILI_URL: http://:curntvalv-test-key@localhost:7700
+      CURNTVALV_TEST_NATS_URL: nats://localhost:4222
       CURNTVALV_TEST_CH_URL: http://default:curntvalv@localhost:8123
       CURNTVALV_TEST_PG_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
@@ -44,6 +58,9 @@ jobs:
           docker exec "$id" psql -U postgres -c "ALTER SYSTEM SET max_wal_senders = 20"
           docker restart "$id"
           until docker exec "$id" pg_isready -U postgres; do sleep 1; done
+      # Service containers cannot take command arguments, and NATS needs -js.
+      - name: Start NATS with JetStream
+        run: docker run -d --name nats -p 4222:4222 nats:2.10 -js
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:

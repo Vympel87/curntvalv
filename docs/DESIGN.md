@@ -733,6 +733,42 @@ A backfill reads them from the table into the log, next to the stream.
   node is removed and the leader removes itself while Postgres changes
   flow in; every row arrives.
 
+### D19. NATS, Redis and Meilisearch sinks
+
+- **No new dependencies.** NATS's client protocol, Redis's RESP and
+  Meilisearch's REST API are small enough for the standard library, like
+  the ClickHouse sink; each sink keeps one connection and opens a new one
+  after any error. Kafka needs a client library and waits.
+- **NATS JetStream.** One message per change, subject
+  `<prefix>.<namespace>.<table>` (names reduced to subject-safe tokens),
+  header `Nats-Msg-Id` = the change id, published with a reply subject and
+  counted as delivered only on JetStream's acknowledgement. Publishes of a
+  batch are pipelined on one connection, so they keep their order. The
+  duplicate window (2 minutes by default) covers the redelivery after a
+  leader change. The stream is created on first use if missing. The server
+  pings idle clients; the sink only reads while delivering, so it reconnects
+  after 30 seconds without use.
+- **Redis Streams.** The entry ID is `<log index>-<seq>`, which grows with
+  the log, instead of `*`. Redis refuses an ID that is not above the
+  stream's last entry, so a redelivered change is refused: the sink then
+  checks that the entry is there (or older than the first entry, when
+  MAXLEN trimmed it) and otherwise fails, because another writer is ahead.
+  Result: each change exactly once per stream. A sink reset that replays
+  into the same stream writes nothing new.
+- **Meilisearch.** A mirror, not a changelog: documents keyed by the
+  replica identity key (`curntvalv_key`: the key values joined by `-` when
+  they are plain, else `-` and their base64url encoding, so the forms
+  cannot collide); "add or update" keeps unchanged TOASTed columns; a key
+  change deletes the old document; truncate deletes all documents. Columns
+  are typed from their type OID. Meilisearch works asynchronously, so the
+  sink waits until the batch's tasks succeeded (a delete on a missing index
+  counts); tasks of an index run in order, so retries converge.
+- **Testing.** Protocol parsing, key encoding and request planning in unit
+  tests; against real NATS, Redis and Meilisearch with `make test-sinks`
+  (also in CI); end to end with a leader kill, which redelivers: Redis and
+  JetStream hold exactly one entry per change, and Meilisearch equals the
+  table. With automatic Redis IDs the end-to-end test finds the duplicates.
+
 ## 4. Data model
 
 ```

@@ -223,17 +223,23 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 ```bash
 --sink 'name=ch,type=clickhouse,url=http://user:pass@clickhouse:8123'
 --sink 'name=hook,type=webhook,url=https://example.com/cdc,table=orders'
+--sink 'name=queue,type=nats,url=nats://nats:4222'                 # JetStream
+--sink 'name=log,type=redis,url=redis://redis:6379,stream=cdc:{table}'
+--sink 'name=search,type=meilisearch,url=http://:MASTER_KEY@meili:7700'
 ```
 
 | Key | Meaning |
 |---|---|
 | `name` | Required. Lower case letters, digits, `_`, `-`; the offset is stored under it |
-| `type` | `clickhouse` or `webhook` |
-| `url` | ClickHouse HTTP interface, or the webhook URL |
+| `type` | `clickhouse`, `webhook`, `nats`, `redis` or `meilisearch` |
+| `url` | ClickHouse HTTP interface, webhook URL, `nats://[USER:PASS@\|TOKEN@]HOST:PORT` (`tls://` for TLS), `redis://[USER:PASS@]HOST:PORT[/DB]` (`rediss://`), or `http[s]://[:API_KEY@]HOST:PORT` for Meilisearch |
 | `table` | Only these tables (`orders` or `public.orders`); repeat for more. Default: all |
 | `start` | `earliest` (default: the whole retained history) or `latest`, for a new sink |
 | `policy` | `block` (default): the log keeps everything the sink has not delivered. `drop`: retention cuts anyway; a sink left behind stops (`failed`) until it is reset |
 | `database`, `into` | ClickHouse database (default `default`) and table (default `curntvalv_events`) |
+| `subject`, `stream` | NATS subject prefix (default `curntvalv`) and JetStream stream (default `curntvalv`, created if missing, capturing `<subject>.>`) |
+| `stream`, `maxlen` | Redis stream key (default `curntvalv`; `{table}` gives one stream per table) and approximate trim length (default: keep all) |
+| `index` | Meilisearch index uid (default `{namespace}_{table}`) |
 
 Delivery is at-least-once: after a leader change some changes can arrive
 again. Every change has a stable `id` (`"<commit LSN>:<seq>"`). ClickHouse
@@ -242,6 +248,23 @@ gets a `ReplacingMergeTree` changelog table that drops copies on merge (use
 webhook body is `{"sink": "hook", "events": [...]}`; any 2xx is success,
 anything else is retried with backoff. `curntvalv status` shows each sink's
 offset, lag and last error.
+
+The other sinks:
+
+- **NATS JetStream**: one message per change on
+  `<subject>.<schema>.<table>` (`<subject>.source_reset` for a reset), the
+  change as JSON, with `Nats-Msg-Id` = its `id`. JetStream drops a copy
+  within its duplicate window (2 minutes by default), so redeliveries after
+  a leader change are stored once.
+- **Redis Streams**: `XADD` with the fields `id`, `index`, `table`, `op` and
+  `json`. The entry ID is `<log index>-<seq>`, so a redelivered change is
+  refused by Redis and each change is in the stream exactly once. Give the
+  sink a stream of its own.
+- **Meilisearch**: a search mirror of each table, one document per row with
+  the key field `curntvalv_key`; inserts, updates and backfilled rows are
+  upserts, deletes and truncates remove documents. Numbers, booleans and
+  JSON keep their type. The sink waits until Meilisearch has applied each
+  batch.
 
 ## Retention and replay
 
@@ -416,7 +439,8 @@ make test    # go vet + go test -race
 make build   # builds ./bin/curntvalv
 make test-pg # the same, plus the Postgres tests (starts Postgres in Docker)
 make test-ch # the same, plus the ClickHouse tests (starts ClickHouse in Docker)
-make test-ext # with both
+make test-sinks # the same, plus NATS, Redis and Meilisearch (in Docker)
+make test-ext # with all of them
 make chaos   # random faults against a real cluster and Postgres (CHAOS_TIME=2m, CHAOS_SEED=N)
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 ```

@@ -33,7 +33,11 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0.
 - Dynamic cluster membership: `curntvalv member add|remove|list`,
   `--join` (design D18)
 
+## v0.4 (in progress)
+
+- Sinks: NATS JetStream, Redis Streams, Meilisearch (design D19)
+
 ## Next
 
-- More sinks: Meilisearch, Redis, Kafka, NATS
+- Kafka sink (needs a client library)
 - Filters and simple transforms per sink

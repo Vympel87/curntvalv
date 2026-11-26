@@ -5,6 +5,18 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- Sinks for NATS JetStream (`type=nats`: a message per change with
+  `Nats-Msg-Id`, the stream is created if missing), Redis Streams
+  (`type=redis`: `XADD` with entry IDs from the log, so each change is in the
+  stream once) and Meilisearch (`type=meilisearch`: a search index mirroring
+  each table). No new dependencies (design D19).
+- `make test-sinks` runs their tests against real servers in Docker; CI
+  runs them too.
+
 ## [0.3.0]
 
 ### Added

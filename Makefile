@@ -1,4 +1,4 @@
-.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-ext chaos failover-up failover-down test-failover
+.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-sinks sinks-up sinks-down test-ext chaos failover-up failover-down test-failover
 
 test:
 	go vet ./...
@@ -45,9 +45,33 @@ ch-down:
 test-ch: ch-up
 	CURNTVALV_TEST_CH_URL='$(CH_TEST_URL)' $(MAKE) test
 
-# Everything, with both Postgres and ClickHouse.
-test-ext: pg-up ch-up
-	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_TEST_CH_URL='$(CH_TEST_URL)' $(MAKE) test
+# Tests of the NATS, Redis and Meilisearch sinks read CURNTVALV_TEST_NATS_URL,
+# CURNTVALV_TEST_REDIS_URL and CURNTVALV_TEST_MEILI_URL and are skipped
+# without them. test-sinks starts the three in Docker.
+NATS_TEST_URL ?= nats://127.0.0.1:54222
+REDIS_TEST_URL ?= redis://127.0.0.1:56379
+MEILI_TEST_URL ?= http://:curntvalv-test-key@127.0.0.1:57700
+SINKS_ENV = CURNTVALV_TEST_NATS_URL='$(NATS_TEST_URL)' CURNTVALV_TEST_REDIS_URL='$(REDIS_TEST_URL)' CURNTVALV_TEST_MEILI_URL='$(MEILI_TEST_URL)'
+
+sinks-up:
+	@docker inspect curntvalv-test-nats >/dev/null 2>&1 || docker run -d --name curntvalv-test-nats \
+		-p 127.0.0.1:54222:4222 nats:2.10 -js
+	@docker inspect curntvalv-test-redis >/dev/null 2>&1 || docker run -d --name curntvalv-test-redis \
+		-p 127.0.0.1:56379:6379 redis:7.4
+	@docker inspect curntvalv-test-meili >/dev/null 2>&1 || docker run -d --name curntvalv-test-meili \
+		-p 127.0.0.1:57700:7700 -e MEILI_MASTER_KEY=curntvalv-test-key -e MEILI_NO_ANALYTICS=true getmeili/meilisearch:v1.11
+	@until docker exec curntvalv-test-redis redis-cli ping >/dev/null 2>&1; do sleep 1; done
+	@until curl -sf http://127.0.0.1:57700/health >/dev/null; do sleep 1; done
+
+sinks-down:
+	docker rm -f curntvalv-test-nats curntvalv-test-redis curntvalv-test-meili
+
+test-sinks: sinks-up
+	$(SINKS_ENV) $(MAKE) test
+
+# Everything, with Postgres, ClickHouse and the other sink targets.
+test-ext: pg-up ch-up sinks-up
+	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_TEST_CH_URL='$(CH_TEST_URL)' $(SINKS_ENV) $(MAKE) test
 
 # Random fault injection against a real cluster and Postgres (design §5).
 # CHAOS_SEED=N repeats a run's fault schedule.

@@ -486,6 +486,10 @@ func runServer(ctx context.Context, cfg serverConfig, logger *slog.Logger) error
 		if err != nil {
 			return fmt.Errorf("sink %s: %w", sp.name, err)
 		}
+		if c, ok := s.(io.Closer); ok {
+			// After every runner stopped (deferred calls run after wg.Wait).
+			defer c.Close()
+		}
 		rcfg := sinkConfig(sp)
 		rcfg.Logger = logger
 		r, err := sink.NewRunner(rcfg, s, node, reader, meta)
