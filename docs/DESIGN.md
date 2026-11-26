@@ -1032,6 +1032,52 @@ A backfill reads them from the table into the log, next to the stream.
   row must arrive and every node apply the same log. With snapshots always
   in the newest format the test fails. CI runs it as its own job.
 
+### D30. Whole transactions
+
+- **The problem.** A Postgres transaction is stored in several batches
+  when it is large (1000 changes or about 1 MB each, D3), and a runner cuts
+  what it reads into deliveries of up to 500 changes. A receiver applying
+  changes to its own database sees half of a transaction and has no way
+  to know where one ends.
+- **`transactions=true`** on a sink. The log reader reports, for every
+  transaction batch it read, the commit LSN and whether the read covered
+  the transaction's first batch (first sequence 0) and its final batch
+  (`Final`). The runner holds the changes of a transaction whose final
+  batch it has not read and delivers transactions only whole: several
+  small ones may share a delivery (up to 500 changes), a large one goes
+  alone, however large. Each change carries `tx_changes`: how many changes
+  of its transaction this sink receives, after `table`, `op`, `where`; all
+  of them are in the same delivery.
+- **Offsets.** While a transaction is held the stored offset stays before
+  its first batch, so a restart or a new leader reads it whole again.
+- **Limits.** A transaction growing past `max_tx` changes for the sink
+  (default 100000) is delivered in parts, as without the option, with a
+  warning. So are the parts of a transaction whose start or end this
+  runner did not read: one stored in part before a Postgres failover (D7)
+  and never finished, or the rest of one already split. Their changes have
+  no `tx_changes`: receivers must treat a change without it as on its own.
+- **Atomic sinks.** A webhook receives one request per delivery, so it can
+  apply a transaction in one database transaction. Kafka uses a
+  transactional producer (`transactional_id`, default `curntvalv-NAME`):
+  each delivery is one Kafka transaction, consumers with
+  `isolation.level=read_committed` see all of it or nothing, and a new
+  leader's producer fences the old one and aborts its open transaction.
+  The id must be unique per producer, so two curntValv clusters writing to
+  one Kafka need different ones. The other sinks get the grouping and
+  `tx_changes` but write as before (NATS, Redis, Meilisearch and
+  ClickHouse have no transaction over several writes that fits).
+- **`on_error=skip`** (D28) then passes over whole transactions: the unit
+  delivered one at a time is a transaction, and a refused one is recorded
+  once, by its first change.
+- **Compatibility.** Nothing new is stored: the option is a runner setting,
+  so mixed-version clusters are fine. Without it nothing changes.
+- **Testing.** Runner tests with transactions cut across reads and
+  delivery batches, filtered tables, an open transaction across a restart
+  (the offset must not pass it), one past `max_tx`, one never finished and
+  one resumed, and a poison transaction; Kafka against a broker (commit,
+  fencing, read_committed); end to end a 2500-row Postgres transaction
+  reaching a webhook in one request.
+
 ## 4. Data model
 
 ```

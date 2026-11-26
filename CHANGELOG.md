@@ -5,6 +5,27 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- Whole transactions (design D30): `transactions=true` on a sink delivers
+  Postgres transactions whole, never split across deliveries, each change
+  with `tx_changes`. A webhook gets a transaction in one request; Kafka
+  writes each delivery as one Kafka transaction (`transactional_id`,
+  default `curntvalv-NAME`), for `read_committed` consumers. With
+  `on_error=skip` a refused transaction is skipped whole. `max_tx` bounds
+  the changes held in memory.
+
+### Changed
+
+- The JSON form of a change has `tx_changes` when the sink delivers whole
+  transactions.
+- `make sinks-up` starts Kafka with an internal listener for the broker
+  itself, which Kafka transactions need; remove an older container with
+  `make sinks-down`.
+- `make test-upgrade` upgrades from v0.7.0.
+
 ## [0.7.0]
 
 ### Added

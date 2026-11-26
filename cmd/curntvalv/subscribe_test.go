@@ -186,6 +186,23 @@ func TestParseSinkSpec(t *testing.T) {
 	if _, err := parseSinkSpec("name=m,type=webhook,url=http://x,on_error=ignore"); err == nil {
 		t.Error("on_error=ignore accepted")
 	}
+	tx, err := parseSinkSpec("name=bus,type=kafka,url=kafka://a,transactions=true,max_tx=500")
+	if c := sinkConfig(tx); err != nil || !c.Transactions || c.MaxTxChanges != 500 || tx.txID != "curntvalv-bus" {
+		t.Fatalf("transactions: %+v %v", tx, err)
+	}
+	if tx, err := parseSinkSpec("name=bus,type=kafka,url=kafka://a,transactions=true,transactional_id=east-bus"); err != nil || tx.txID != "east-bus" {
+		t.Fatalf("transactional_id: %+v %v", tx, err)
+	}
+	if tx, err := parseSinkSpec("name=hook,type=webhook,url=http://x,transactions=true"); err != nil || !sinkConfig(tx).Transactions || tx.txID != "" {
+		t.Fatalf("webhook transactions: %+v %v", tx, err)
+	}
+	for _, bad := range []string{"type=kafka,url=kafka://a,max_tx=5", "type=kafka,url=kafka://a,transactional_id=x",
+		"type=webhook,url=http://x,transactions=true,transactional_id=x", "type=webhook,url=http://x,transactions=yes",
+		"type=webhook,url=http://x,transactions=true,max_tx=0"} {
+		if _, err := parseSinkSpec("name=s," + bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
 	mir, err := parseSinkSpec("name=olap,type=clickhouse,url=http://x,mode=mirror,into=pg_{table}")
 	if err != nil || !mir.mirror || mir.chTable != "pg_{table}" {
 		t.Fatalf("mirror: %+v %v", mir, err)

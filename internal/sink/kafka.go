@@ -33,11 +33,17 @@ import (
 // The producer is idempotent, so its own retries never duplicate a record;
 // after a leader change of the curntValv cluster a new producer may send
 // some changes again, and consumers de-duplicate on curntvalv-id.
+//
+// With a transactional id each Deliver call is one Kafka transaction
+// (design D30): consumers reading committed records see all of it or
+// nothing, and a new producer with the same id fences the old one, aborting
+// its open transaction.
 type Kafka struct {
 	brokers    []string
 	shown      string
 	topic      string
 	tombstones bool
+	txID       string
 	tls        *tls.Config
 	mech       sasl.Mechanism
 	timeout    time.Duration
@@ -60,7 +66,11 @@ type KafkaConfig struct {
 	// row's key, and precedes a key change with one for the old key, so log
 	// compaction removes deleted rows (design D25).
 	Tombstones bool
-	Timeout    time.Duration
+	// TransactionalID makes every delivery one Kafka transaction (design
+	// D30). It must be unique per producer: two curntValv clusters writing
+	// to the same Kafka need different ids.
+	TransactionalID string
+	Timeout         time.Duration
 }
 
 // NewKafka returns a Kafka sink. It does no I/O.
@@ -68,7 +78,7 @@ func NewKafka(cfg KafkaConfig) (*Kafka, error) {
 	if len(cfg.URLs) == 0 {
 		return nil, errors.New("kafka: no broker url")
 	}
-	k := &Kafka{topic: cfg.Topic, tombstones: cfg.Tombstones, timeout: cfg.Timeout}
+	k := &Kafka{topic: cfg.Topic, tombstones: cfg.Tombstones, txID: cfg.TransactionalID, timeout: cfg.Timeout}
 	var shown []string
 	for i, raw := range cfg.URLs {
 		u, err := url.Parse(raw)
@@ -231,12 +241,30 @@ func (k *Kafka) Deliver(ctx context.Context, changes []event.Change) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, k.timeout)
 	defer cancel()
-	if err := cl.ProduceSync(ctx, recs...).FirstErr(); err != nil {
+	if err := k.produce(ctx, cl, recs); err != nil {
 		// Start a new producer next time rather than reason about the state
-		// of this one.
+		// of this one. With a transactional id the new one aborts the open
+		// transaction of this one.
 		cl.Close()
 		k.client = nil
 		return fmt.Errorf("kafka: produce to %s: %w", k.shown, err)
+	}
+	return nil
+}
+
+// produce sends recs and waits for them, in one transaction if configured.
+func (k *Kafka) produce(ctx context.Context, cl *kgo.Client, recs []*kgo.Record) error {
+	if k.txID == "" {
+		return cl.ProduceSync(ctx, recs...).FirstErr()
+	}
+	if err := cl.BeginTransaction(); err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if err := cl.ProduceSync(ctx, recs...).FirstErr(); err != nil {
+		return err
+	}
+	if err := cl.EndTransaction(ctx, kgo.TryCommit); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
 }
@@ -261,6 +289,9 @@ func (k *Kafka) connect() (*kgo.Client, error) {
 	}
 	if k.mech != nil {
 		opts = append(opts, kgo.SASL(k.mech))
+	}
+	if k.txID != "" {
+		opts = append(opts, kgo.TransactionalID(k.txID), kgo.TransactionTimeout(max(k.timeout, time.Minute)))
 	}
 	cl, err := kgo.NewClient(opts...)
 	if err != nil {

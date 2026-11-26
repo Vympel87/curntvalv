@@ -69,6 +69,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Filter expressions, masks, renames, ClickHouse mirror tables, Kafka tombstones | ✅ implemented (v0.5) |
 | Hashed columns, rows leaving a filter as deletes | ✅ implemented (v0.6) |
 | Poison changes (`on_error=skip`), rolling upgrade test | ✅ implemented (v0.7) |
+| Whole transactions (`transactions=true`), Kafka transactions | ✅ on main, for v0.8 |
 
 ## Install
 
@@ -273,6 +274,9 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `hash`, `hash_key_file` | Replace these columns' values with their HMAC-SHA256 (hex) under a secret from a file (at least 16 bytes, the same on every node): `hash=email+user_id,hash_key_file=/etc/curntvalv/hash.key`. Equal values stay equal; key columns may be hashed |
 | `on_leave` | With `where`: `delete` delivers an update that moves a row out of the filter (and a delete whose old row is not known) as a delete, so mirrors drop the row; `skip` (default) leaves it out |
 | `on_error` | `retry` (default): a change the sink refuses is retried until it succeeds. `skip`: a change the sink keeps refusing while it accepts others is passed over and recorded (`curntvalv sink skipped NAME`); an outage never skips anything |
+| `transactions` | `true`: deliver whole Postgres transactions; each change gets `tx_changes`, the number of changes of its transaction in the same delivery (webhook: one request; Kafka: one Kafka transaction). Default `false` |
+| `max_tx` | With `transactions`: a transaction with more changes than this (default 100000) is delivered in parts, without `tx_changes` |
+| `transactional_id` | Kafka, with `transactions`: the producer's transactional id (default `curntvalv-NAME`); unique per curntValv cluster |
 | `rename` | Rename columns in what the sink receives (`rename=status:state+note:comment`) |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
 | `tombstones` | Kafka: `true` sends a tombstone after each delete and for the old key of a key change (for compacted topics); default `false` |
@@ -339,7 +343,14 @@ The other sinks:
   after a leader change some records can repeat, so de-duplicate on
   `curntvalv-id`. With `tombstones=true` every delete is followed by a
   tombstone (the key with a null value), and a key change sends one for the
-  old key, for log-compacted topics.
+  old key, for log-compacted topics. With `transactions=true` each delivery
+  is a Kafka transaction: read with `isolation.level=read_committed`.
+
+With `transactions=true` a sink never receives part of a Postgres
+transaction: a receiver can collect the changes with the same `lsn` and
+apply them together once it has `tx_changes` of them (they arrive in one
+webhook request). A change without `tx_changes` stands alone (a transaction
+above `max_tx`, or one cut short by a Postgres failover).
 
 ## Retention and replay
 

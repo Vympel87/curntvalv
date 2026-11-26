@@ -56,6 +56,30 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 - Poison changes: `on_error=skip` (design D28)
 - Rolling upgrade test from the previous release (design D29)
 
-## Next
+## v0.8 (in progress)
 
-- Nothing planned yet.
+- Whole transactions: `transactions=true`, Kafka transactions (design D30)
+- Transactions in `curntvalv subscribe` and the Go client: `tx_changes`
+  and a way to receive a transaction at a time
+
+## v0.9: schema changes
+
+- A `schema` event when a table's columns change (added, dropped, type
+  changed), from the Relation messages pgoutput already sends
+- ClickHouse mirror tables follow added columns (`ALTER TABLE ... ADD
+  COLUMN`) instead of needing a rebuild
+
+## v0.10: archive and pacing
+
+- An S3-compatible archive sink: JSON Lines, gzip, one object per table and
+  time window, standard library only (SigV4 by hand)
+- A rate limit per sink (`max_rate`), so a backfill does not flood a
+  search index or a webhook
+
+## v1.0: stable
+
+- Compatibility promise: log entries, snapshots, the JSON form and the gRPC
+  API change only compatibly within 1.x
+- Rolling upgrade test from every 0.x release that is still supported
+- Operations guide (sizing, backups, recovery, monitoring), benchmarks
+- Longer chaos runs in CI

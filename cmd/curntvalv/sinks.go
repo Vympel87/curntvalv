@@ -45,13 +45,16 @@ type sinkSpec struct {
 	tombstones        bool   // kafka
 	shape             sink.Shape
 	skipPoison        bool   // on_error=skip
+	transactions      bool   // deliver whole transactions (design D30)
+	maxTx             int    // max_tx
+	txID              string // kafka transactional_id
 	hashKeyFile       string // read by loadHashKey
 }
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
-	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete][,on_error=retry|skip]" +
+	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete][,on_error=retry|skip][,transactions=true][,max_tx=N]" +
 	"[,database=DB][,into=TABLE][,mode=changelog|mirror] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
-	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true] (kafka)"
+	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true][,transactional_id=ID] (kafka)"
 
 // sinkKeys lists the keys only some sink types take.
 func sinkKeys(typ string) []string {
@@ -65,7 +68,7 @@ func sinkKeys(typ string) []string {
 	case "meilisearch":
 		return []string{"index"}
 	case "kafka":
-		return []string{"topic", "sasl", "tombstones"}
+		return []string{"topic", "sasl", "tombstones", "transactional_id"}
 	}
 	return nil
 }
@@ -160,6 +163,20 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 				return sinkSpec{}, usageErr("--sink: on_error must be retry or skip")
 			}
 			sp.skipPoison = v == "skip"
+		case "transactions":
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return sinkSpec{}, usageErr("--sink: transactions must be true or false")
+			}
+			sp.transactions = b
+		case "max_tx":
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				return sinkSpec{}, usageErr("--sink: max_tx must be a positive number of changes")
+			}
+			sp.maxTx = n
+		case "transactional_id":
+			sp.txID = v
 		case "on_leave":
 			if v != "skip" && v != "delete" {
 				return sinkSpec{}, usageErr("--sink: on_leave must be skip or delete")
@@ -205,7 +222,7 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 	case len(sp.urls) > 1 && sp.typ != "kafka":
 		return sinkSpec{}, usageErr("--sink %s: url given twice (only kafka takes several brokers)", sp.name)
 	}
-	for _, k := range []string{"database", "into", "mode", "subject", "stream", "maxlen", "index", "topic", "sasl", "tombstones"} {
+	for _, k := range []string{"database", "into", "mode", "subject", "stream", "maxlen", "index", "topic", "sasl", "tombstones", "transactional_id"} {
 		if seen[k] && !slices.Contains(sinkKeys(sp.typ), k) {
 			return sinkSpec{}, usageErr("--sink %s: %s is not a %s option", sp.name, k, sp.typ)
 		}
@@ -215,6 +232,12 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 		return sinkSpec{}, usageErr("--sink %s: hash needs hash_key_file=PATH (a secret of at least %d bytes, the same on every node)", sp.name, sink.MinHashKey)
 	case len(sp.shape.Hash) == 0 && sp.hashKeyFile != "":
 		return sinkSpec{}, usageErr("--sink %s: hash_key_file without hash", sp.name)
+	}
+	if (sp.maxTx > 0 || sp.txID != "") && !sp.transactions {
+		return sinkSpec{}, usageErr("--sink %s: max_tx and transactional_id need transactions=true", sp.name)
+	}
+	if sp.transactions && sp.typ == "kafka" && sp.txID == "" {
+		sp.txID = "curntvalv-" + sp.name
 	}
 	if sp.shape.LeaveAsDelete && len(sp.shape.Where) == 0 {
 		return sinkSpec{}, usageErr("--sink %s: on_leave needs where", sp.name)
@@ -285,14 +308,14 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 	case "meilisearch":
 		return sink.NewMeilisearch(sink.MeilisearchConfig{URL: sp.url, Index: sp.index})
 	case "kafka":
-		return sink.NewKafka(sink.KafkaConfig{URLs: sp.urls, Topic: sp.topic, SASL: sp.sasl, Tombstones: sp.tombstones})
+		return sink.NewKafka(sink.KafkaConfig{URLs: sp.urls, Topic: sp.topic, SASL: sp.sasl, Tombstones: sp.tombstones, TransactionalID: sp.txID})
 	}
 	return nil, fmt.Errorf("unknown sink type %q", sp.typ)
 }
 
 func sinkConfig(sp sinkSpec) sink.Config {
 	return sink.Config{Name: sp.name, Type: sp.typ, Tables: event.Filter(sp.tables), StartLatest: sp.startLatest, Shape: sp.shape,
-		SkipPoison: sp.skipPoison}
+		SkipPoison: sp.skipPoison, Transactions: sp.transactions, MaxTxChanges: sp.maxTx}
 }
 
 // repeatFlag collects every value of a repeated flag as is.

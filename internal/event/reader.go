@@ -44,6 +44,22 @@ type Result struct {
 	// TxEntries counts the transaction batches read, including those whose
 	// changes were all filtered out.
 	TxEntries int
+	// Txs describes the transactions whose batches were read, in log order,
+	// whether or not their changes passed the filter.
+	Txs []Tx
+}
+
+// Tx describes the batches of one transaction that a read covered. The
+// batches of a transaction are stored one after another (other entries may
+// come between them, but no batch of another transaction).
+type Tx struct {
+	CommitLSN uint64
+	// First is the index of its first batch in this read.
+	First uint64
+	// Begin and End report whether the read covered the transaction's first
+	// and final batch. A transaction stored in parts by a source that then
+	// lost its Postgres server can lack an end (design D7).
+	Begin, End bool
 }
 
 // Read waits until at least one entry at index from or later is applied,
@@ -82,6 +98,7 @@ func (r *Reader) Read(ctx context.Context, from uint64, max int, filter Filter) 
 					continue
 				}
 				res.TxEntries++
+				res.Txs = addTx(res.Txs, e.Index, tb)
 				res.Changes = append(res.Changes, Changes(e.Index, tb, r.state.Schema, filter)...)
 			}
 			if res.Next > from {
@@ -94,4 +111,20 @@ func (r *Reader) Read(ctx context.Context, from uint64, max int, filter Filter) 
 			return Result{}, ctx.Err()
 		}
 	}
+}
+
+// addTx records a batch read at index.
+func addTx(txs []Tx, index uint64, tb *pb.TxBatch) []Tx {
+	if n := len(txs); n > 0 && txs[n-1].CommitLSN == tb.GetCommitLsn() && !txs[n-1].End {
+		txs[n-1].End = tb.GetFinal()
+		return txs
+	}
+	return append(txs, Tx{
+		CommitLSN: tb.GetCommitLsn(),
+		First:     index,
+		// Only a transaction's first batch starts at its first change; a
+		// batch resuming a partly stored one does not (design D7).
+		Begin: tb.GetFirstSeq() == 0 && len(tb.GetEvents()) > 0,
+		End:   tb.GetFinal(),
+	})
 }

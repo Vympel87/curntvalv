@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +171,34 @@ func TestReaderReadsAndSkips(t *testing.T) {
 	res, err = r.Read(ctx, 1, 100, Filter{"items"})
 	if err != nil || len(res.Changes) != 0 || res.Next != 5 || res.TxEntries != 2 {
 		t.Fatalf("filtered: %+v %v", res, err)
+	}
+}
+
+func TestReaderReportsTransactions(t *testing.T) {
+	m, r := newLog(t)
+	orders := []*pb.Schema{{Id: 1, Namespace: "public", Name: "orders"}}
+	open := func(tb *pb.TxBatch) *pb.TxBatch { tb.Final = false; return tb }
+	first := open(batch(100, 0, 1, 1))
+	first.Schemas = orders
+	m.appendBatch(t, first) // 1: begins 100
+	put, _ := fsm.EncodePut("k", []byte("v"))
+	m.appendData(t, put, raft.EntryNormal)   // 2
+	m.appendBatch(t, batch(100, 2, 1))       // 3: ends 100
+	m.appendBatch(t, batch(200, 0))          // 4: no changes (a position)
+	m.appendBatch(t, open(batch(300, 4, 1))) // 5: resumes 300, open
+	ctx := context.Background()
+	res, err := r.Read(ctx, 0, 100, Filter{"items"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Tx{{CommitLSN: 100, First: 1, Begin: true, End: true}, {CommitLSN: 200, First: 4, End: true}, {CommitLSN: 300, First: 5}}
+	if !slices.Equal(res.Txs, want) {
+		t.Fatalf("txs %+v, want %+v", res.Txs, want)
+	}
+	// A read starting inside a transaction does not see its beginning.
+	res, err = r.Read(ctx, 3, 1, nil)
+	if err != nil || !slices.Equal(res.Txs, []Tx{{CommitLSN: 100, First: 3, End: true}}) {
+		t.Fatalf("from 3: %+v %v", res.Txs, err)
 	}
 }
 

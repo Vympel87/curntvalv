@@ -26,6 +26,10 @@ type Change struct {
 	// Schema is the table definition, nil if the cluster does not know it
 	// (which would be a bug).
 	Schema *pb.Schema
+	// TxChanges is set by a sink delivering whole transactions (design
+	// D30): how many changes of this transaction the sink receives, all in
+	// one delivery. 0 means unknown.
+	TxChanges uint32
 }
 
 // ID returns the idempotency key of the change (design D4): the commit LSN
@@ -78,6 +82,9 @@ type JSON struct {
 	Before     map[string]any `json:"before,omitempty"`
 	After      map[string]any `json:"after,omitempty"`
 	Unchanged  []string       `json:"unchanged,omitempty"`
+	// TxChanges is how many changes of the transaction this sink receives,
+	// when it delivers whole transactions (design D30).
+	TxChanges uint32 `json:"tx_changes,omitempty"`
 	// Reset is set for op source_reset: an operator moved the source
 	// position, so changes between previous_lsn and lsn may be missing or
 	// repeated.
@@ -110,6 +117,7 @@ func (c Change) JSON() JSON {
 		CommitTime: c.CommitTime().Format(time.RFC3339Nano),
 		Table:      c.Table(),
 		Op:         c.Op(),
+		TxChanges:  c.TxChanges,
 	}
 	if r := c.Event.GetSourceReset(); c.IsSourceReset() && r != nil {
 		j.Reset = &ResetJSON{

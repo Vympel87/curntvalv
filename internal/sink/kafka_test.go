@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -180,5 +181,55 @@ func TestKafkaTombstonesReal(t *testing.T) {
 				t.Errorf("tombstones=%v, key %q: %v, want %s", on, key, perKey[key], w)
 			}
 		}
+	}
+}
+
+func TestKafkaTransactionsReal(t *testing.T) {
+	u := envOrSkip(t, "CURNTVALV_TEST_KAFKA_URL")
+	ctx := context.Background()
+	name := uniqueName(t)
+	cfg := KafkaConfig{URLs: []string{u}, Topic: "test-" + name + ".{table}", TransactionalID: "curntvalv-test-" + name}
+	k1, err := NewKafka(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k1.Close()
+	batch := changesOf(10, op{op: pb.Op_OP_INSERT, id: "1"}, op{op: pb.Op_OP_INSERT, id: "2"}, op{op: pb.Op_OP_INSERT, id: "3"})
+	if err := k1.Deliver(ctx, batch[:2]); err != nil {
+		t.Fatal(err)
+	}
+	// Another leader's producer with the same id fences the first one.
+	k2, _ := NewKafka(cfg)
+	defer k2.Close()
+	if err := k2.Deliver(ctx, batch[2:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := k1.Deliver(ctx, batch[2:]); err == nil {
+		t.Fatal("a fenced producer delivered")
+	}
+	cl, err := kgo.NewClient(kgo.SeedBrokers(k1.brokers...), kgo.ConsumeTopics(k1.topicOf(batch[0])),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()), kgo.FetchIsolationLevel(kgo.ReadCommitted()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	var got []string
+	for idle := 0; idle < 3; {
+		pctx, cancel := context.WithTimeout(ctx, time.Second)
+		fs := cl.PollFetches(pctx)
+		cancel()
+		n := 0
+		fs.EachRecord(func(r *kgo.Record) { got = append(got, header(r, "curntvalv-id")); n++ })
+		if n == 0 {
+			idle++
+		} else {
+			idle = 0
+		}
+	}
+	slices.Sort(got)
+	want := []string{batch[0].ID(), batch[1].ID(), batch[2].ID()}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("committed records %v, want %v", got, want)
 	}
 }
