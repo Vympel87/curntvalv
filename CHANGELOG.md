@@ -5,6 +5,27 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- S3 archive sink (design D32): `type=s3` writes gzipped JSON Lines per
+  table and hour (`dt=…/hour=…` partitions) to AWS S3 or an S3-compatible
+  store (`endpoint`), signing requests itself (no SDK).
+- Per-sink `batch`, `linger` and `max_rate` (design D33): larger
+  deliveries, waiting for a full batch, and a bound on changes per second.
+
+### Changed
+
+- `make sinks-up` and CI start SeaweedFS as an S3-compatible store for the
+  tests.
+
+### Upgrading from 0.9
+
+- Nothing new is stored. A node before 0.10 does not start with an `s3`
+  sink or `batch`, `linger`, `max_rate` in a `--sink`: add them once every
+  node runs 0.10.
+
 ## [0.9.0]
 
 ### Added

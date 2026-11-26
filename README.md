@@ -71,6 +71,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Poison changes (`on_error=skip`), rolling upgrade test | ✅ implemented (v0.7) |
 | Whole transactions for sinks, Kafka and subscribers | ✅ implemented (v0.8) |
 | Schema change events, ClickHouse mirrors following type changes | ✅ implemented (v0.9) |
+| S3 archive sink, `batch`/`linger`/`max_rate` per sink | ✅ on main, for v0.10 |
 
 ## Install
 
@@ -280,13 +281,14 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 --sink 'name=log,type=redis,url=redis://redis:6379,stream=cdc:{table}'
 --sink 'name=search,type=meilisearch,url=http://:MASTER_KEY@meili:7700'
 --sink 'name=bus,type=kafka,url=kafka://k1:9092,url=kafka://k2:9092'
+--sink 'name=archive,type=s3,url=s3://my-bucket/cdc,region=eu-west-1'  # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 ```
 
 | Key | Meaning |
 |---|---|
 | `name` | Required. Lower case letters, digits, `_`, `-`; the offset is stored under it |
-| `type` | `clickhouse`, `webhook`, `nats`, `redis`, `meilisearch` or `kafka` |
-| `url` | ClickHouse HTTP interface, webhook URL, `nats://[USER:PASS@\|TOKEN@]HOST:PORT` (`tls://` for TLS), `redis://[USER:PASS@]HOST:PORT[/DB]` (`rediss://`), `http[s]://[:API_KEY@]HOST:PORT` for Meilisearch, or `kafka://[USER:PASS@]HOST:PORT` (`kafka+tls://`; repeat `url` for more seed brokers) |
+| `type` | `clickhouse`, `webhook`, `nats`, `redis`, `meilisearch`, `kafka` or `s3` |
+| `url` | ClickHouse HTTP interface, webhook URL, `nats://[USER:PASS@\|TOKEN@]HOST:PORT` (`tls://` for TLS), `redis://[USER:PASS@]HOST:PORT[/DB]` (`rediss://`), `http[s]://[:API_KEY@]HOST:PORT` for Meilisearch, `kafka://[USER:PASS@]HOST:PORT` (`kafka+tls://`; repeat `url` for more seed brokers), or `s3://[ACCESS_KEY:SECRET_KEY@]BUCKET[/PREFIX]` (else `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) |
 | `table` | Only these tables (`orders` or `public.orders`); repeat for more. Default: all |
 | `start` | `earliest` (default: the whole retained history) or `latest`, for a new sink |
 | `policy` | `block` (default): the log keeps everything the sink has not delivered. `drop`: retention cuts anyway; a sink left behind stops (`failed`) until it is reset |
@@ -304,7 +306,11 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `on_error` | `retry` (default): a change the sink refuses is retried until it succeeds. `skip`: a change the sink keeps refusing while it accepts others is passed over and recorded (`curntvalv sink skipped NAME`); an outage never skips anything |
 | `transactions` | `true`: deliver whole Postgres transactions; each change gets `tx_changes`, the number of changes of its transaction in the same delivery (webhook: one request; Kafka: one Kafka transaction). Default `false` |
 | `max_tx` | With `transactions`: a transaction with more changes than this (default 100000) is delivered in parts, without `tx_changes` |
-| `schema_changes` | Webhook, Kafka, NATS: `true` sends an event with `"op":"schema"` and the new `columns` before the first change of a table after its definition changed (`ALTER TABLE`). Default `false` |
+| `batch` | Most changes per delivery (default 500; 10000 for `s3`) |
+| `linger` | Wait up to this long for a full `batch` before delivering (`30s`, `5m`; default 0, `1m` for `s3`), for fewer, larger writes |
+| `max_rate` | At most this many changes per second (`max_rate=200`), so a backfill or replay does not flood the target; default no limit |
+| `endpoint`, `region` | S3: an S3-compatible store's URL (`http://minio:9000`, path-style; default AWS) and the signing region (default `AWS_REGION`, else `us-east-1`) |
+| `schema_changes` | Webhook, Kafka, NATS, S3: `true` sends an event with `"op":"schema"` and the new `columns` before the first change of a table after its definition changed (`ALTER TABLE`). Default `false` |
 | `transactional_id` | Kafka, with `transactions`: the producer's transactional id (default `curntvalv-NAME`); unique per curntValv cluster |
 | `rename` | Rename columns in what the sink receives (`rename=status:state+note:comment`) |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
@@ -375,6 +381,13 @@ The other sinks:
   tombstone (the key with a null value), and a key change sends one for the
   old key, for log-compacted topics. With `transactions=true` each delivery
   is a Kafka transaction: read with `isolation.level=read_committed`.
+- **S3** (and S3-compatible stores): an archive of gzipped JSON Lines, one
+  object per table and hour of commit time per delivery, named after its
+  first and last change so objects sort in log order:
+  `cdc/public.orders/dt=2026-11-26/hour=14/000000000123-0_000000000140-3.jsonl.gz`.
+  By default a delivery collects changes for a minute (`linger`) or up to
+  10000 (`batch`). After a leader change objects may overlap: de-duplicate
+  on `id` (`SELECT DISTINCT ON (id)` in Athena/DuckDB, ...).
 
 With `transactions=true` a sink never receives part of a Postgres
 transaction: a receiver can collect the changes with the same `lsn` and

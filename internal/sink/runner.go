@@ -65,6 +65,14 @@ type Config struct {
 	MaxEntries int
 	// MaxBatch is the most changes passed to one Deliver call (default 500).
 	MaxBatch int
+	// Linger waits up to this long for more changes before delivering fewer
+	// than MaxBatch (design D33), so a sink writing files writes fewer,
+	// larger ones. 0 delivers what one read returns at once.
+	Linger time.Duration
+	// MaxRate bounds the changes delivered per second (design D33), so a
+	// backfill or a replay does not flood the target; 0 means no bound.
+	// MaxBatch is lowered to it.
+	MaxRate float64
 	// RetryMin and RetryMax bound the backoff after a failed delivery
 	// (defaults 100ms and 30s).
 	RetryMin, RetryMax time.Duration
@@ -130,6 +138,7 @@ type Runner struct {
 	// canary is the last unit the sink accepted: delivering it again tells
 	// whether the sink is up (design D28).
 	canary unit
+	free   time.Time // with MaxRate: when the next delivery may start
 	log    *slog.Logger
 
 	mu     sync.Mutex
@@ -152,6 +161,9 @@ func NewRunner(cfg Config, s Sink, node Node, reader Reader, offsets Offsets) (*
 	}
 	if cfg.MaxBatch <= 0 {
 		cfg.MaxBatch = 500
+	}
+	if cfg.MaxRate > 0 && float64(cfg.MaxBatch) > cfg.MaxRate {
+		cfg.MaxBatch = max(1, int(cfg.MaxRate))
 	}
 	if cfg.RetryMin <= 0 {
 		cfg.RetryMin = 100 * time.Millisecond
@@ -322,9 +334,31 @@ func (r *Runner) session(ctx context.Context) error {
 	var pending uint64 // offset to store for entries without matching changes
 	lastCommit := time.Now()
 	tx := event.NewGrouper(r.cfg.MaxTxChanges)
+	// With Linger, units wait in buf until MaxBatch changes or the deadline;
+	// bufSafe is the offset to store once they are delivered.
+	var buf []unit
+	var bufN int
+	var bufSince time.Time
+	var bufSafe uint64
+	flush := func() error {
+		if err := r.deliver(ctx, buf); err != nil {
+			return err
+		}
+		buf, bufN, pending = nil, 0, 0
+		if bufSafe > offset {
+			if err := r.commit(ctx, gen, bufSafe); err != nil {
+				return err
+			}
+			offset, lastCommit = bufSafe, time.Now()
+		}
+		return nil
+	}
 	for {
 		rctx, cancel := ctx, context.CancelFunc(func() {})
-		if pending > 0 {
+		switch {
+		case len(buf) > 0:
+			rctx, cancel = context.WithDeadline(ctx, bufSince.Add(r.cfg.Linger))
+		case pending > 0:
 			rctx, cancel = context.WithDeadline(ctx, lastCommit.Add(r.cfg.SkipCommitInterval))
 		}
 		res, err := r.reader.Read(rctx, from, r.cfg.MaxEntries, r.cfg.Tables)
@@ -335,6 +369,11 @@ func (r *Runner) session(ctx context.Context) error {
 		case r.gen() != gen:
 			// Reset: what was read belongs to the old position.
 			return errReset
+		case errors.Is(err, context.DeadlineExceeded) && len(buf) > 0:
+			if err := flush(); err != nil {
+				return err
+			}
+			continue
 		case errors.Is(err, context.DeadlineExceeded):
 			// Idle with skipped entries: store how far we got.
 			if err := r.commit(ctx, gen, pending); err != nil {
@@ -366,7 +405,7 @@ func (r *Runner) session(ctx context.Context) error {
 					"lsn", event.FormatLSN(lsn), "max_tx", r.cfg.MaxTxChanges)
 			}
 		}
-		if len(units) == 0 {
+		if len(units) == 0 && len(buf) == 0 {
 			if res.TxEntries > 0 && safe > offset {
 				pending = safe
 			}
@@ -378,15 +417,18 @@ func (r *Runner) session(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := r.deliver(ctx, units); err != nil {
-			return err
+		if len(buf) == 0 {
+			bufSince = time.Now()
 		}
-		pending = 0
-		if safe > offset {
-			if err := r.commit(ctx, gen, safe); err != nil {
+		for _, u := range units {
+			buf = append(buf, u)
+			bufN += len(u)
+		}
+		bufSafe = safe
+		if r.cfg.Linger <= 0 || bufN >= r.cfg.MaxBatch {
+			if err := flush(); err != nil {
 				return err
 			}
-			offset, lastCommit = safe, time.Now()
 		}
 	}
 }
@@ -405,6 +447,9 @@ func (r *Runner) deliver(ctx context.Context, units []unit) error {
 		}
 		batch := units[:n]
 		changes := flatten(batch)
+		if err := r.pace(ctx); err != nil {
+			return err
+		}
 		backoff := r.cfg.RetryMin
 		for attempt := 1; ; attempt++ {
 			err := r.sink.Deliver(ctx, changes)
@@ -430,6 +475,7 @@ func (r *Runner) deliver(ctx context.Context, units []unit) error {
 		}
 		r.setState(StateRunning, nil)
 		r.addDelivered(len(changes))
+		r.paced(len(changes))
 		r.canary = batch[n-1]
 		units = units[n:]
 	}
@@ -459,6 +505,25 @@ func flatten(units []unit) []event.Change {
 		out = append(out, u...)
 	}
 	return out
+}
+
+// pace waits until MaxRate allows the next delivery.
+func (r *Runner) pace(ctx context.Context) error {
+	if r.cfg.MaxRate <= 0 {
+		return nil
+	}
+	return r.wait(ctx, time.Until(r.free))
+}
+
+// paced records n delivered changes against MaxRate.
+func (r *Runner) paced(n int) {
+	if r.cfg.MaxRate <= 0 {
+		return
+	}
+	if now := time.Now(); r.free.Before(now) {
+		r.free = now
+	}
+	r.free = r.free.Add(time.Duration(float64(n) / r.cfg.MaxRate * float64(time.Second)))
 }
 
 func (r *Runner) wait(ctx context.Context, d time.Duration) error {

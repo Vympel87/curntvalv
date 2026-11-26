@@ -52,8 +52,10 @@ NATS_TEST_URL ?= nats://127.0.0.1:54222
 REDIS_TEST_URL ?= redis://127.0.0.1:56379
 MEILI_TEST_URL ?= http://:curntvalv-test-key@127.0.0.1:57700
 KAFKA_TEST_URL ?= kafka://127.0.0.1:59092
+S3_TEST_ENDPOINT ?= http://127.0.0.1:58333
 SINKS_ENV = CURNTVALV_TEST_NATS_URL='$(NATS_TEST_URL)' CURNTVALV_TEST_REDIS_URL='$(REDIS_TEST_URL)' \
-	CURNTVALV_TEST_MEILI_URL='$(MEILI_TEST_URL)' CURNTVALV_TEST_KAFKA_URL='$(KAFKA_TEST_URL)'
+	CURNTVALV_TEST_MEILI_URL='$(MEILI_TEST_URL)' CURNTVALV_TEST_KAFKA_URL='$(KAFKA_TEST_URL)' \
+	CURNTVALV_TEST_S3_ENDPOINT='$(S3_TEST_ENDPOINT)'
 
 sinks-up:
 	@docker inspect curntvalv-test-nats >/dev/null 2>&1 || docker run -d --name curntvalv-test-nats \
@@ -70,12 +72,15 @@ sinks-up:
 		-e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
 		-e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
 		-e KAFKA_NUM_PARTITIONS=3 apache/kafka:3.9.1
+	@docker inspect curntvalv-test-s3 >/dev/null 2>&1 || docker run -d --name curntvalv-test-s3 -p 127.0.0.1:58333:8333 \
+		-v $(CURDIR)/internal/sink/testdata/s3.json:/etc/s3.json:ro chrislusf/seaweedfs:3.80 server -s3 -s3.config=/etc/s3.json -dir=/data
 	@until docker exec curntvalv-test-redis redis-cli ping >/dev/null 2>&1; do sleep 1; done
+	@until docker exec curntvalv-test-s3 sh -c "echo 's3.bucket.create -name curntvalv-test' | weed shell" 2>&1 | grep -qE 'created bucket|already exists'; do sleep 1; done
 	@until docker logs curntvalv-test-kafka 2>&1 | grep -q 'Kafka Server started'; do sleep 1; done
 	@until curl -sf http://127.0.0.1:57700/health >/dev/null; do sleep 1; done
 
 sinks-down:
-	docker rm -f curntvalv-test-nats curntvalv-test-redis curntvalv-test-meili curntvalv-test-kafka
+	docker rm -f curntvalv-test-nats curntvalv-test-redis curntvalv-test-meili curntvalv-test-kafka curntvalv-test-s3
 
 test-sinks: sinks-up
 	$(SINKS_ENV) $(MAKE) test

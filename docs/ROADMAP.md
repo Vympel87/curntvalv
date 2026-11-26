@@ -69,12 +69,12 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 - ClickHouse mirror tables follow type changes (`MODIFY COLUMN`); added
   columns were followed since v0.5
 
-## v0.10: archive and pacing (next)
+## v0.10: archive and pacing (done)
 
 - An S3-compatible archive sink: JSON Lines, gzip, one object per table and
   time window, standard library only (SigV4 by hand)
 - A rate limit per sink (`max_rate`), so a backfill does not flood a
-  search index or a webhook
+  search index or a webhook; `batch` and `linger` (designs D32, D33)
 
 ## v1.0: stable
 

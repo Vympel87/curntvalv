@@ -1137,6 +1137,51 @@ A backfill reads them from the table into the log, next to the stream.
   ClickHouse (and refusing a key); end to end `ADD COLUMN` and `ALTER
   COLUMN TYPE` in Postgres reaching a webhook and a mirror.
 
+### D32. S3 archive sink
+
+- **What.** `type=s3` keeps every change in an S3-compatible object store,
+  for audits, data lakes and replays older than the log's retention.
+- **Objects.** A delivery writes, per table and hour of commit time, one
+  gzipped JSON Lines object of the shared JSON form, under
+  `PREFIX/NAMESPACE.TABLE/dt=YYYY-MM-DD/hour=HH/` (Hive-style partitions
+  that Athena, Spark and DuckDB read), named `FIRST_LAST.jsonl.gz` after
+  its first and last change as zero-padded log index and position, so
+  names sort in log order. Source resets go under `_source_reset`.
+- **Idempotency.** A delivery retried as it was cut rewrites the same
+  objects. After a leader change the next runner may cut differently and
+  write objects that overlap earlier ones: readers de-duplicate on `id`,
+  as with every at-least-once sink. Objects are never deleted or appended
+  to.
+- **Fewer, larger objects** come from `batch` and `linger` (D33), whose
+  defaults for this sink are 10000 changes and one minute.
+- **No SDK.** Requests are signed with AWS Signature Version 4 by hand
+  (about 100 lines, checked against the example in AWS's documentation),
+  sent with net/http: AWS (virtual-hosted style) or any store at
+  `endpoint` (path-style: MinIO, SeaweedFS, Ceph, Cloudflare R2, ...).
+  Credentials come from the URL or the usual AWS environment variables;
+  instance roles are not supported.
+- **Testing.** The signer against AWS's example; object names and
+  grouping; against SeaweedFS with signature checks (the bucket's
+  objects, their lines, a rewrite, a wrong secret refused); end to end a
+  cluster archiving Postgres rows with credentials from the environment.
+  MinIO's images are no longer published, so tests use SeaweedFS.
+
+### D33. Batching and pacing per sink
+
+- **`batch`** (MaxBatch, default 500) bounds the changes of one delivery.
+- **`linger`**: after a read the runner waits up to this long for more
+  changes before delivering fewer than `batch`. Changes waiting are not
+  delivered and their entries not stored as done, so a leader change only
+  delivers them later. Default 0 (deliver what one read returns).
+- **`max_rate`** (changes per second): after a delivery of n changes the
+  next one waits until n/max_rate seconds after the previous could start,
+  and `batch` is lowered to max_rate, so a backfill or a replay after
+  `sink reset` cannot flood a search index or a webhook. Retries are not
+  paced further (they back off anyway).
+- **Testing.** Runner tests: changes collected until the linger ends, a
+  full batch delivered at once with nothing stored before, 60 changes at
+  20/s taking two seconds in batches of at most 20.
+
 ## 4. Data model
 
 ```

@@ -64,6 +64,7 @@ jobs:
       CURNTVALV_TEST_REDIS_URL: redis://localhost:6379
       CURNTVALV_TEST_MEILI_URL: http://:curntvalv-test-key@localhost:7700
       CURNTVALV_TEST_NATS_URL: nats://localhost:4222
+      CURNTVALV_TEST_S3_ENDPOINT: http://localhost:8333
       CURNTVALV_TEST_CH_URL: http://default:curntvalv@localhost:8123
       CURNTVALV_TEST_PG_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
@@ -79,6 +80,12 @@ jobs:
       - name: Start NATS with JetStream
         run: docker run -d --name nats -p 4222:4222 nats:2.10 -js
       - uses: actions/checkout@v4
+      # An S3-compatible store that checks signatures, with a test bucket.
+      - name: Start SeaweedFS S3
+        run: |
+          docker run -d --name s3 -p 8333:8333 -v "$PWD/internal/sink/testdata/s3.json:/etc/s3.json:ro" \
+            chrislusf/seaweedfs:3.80 server -s3 -s3.config=/etc/s3.json -dir=/data
+          until docker exec s3 sh -c "echo 's3.bucket.create -name curntvalv-test' | weed shell" 2>&1 | grep -qE 'created bucket|already exists'; do sleep 1; done
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

@@ -195,6 +195,25 @@ func TestParseSinkSpec(t *testing.T) {
 			t.Errorf("%s accepted", bad)
 		}
 	}
+	ar, err := parseSinkSpec("name=arc,type=s3,url=s3://bucket/cdc,endpoint=http://minio:9000,region=eu-west-1")
+	if c := sinkConfig(ar); err != nil || ar.endpoint != "http://minio:9000" || ar.region != "eu-west-1" || c.MaxBatch != 10000 || c.Linger != time.Minute {
+		t.Fatalf("s3: %+v %v", ar, err)
+	}
+	ar, err = parseSinkSpec("name=arc,type=s3,url=s3://bucket,batch=50,linger=0s,max_rate=12.5")
+	if c := sinkConfig(ar); err != nil || c.MaxBatch != 50 || c.Linger != 0 || c.MaxRate != 12.5 {
+		t.Fatalf("s3 with batch, linger, max_rate: %+v %v", c, err)
+	}
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	if _, err := newSink(ar); err == nil || !strings.Contains(err.Error(), "no credentials") {
+		t.Fatalf("s3 without credentials: %v", err)
+	}
+	for _, bad := range []string{"name=h,type=webhook,url=http://x,endpoint=http://y", "name=h,type=webhook,url=http://x,batch=0",
+		"name=h,type=webhook,url=http://x,linger=soon", "name=h,type=webhook,url=http://x,max_rate=-1"} {
+		if _, err := parseSinkSpec(bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
 	tx, err := parseSinkSpec("name=bus,type=kafka,url=kafka://a,transactions=true,max_tx=500")
 	if c := sinkConfig(tx); err != nil || !c.Transactions || c.MaxTxChanges != 500 || tx.txID != "curntvalv-bus" {
 		t.Fatalf("transactions: %+v %v", tx, err)

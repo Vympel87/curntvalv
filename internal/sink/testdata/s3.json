@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "curntvalv",
+      "credentials": [{"accessKey": "curntvalv", "secretKey": "curntvalv-secret"}],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

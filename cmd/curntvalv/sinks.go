@@ -30,6 +30,7 @@ import (
 //	name=NAME,type=redis,url=redis://HOST:PORT[/DB][,stream=KEY][,maxlen=N]...
 //	name=NAME,type=meilisearch,url=http://[:KEY@]HOST:PORT[,index=UID]...
 //	name=NAME,type=kafka,url=kafka://HOST:PORT[,url=...][,topic=T][,sasl=M]...
+//	name=NAME,type=s3,url=s3://[KEY:SECRET@]BUCKET[/PREFIX][,endpoint=URL][,region=R]...
 type sinkSpec struct {
 	name, typ, url    string
 	urls              []string // every url (kafka takes several)
@@ -49,13 +50,17 @@ type sinkSpec struct {
 	maxTx             int    // max_tx
 	txID              string // kafka transactional_id
 	schemaChanges     bool   // schema_changes=true (design D31)
-	hashKeyFile       string // read by loadHashKey
+	endpoint, region  string // s3
+	batch             int    // batch, 0 for the sink's default
+	linger            time.Duration
+	maxRate           float64 // max_rate, changes per second
+	hashKeyFile       string  // read by loadHashKey
 }
 
-const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
-	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete][,on_error=retry|skip][,transactions=true][,max_tx=N][,schema_changes=true]" +
+const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka|s3,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
+	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete][,on_error=retry|skip][,transactions=true][,max_tx=N][,schema_changes=true][,batch=N][,linger=DURATION][,max_rate=N]" +
 	"[,database=DB][,into=TABLE][,mode=changelog|mirror] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
-	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true][,transactional_id=ID] (kafka)"
+	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true][,transactional_id=ID] (kafka) [,endpoint=URL][,region=R] (s3)"
 
 // sinkKeys lists the keys only some sink types take.
 func sinkKeys(typ string) []string {
@@ -70,6 +75,8 @@ func sinkKeys(typ string) []string {
 		return []string{"index"}
 	case "kafka":
 		return []string{"topic", "sasl", "tombstones", "transactional_id"}
+	case "s3":
+		return []string{"endpoint", "region"}
 	}
 	return nil
 }
@@ -178,6 +185,28 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.maxTx = n
 		case "transactional_id":
 			sp.txID = v
+		case "endpoint":
+			sp.endpoint = v
+		case "region":
+			sp.region = v
+		case "batch":
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				return sinkSpec{}, usageErr("--sink: batch must be a positive number of changes")
+			}
+			sp.batch = n
+		case "linger":
+			d, err := time.ParseDuration(v)
+			if err != nil || d < 0 {
+				return sinkSpec{}, usageErr("--sink: linger must be a duration such as 30s or 5m")
+			}
+			sp.linger = d
+		case "max_rate":
+			r, err := strconv.ParseFloat(v, 64)
+			if err != nil || r <= 0 {
+				return sinkSpec{}, usageErr("--sink: max_rate must be a positive number of changes per second")
+			}
+			sp.maxRate = r
 		case "schema_changes":
 			b, err := strconv.ParseBool(v)
 			if err != nil {
@@ -222,14 +251,14 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 	switch {
 	case !fsm.ValidSinkName(sp.name):
 		return sinkSpec{}, usageErr("--sink: name %q must be lower case letters, digits, _ and - (%s)", sp.name, sinkUsage)
-	case !slices.Contains([]string{"webhook", "clickhouse", "nats", "redis", "meilisearch", "kafka"}, sp.typ):
-		return sinkSpec{}, usageErr("--sink %s: type must be webhook, clickhouse, nats, redis, meilisearch or kafka", sp.name)
+	case !slices.Contains([]string{"webhook", "clickhouse", "nats", "redis", "meilisearch", "kafka", "s3"}, sp.typ):
+		return sinkSpec{}, usageErr("--sink %s: type must be webhook, clickhouse, nats, redis, meilisearch, kafka or s3", sp.name)
 	case sp.url == "":
 		return sinkSpec{}, usageErr("--sink %s: url is required", sp.name)
 	case len(sp.urls) > 1 && sp.typ != "kafka":
 		return sinkSpec{}, usageErr("--sink %s: url given twice (only kafka takes several brokers)", sp.name)
 	}
-	for _, k := range []string{"database", "into", "mode", "subject", "stream", "maxlen", "index", "topic", "sasl", "tombstones", "transactional_id"} {
+	for _, k := range []string{"database", "into", "mode", "subject", "stream", "maxlen", "index", "topic", "sasl", "tombstones", "transactional_id", "endpoint", "region"} {
 		if seen[k] && !slices.Contains(sinkKeys(sp.typ), k) {
 			return sinkSpec{}, usageErr("--sink %s: %s is not a %s option", sp.name, k, sp.typ)
 		}
@@ -240,11 +269,21 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 	case len(sp.shape.Hash) == 0 && sp.hashKeyFile != "":
 		return sinkSpec{}, usageErr("--sink %s: hash_key_file without hash", sp.name)
 	}
-	if sp.schemaChanges && !slices.Contains([]string{"webhook", "kafka", "nats"}, sp.typ) {
-		return sinkSpec{}, usageErr("--sink %s: schema_changes is for webhook, kafka and nats sinks (a %s sink follows table definitions itself or has no place for them)", sp.name, sp.typ)
+	if sp.schemaChanges && !slices.Contains([]string{"webhook", "kafka", "nats", "s3"}, sp.typ) {
+		return sinkSpec{}, usageErr("--sink %s: schema_changes is for webhook, kafka, nats and s3 sinks (a %s sink follows table definitions itself or has no place for them)", sp.name, sp.typ)
 	}
 	if (sp.maxTx > 0 || sp.txID != "") && !sp.transactions {
 		return sinkSpec{}, usageErr("--sink %s: max_tx and transactional_id need transactions=true", sp.name)
+	}
+	if sp.typ == "s3" {
+		// An archive writes one object per table and hour of a delivery:
+		// collect more changes per delivery (design D32).
+		if !seen["batch"] {
+			sp.batch = 10000
+		}
+		if !seen["linger"] {
+			sp.linger = time.Minute
+		}
 	}
 	if sp.transactions && sp.typ == "kafka" && sp.txID == "" {
 		sp.txID = "curntvalv-" + sp.name
@@ -319,13 +358,21 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 		return sink.NewMeilisearch(sink.MeilisearchConfig{URL: sp.url, Index: sp.index})
 	case "kafka":
 		return sink.NewKafka(sink.KafkaConfig{URLs: sp.urls, Topic: sp.topic, SASL: sp.sasl, Tombstones: sp.tombstones, TransactionalID: sp.txID})
+	case "s3":
+		region := sp.region
+		if region == "" {
+			region = os.Getenv("AWS_REGION")
+		}
+		return sink.NewS3(sink.S3Config{URL: sp.url, Endpoint: sp.endpoint, Region: region, Creds: sink.S3Credentials{
+			AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"), SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"), SessionToken: os.Getenv("AWS_SESSION_TOKEN")}})
 	}
 	return nil, fmt.Errorf("unknown sink type %q", sp.typ)
 }
 
 func sinkConfig(sp sinkSpec) sink.Config {
 	return sink.Config{Name: sp.name, Type: sp.typ, Tables: event.Filter(sp.tables), StartLatest: sp.startLatest, Shape: sp.shape,
-		SkipPoison: sp.skipPoison, Transactions: sp.transactions, MaxTxChanges: sp.maxTx, SchemaChanges: sp.schemaChanges}
+		SkipPoison: sp.skipPoison, Transactions: sp.transactions, MaxTxChanges: sp.maxTx, SchemaChanges: sp.schemaChanges,
+		MaxBatch: sp.batch, Linger: sp.linger, MaxRate: sp.maxRate}
 }
 
 // repeatFlag collects every value of a repeated flag as is.
