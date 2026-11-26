@@ -67,6 +67,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Sinks for NATS JetStream, Redis Streams, Meilisearch, Kafka | ✅ implemented (v0.4) |
 | Filters and column projection per sink, named subscriptions | ✅ implemented (v0.4) |
 | Filter expressions, masks, renames, ClickHouse mirror tables, Kafka tombstones | ✅ implemented (v0.5) |
+| Hashed columns, rows leaving a filter as deletes | ✅ implemented (v0.6) |
 
 ## Install
 

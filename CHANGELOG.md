@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
-## [Unreleased]
+## [0.6.0]
 
 ### Added
 
@@ -22,6 +22,15 @@ break compatibility.
   identity are unknown to `where`, not NULL. A delete is therefore skipped
   by a filter on such a column (before, `!=` passed every delete and `=`
   none); `on_leave=delete` delivers it.
+
+### Upgrading from 0.5
+
+- No change to snapshots or the log; 0.5 and 0.6 nodes can run together.
+  Use `hash` and `on_leave` once all nodes run 0.6 (every node needs the
+  same `--sink` flags), and give every node the same `hash_key_file`.
+- A sink with a `where` filter on non-key columns no longer receives
+  deletes of tables without REPLICA IDENTITY FULL, unless `on_leave=delete`
+  (see Changed); add it to mirror sinks.
 
 ## [0.5.0]
 
@@ -209,6 +218,7 @@ First release. Early development: not ready for production.
 - No Postgres failover handling yet (design D7), no initial table
   snapshot, static membership.
 
+[0.6.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.3.0
