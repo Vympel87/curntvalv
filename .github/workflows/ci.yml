@@ -83,7 +83,16 @@ jobs:
         with:
           go-version-file: go.mod
       - run: test -z "$(gofmt -l .)"
-      - run: make test
+      - name: make test
+        run: |
+          set -o pipefail
+          make test 2>&1 | tee test.log
+      # Annotations are readable without access to the job log: name the
+      # failing tests and a few lines of their output.
+      - name: Report failed tests
+        if: failure()
+        run: |
+          awk '/--- FAIL|^panic:|DATA RACE|^FAIL\t/ { n++; if (n > 10) exit; msg = $0; for (i = 0; i < 12 && (getline line) > 0; i++) msg = msg "%0A" line; gsub(/::/, ": :", msg); print "::error title=" (n == 1 ? "first failure" : "failure " n) "::" msg }' test.log
 
   # A real Postgres 17 failover per scenario (design D7).
   failover:
