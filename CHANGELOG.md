@@ -5,7 +5,7 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
-## [Unreleased]
+## [0.5.0]
 
 ### Added
 
@@ -23,6 +23,13 @@ break compatibility.
 - Kafka tombstones (design D25): `tombstones=true` follows each delete with
   a tombstone and sends one for the old key of a key change, for
   log-compacted topics. Off by default.
+
+### Upgrading from 0.4
+
+- No change to snapshots or the log; 0.4 and 0.5 nodes can run together.
+  Every node needs the same `--sink` flags, so use the new sink options
+  (`where` expressions, `mask`, `rename`, `mode=mirror`, `tombstones`)
+  once all nodes run 0.5.
 
 ## [0.4.0]
 
@@ -184,6 +191,7 @@ First release. Early development: not ready for production.
 - No Postgres failover handling yet (design D7), no initial table
   snapshot, static membership.
 
+[0.5.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Vympel87/curntvalv/releases/tag/v0.2.1

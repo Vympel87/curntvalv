@@ -2,7 +2,7 @@
 
 Each milestone ends with something that can be run and shown.
 
-Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0.
+Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0.
 
 | # | Milestone | Done when |
 |---|---|---|
@@ -40,7 +40,7 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0.
 - Filters and column projection per sink (design D21)
 - Named subscriptions: positions kept in the cluster (design D22)
 
-## v0.5 (in progress)
+## v0.5 (done)
 
 - Filter expressions, renames and masks per sink (design D23)
 - ClickHouse mirror tables (design D24)
