@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -145,6 +146,30 @@ func TestParseSinkSpec(t *testing.T) {
 	for _, bad := range []string{"name=bus,type=kafka,url=kafka://a,tombstones=maybe", "name=r,type=redis,url=redis://x,tombstones=true"} {
 		if _, err := parseSinkSpec(bad); err == nil {
 			t.Errorf("%s accepted", bad)
+		}
+	}
+	keyFile := filepath.Join(t.TempDir(), "hash.key")
+	os.WriteFile(keyFile, []byte("  a secret of 24 bytes!!\n"), 0o600)
+	hs, err := parseSinkSpec("name=h,type=webhook,url=http://x,hash=email+id,hash_key_file=" + keyFile)
+	if err != nil || loadHashKey(&hs) != nil || string(hs.shape.HashKey) != "a secret of 24 bytes!!" || fmt.Sprint(hs.shape.Hash) != "[email id]" {
+		t.Fatalf("hash: %+v %v", hs.shape, err)
+	}
+	short := filepath.Join(t.TempDir(), "short.key")
+	os.WriteFile(short, []byte("tiny"), 0o600)
+	for _, spec := range []string{"name=h,type=webhook,url=http://x,hash_key_file=" + short} {
+		if _, err := parseSinkSpec(spec); err == nil {
+			t.Errorf("%s accepted", spec)
+		}
+	}
+	for _, bad := range []string{"hash=email", "hash=email,mask=email,hash_key_file=" + keyFile, "hash=a++b,hash_key_file=" + keyFile} {
+		if _, err := parseSinkSpec("name=h,type=webhook,url=http://x," + bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	for _, file := range []string{short, filepath.Join(t.TempDir(), "missing")} {
+		sp, _ := parseSinkSpec("name=h,type=webhook,url=http://x,hash=email,hash_key_file=" + file)
+		if err := loadHashKey(&sp); err == nil {
+			t.Errorf("%s accepted", file)
 		}
 	}
 	mir, err := parseSinkSpec("name=olap,type=clickhouse,url=http://x,mode=mirror,into=pg_{table}")

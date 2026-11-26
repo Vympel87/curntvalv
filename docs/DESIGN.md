@@ -942,6 +942,25 @@ A backfill reads them from the table into the log, next to the stream.
 - **Testing.** Against a real Kafka: the records of each key in order, with
   and without the option; end to end in the stream sinks test.
 
+### D26. Hashed columns
+
+- **`hash=A+B`** replaces values with the hex HMAC-SHA256 of their
+  Postgres text, under a secret read from `hash_key_file=PATH` at start (at
+  least 16 bytes, surrounding white space removed; the same file on every
+  node, like the sink flags). Equal values stay equal, so a sink can still
+  join or count by them, but they cannot be guessed without the key, which
+  a plain hash of low-entropy data (e-mail addresses, phone numbers) would
+  allow.
+- **Key columns may be hashed**, unlike masks: the hash is deterministic
+  and collisions are negligible, so sinks still de-duplicate and mirror by
+  the hashed key (pseudonymous ids). The column becomes text in the schema
+  the sink sees.
+- NULL stays NULL; an unchanged TOASTed value stays unchanged (it is not
+  known), and a ClickHouse mirror fills it from the hashed value it holds.
+  A column cannot be both masked and hashed. Filters see the original
+  values. Changing the key changes every hash: a mirror then holds rows
+  under both.
+
 ## 4. Data model
 
 ```

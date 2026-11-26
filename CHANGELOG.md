@@ -5,6 +5,14 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- Hashed columns (design D26): `hash=A+B` with `hash_key_file=PATH`
+  replaces values with their HMAC-SHA256 under a secret key, so they can
+  still be joined but not guessed; key columns may be hashed too.
+
 ## [0.5.0]
 
 ### Added

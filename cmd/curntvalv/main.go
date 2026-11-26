@@ -380,6 +380,9 @@ func parseServerFlags(args []string, stderr io.Writer, getenv func(string) strin
 		if names[sp.name] {
 			return serverConfig{}, usageErr("--sink: name %q used twice", sp.name)
 		}
+		if err := loadHashKey(&sp); err != nil {
+			return serverConfig{}, err
+		}
 		names[sp.name] = true
 		cfg.sinks = append(cfg.sinks, sp)
 	}

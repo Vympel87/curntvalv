@@ -1,6 +1,9 @@
 package sink
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 
@@ -117,5 +120,38 @@ func TestShapeMaskAndRename(t *testing.T) {
 	}
 	if m, err := ParseRename("a:b+c:d"); err != nil || m["a"] != "b" || m["c"] != "d" {
 		t.Fatalf("%v %v", m, err)
+	}
+}
+
+func TestShapeHash(t *testing.T) {
+	in := changesOf(1, op{op: pb.Op_OP_UPDATE, id: "7", note: "alice@example.com", oldID: "6"})
+	key := []byte("0123456789abcdef")
+	s := newShaper(Shape{Hash: []string{"note", "id"}, HashKey: key})
+	out := s.Apply(in)
+	after, before := out[0].JSON().After, out[0].JSON().Before
+	// HMAC-SHA256("0123456789abcdef", "alice@example.com"), hex.
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte("alice@example.com"))
+	if after["note"] != hex.EncodeToString(m.Sum(nil)) || len(after["id"].(string)) != 64 || after["amount"] != "12.50" {
+		t.Fatalf("after %v", after)
+	}
+	if before["note"] != nil || before["id"] == after["id"] {
+		t.Fatalf("before %v: NULL stays, different keys stay different", before)
+	}
+	// Deterministic, and the key column stays the key.
+	again := newShaper(Shape{Hash: []string{"note", "id"}, HashKey: key}).Apply(in)
+	if again[0].JSON().After["id"] != after["id"] {
+		t.Fatal("not deterministic")
+	}
+	if k, err := documentKey(out[0].Schema, out[0].Event.GetAfter()); err != nil || k != after["id"] {
+		t.Fatalf("key %q %v", k, err)
+	}
+	if out[0].Schema.GetColumns()[0].GetTypeOid() != oidText || !out[0].Schema.GetColumns()[0].GetKey() {
+		t.Fatalf("schema %v", out[0].Schema.GetColumns()[0])
+	}
+	// Another key, another hash.
+	other := newShaper(Shape{Hash: []string{"note"}, HashKey: []byte("another key, 16+")}).Apply(in)
+	if other[0].JSON().After["note"] == after["note"] {
+		t.Fatal("the hash does not depend on the key")
 	}
 }

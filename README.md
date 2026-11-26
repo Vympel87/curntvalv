@@ -268,6 +268,7 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `where` | Only rows matching an expression, on the new row (the old one for deletes): `status in (paid, shipped) and amount >= 100`, with `= != < <= > >=`, `[not] in (...)`, `[not] like 'a%'`, `is [not] null`, `and`, `or`, `not`, `( )`. Numeric columns compare as numbers. Repeat for AND |
 | `columns`, `drop` | Keep only these columns, or remove these (`columns=id+note`, `drop=password+ssn`); key columns always stay |
 | `mask` | Replace these columns' values with `***` (`mask=email+phone`); NULL stays NULL, key columns are not masked |
+| `hash`, `hash_key_file` | Replace these columns' values with their HMAC-SHA256 (hex) under a secret from a file (at least 16 bytes, the same on every node): `hash=email+user_id,hash_key_file=/etc/curntvalv/hash.key`. Equal values stay equal; key columns may be hashed |
 | `rename` | Rename columns in what the sink receives (`rename=status:state+note:comment`) |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
 | `tombstones` | Kafka: `true` sends a tombstone after each delete and for the old key of a key change (for compacted topics); default `false` |

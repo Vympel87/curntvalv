@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,10 +44,11 @@ type sinkSpec struct {
 	topic, sasl       string // kafka
 	tombstones        bool   // kafka
 	shape             sink.Shape
+	hashKeyFile       string // read by loadHashKey
 }
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
-	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,rename=OLD:NEW+...]" +
+	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...]" +
 	"[,database=DB][,into=TABLE][,mode=changelog|mirror] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
 	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true] (kafka)"
 
@@ -143,6 +146,14 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 				return sinkSpec{}, usageErr("--sink: mask wants column names joined by +")
 			}
 			sp.shape.Mask = names
+		case "hash":
+			names := strings.Split(v, "+")
+			if slices.Contains(names, "") {
+				return sinkSpec{}, usageErr("--sink: hash wants column names joined by +")
+			}
+			sp.shape.Hash = names
+		case "hash_key_file":
+			sp.hashKeyFile = v
 		case "rename":
 			m, err := sink.ParseRename(v)
 			if err != nil {
@@ -188,7 +199,35 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			return sinkSpec{}, usageErr("--sink %s: %s is not a %s option", sp.name, k, sp.typ)
 		}
 	}
+	switch {
+	case len(sp.shape.Hash) > 0 && sp.hashKeyFile == "":
+		return sinkSpec{}, usageErr("--sink %s: hash needs hash_key_file=PATH (a secret of at least %d bytes, the same on every node)", sp.name, sink.MinHashKey)
+	case len(sp.shape.Hash) == 0 && sp.hashKeyFile != "":
+		return sinkSpec{}, usageErr("--sink %s: hash_key_file without hash", sp.name)
+	}
+	for _, c := range sp.shape.Hash {
+		if slices.Contains(sp.shape.Mask, c) {
+			return sinkSpec{}, usageErr("--sink %s: column %s is both masked and hashed", sp.name, c)
+		}
+	}
 	return sp, nil
+}
+
+// loadHashKey reads the hash key of a sink spec (design D26).
+func loadHashKey(sp *sinkSpec) error {
+	if sp.hashKeyFile == "" {
+		return nil
+	}
+	b, err := os.ReadFile(sp.hashKeyFile)
+	if err != nil {
+		return usageErr("--sink %s: hash_key_file: %v", sp.name, err)
+	}
+	key := bytes.TrimSpace(b)
+	if len(key) < sink.MinHashKey {
+		return usageErr("--sink %s: hash key in %s is %d bytes, want at least %d", sp.name, sp.hashKeyFile, len(key), sink.MinHashKey)
+	}
+	sp.shape.HashKey = key
+	return nil
 }
 
 // splitSpec splits a --sink value at commas that are not inside

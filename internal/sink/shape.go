@@ -1,6 +1,9 @@
 package sink
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"slices"
@@ -31,7 +34,16 @@ type Shape struct {
 	// Rename maps Postgres column names to the names the sink sees. It is
 	// not applied to a table that already has a column of the new name.
 	Rename map[string]string
+	// Hash replaces the values of these columns, key columns too, with
+	// the hex HMAC-SHA256 of their Postgres text under HashKey (design
+	// D26): equal values stay equal, so they can still be joined, but
+	// cannot be guessed without the key. NULL stays NULL.
+	Hash    []string
+	HashKey []byte
 }
+
+// MinHashKey is the shortest hash key accepted, in bytes.
+const MinHashKey = 16
 
 // maskValue replaces masked values.
 const maskValue = "***"
@@ -99,12 +111,13 @@ type projection struct {
 	schema *pb.Schema
 	keep   []int  // indexes of the kept columns; nil keeps everything as is
 	mask   []bool // by kept position
+	hash   []bool // by kept position
 }
 
 // Empty reports whether the shape changes nothing.
 func (s Shape) Empty() bool {
 	return len(s.Ops) == 0 && len(s.Where) == 0 && len(s.Columns) == 0 && len(s.Drop) == 0 &&
-		len(s.Mask) == 0 && len(s.Rename) == 0
+		len(s.Mask) == 0 && len(s.Rename) == 0 && len(s.Hash) == 0
 }
 
 // Apply returns the changes that pass, reshaped. It does not modify its
@@ -148,7 +161,7 @@ func (s *shaper) matches(c event.Change) bool {
 
 // reshape projects, masks and renames.
 func (s *shaper) reshape(c event.Change) event.Change {
-	if len(s.Columns) == 0 && len(s.Drop) == 0 && len(s.Mask) == 0 && len(s.Rename) == 0 || c.Schema == nil {
+	if len(s.Columns) == 0 && len(s.Drop) == 0 && len(s.Mask) == 0 && len(s.Rename) == 0 && len(s.Hash) == 0 || c.Schema == nil {
 		return c
 	}
 	p := s.projectionOf(c.Schema)
@@ -156,23 +169,29 @@ func (s *shaper) reshape(c event.Change) event.Change {
 		return c
 	}
 	ev := &pb.Event{SchemaId: p.schema.GetId(), Op: c.Event.GetOp(),
-		Before: pick(c.Event.GetBefore(), p.keep, p.mask), After: pick(c.Event.GetAfter(), p.keep, p.mask)}
+		Before: s.pick(c.Event.GetBefore(), p), After: s.pick(c.Event.GetAfter(), p)}
 	c.Event, c.Schema = ev, p.schema
 	return c
 }
 
-func pick(r *pb.Row, keep []int, mask []bool) *pb.Row {
+func (s *shaper) pick(r *pb.Row, p *projection) *pb.Row {
 	if r == nil {
 		return nil
 	}
-	out := &pb.Row{Values: make([]*pb.Value, 0, len(keep))}
-	for j, i := range keep {
+	out := &pb.Row{Values: make([]*pb.Value, 0, len(p.keep))}
+	for j, i := range p.keep {
 		if i >= len(r.GetValues()) {
 			continue
 		}
 		v := r.GetValues()[i]
-		if mask[j] && (v.GetKind() == pb.ValueKind_VALUE_KIND_TEXT || v.GetKind() == pb.ValueKind_VALUE_KIND_BINARY) {
+		known := v.GetKind() == pb.ValueKind_VALUE_KIND_TEXT || v.GetKind() == pb.ValueKind_VALUE_KIND_BINARY
+		switch {
+		case p.mask[j] && known:
 			v = &pb.Value{Kind: pb.ValueKind_VALUE_KIND_TEXT, Data: []byte(maskValue)}
+		case p.hash[j] && known:
+			m := hmac.New(sha256.New, s.HashKey)
+			m.Write(v.GetData())
+			v = &pb.Value{Kind: pb.ValueKind_VALUE_KIND_TEXT, Data: []byte(hex.EncodeToString(m.Sum(nil)))}
 		}
 		out.Values = append(out.Values, v)
 	}
@@ -192,7 +211,7 @@ func (s *shaper) projectionOf(sc *pb.Schema) *projection {
 		names[col.GetName()] = true
 	}
 	var keep []int
-	var mask []bool
+	var mask, hash []bool
 	var cols []*pb.Column
 	changed := false
 	for i, col := range sc.GetColumns() {
@@ -203,23 +222,24 @@ func (s *shaper) projectionOf(sc *pb.Schema) *projection {
 		}
 		nc := &pb.Column{Name: name, TypeOid: col.GetTypeOid(), TypeModifier: col.GetTypeModifier(), Key: col.GetKey()}
 		m := !col.GetKey() && slices.Contains(s.Mask, name)
-		if m {
+		h := slices.Contains(s.Hash, name)
+		if m || h {
 			nc.TypeOid, nc.TypeModifier = oidText, -1
 		}
 		if to, ok := s.Rename[name]; ok && !names[to] {
 			nc.Name = to
 		}
-		if m || nc.Name != name {
+		if m || h || nc.Name != name {
 			changed = true
 		}
-		keep, mask, cols = append(keep, i), append(mask, m), append(cols, nc)
+		keep, mask, hash, cols = append(keep, i), append(mask, m), append(hash, h), append(cols, nc)
 	}
 	p := &projection{schema: sc}
 	if changed {
 		ps := &pb.Schema{RelationOid: sc.GetRelationOid(), Namespace: sc.GetNamespace(), Name: sc.GetName(),
 			ReplicaIdentity: sc.GetReplicaIdentity(), Columns: cols}
 		ps.Id = fsm.SchemaID(ps)
-		p.schema, p.keep, p.mask = ps, keep, mask
+		p.schema, p.keep, p.mask, p.hash = ps, keep, mask, hash
 	}
 	s.schemas[sc.GetId()] = p
 	return p
