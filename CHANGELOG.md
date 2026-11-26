@@ -5,6 +5,20 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- Schema changes (design D31): with `schema_changes=true` (webhook, Kafka,
+  NATS sinks), `curntvalv subscribe --schema-changes` or
+  `Options.SchemaChanges` in the Go client, a change with op `schema` and
+  the table's new `columns` comes before the first change of a table under
+  a definition new to the log (after `ALTER TABLE`). Derived from the log,
+  nothing new is stored. `op=schema` selects them.
+- ClickHouse mirror tables follow column type changes with
+  `ALTER TABLE ... MODIFY COLUMN`; a changed key column stops the sink
+  with an error instead of mirroring wrong values.
+
 ## [0.8.0]
 
 ### Added

@@ -42,8 +42,30 @@ func ID(commitLSN uint64, seq uint32) string {
 // FormatLSN formats an LSN the way Postgres does.
 func FormatLSN(lsn uint64) string { return fmt.Sprintf("%X/%X", lsn>>32, uint32(lsn)) }
 
-// ID returns the idempotency key of c.
-func (c Change) ID() string { return ID(c.CommitLSN, c.Seq) }
+// ID returns the idempotency key of c. A schema change (design D31) has
+// the position of the change it precedes and the suffix ":schema".
+func (c Change) ID() string {
+	if c.IsSchemaChange() {
+		return ID(c.CommitLSN, c.Seq) + ":schema"
+	}
+	return ID(c.CommitLSN, c.Seq)
+}
+
+// IsSchemaChange reports whether c announces a new table definition rather
+// than a row change (design D31). Its Schema is the new definition.
+func (c Change) IsSchemaChange() bool { return c.Event.GetOp() == pb.Op_OP_SCHEMA }
+
+// WithoutSchemaChanges returns changes without schema changes, reusing its
+// array.
+func WithoutSchemaChanges(changes []Change) []Change {
+	out := changes[:0]
+	for _, c := range changes {
+		if !c.IsSchemaChange() {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 // IsSourceReset reports whether c marks a source reset rather than a row
 // change (design D7). Such a change has no table and passes every filter.
@@ -62,7 +84,7 @@ func (c Change) Table() string {
 }
 
 // Op returns the operation in lower case: insert, update, delete, truncate,
-// or source_reset.
+// backfill, source_reset or schema.
 func (c Change) Op() string {
 	return strings.ToLower(strings.TrimPrefix(c.Event.GetOp().String(), "OP_"))
 }
@@ -85,10 +107,32 @@ type JSON struct {
 	// TxChanges is how many changes of the transaction this sink receives,
 	// when it delivers whole transactions (design D30).
 	TxChanges uint32 `json:"tx_changes,omitempty"`
+	// Columns is the new table definition of op schema (design D31).
+	Columns []ColumnJSON `json:"columns,omitempty"`
 	// Reset is set for op source_reset: an operator moved the source
 	// position, so changes between previous_lsn and lsn may be missing or
 	// repeated.
 	Reset *ResetJSON `json:"reset,omitempty"`
+}
+
+// ColumnJSON is a column of a table definition: its name, Postgres type
+// (the name for common types, else empty; type_oid always), type modifier
+// (-1 without one, e.g. 24 for varchar(20)) and whether it is part of the
+// replica identity key.
+type ColumnJSON struct {
+	Name         string `json:"name"`
+	Type         string `json:"type,omitempty"`
+	TypeOID      uint32 `json:"type_oid"`
+	TypeModifier int32  `json:"type_modifier"`
+	Key          bool   `json:"key,omitempty"`
+}
+
+// typeNames names common Postgres types by OID.
+var typeNames = map[uint32]string{
+	16: "boolean", 17: "bytea", 20: "bigint", 21: "smallint", 23: "integer", 25: "text", 114: "json",
+	700: "real", 701: "double precision", 1042: "character", 1043: "character varying", 1082: "date",
+	1083: "time without time zone", 1114: "timestamp without time zone", 1184: "timestamp with time zone",
+	1186: "interval", 1266: "time with time zone", 1700: "numeric", 2950: "uuid", 3802: "jsonb",
 }
 
 // ResetJSON is the JSON form of a source reset. System identifiers are
@@ -126,6 +170,13 @@ func (c Change) JSON() JSON {
 		}
 	}
 	cols := c.Schema.GetColumns()
+	if c.IsSchemaChange() {
+		j.Columns = make([]ColumnJSON, len(cols))
+		for i, col := range cols {
+			j.Columns[i] = ColumnJSON{Name: col.GetName(), Type: typeNames[col.GetTypeOid()], TypeOID: col.GetTypeOid(),
+				TypeModifier: col.GetTypeModifier(), Key: col.GetKey()}
+		}
+	}
 	row := func(r *pb.Row) map[string]any {
 		if r == nil {
 			return nil
@@ -185,9 +236,13 @@ func (f Filter) Match(sc *pb.Schema) bool {
 
 // Changes returns the changes of one transaction batch stored at index that
 // pass filter; a source reset passes any filter. Schemas are taken from the
-// batch itself or from lookup.
+// batch itself or from lookup. Each table definition the batch carries
+// (one new to the log) is announced by a schema change before the first
+// change that uses it (design D31); readers that did not ask for them drop
+// them with WithoutSchemaChanges.
 func Changes(index uint64, tb *pb.TxBatch, lookup SchemaLookup, filter Filter) []Change {
 	var out []Change
+	var announced []uint64 // new schemas announced in this batch
 	for i, ev := range tb.GetEvents() {
 		var sc *pb.Schema
 		if ev.GetOp() != pb.Op_OP_SOURCE_RESET {
@@ -196,7 +251,7 @@ func Changes(index uint64, tb *pb.TxBatch, lookup SchemaLookup, filter Filter) [
 				continue
 			}
 		}
-		out = append(out, Change{
+		c := Change{
 			Index:        index,
 			CommitLSN:    tb.GetCommitLsn(),
 			Seq:          tb.GetFirstSeq() + uint32(i),
@@ -204,9 +259,29 @@ func Changes(index uint64, tb *pb.TxBatch, lookup SchemaLookup, filter Filter) [
 			CommitTimeUs: tb.GetCommitTimeUs(),
 			Event:        ev,
 			Schema:       sc,
-		})
+		}
+		// A definition the batch carries is new to the log: announce it
+		// before its first change (design D31).
+		if id := ev.GetSchemaId(); sc != nil && !slices.Contains(announced, id) && newSchema(tb, id) {
+			announced = append(announced, id)
+			sch := c
+			sch.Event = &pb.Event{SchemaId: id, Op: pb.Op_OP_SCHEMA}
+			out = append(out, sch)
+		}
+		out = append(out, c)
 	}
 	return out
+}
+
+// newSchema reports whether the batch carries schema id, which it does only
+// for definitions the cluster had not stored.
+func newSchema(tb *pb.TxBatch, id uint64) bool {
+	for _, sc := range tb.GetSchemas() {
+		if sc.GetId() == id {
+			return true
+		}
+	}
+	return false
 }
 
 func schemaOf(id uint64, tb *pb.TxBatch, lookup SchemaLookup) *pb.Schema {

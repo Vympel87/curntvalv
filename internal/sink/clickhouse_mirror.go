@@ -77,8 +77,15 @@ func chType(c *pb.Column) string {
 func quoteIdent(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
 
 func (c *ClickHouse) mirrorName(s *pb.Schema) string {
-	r := strings.NewReplacer("{namespace}", s.GetNamespace(), "{table}", s.GetName())
-	return quoteIdent(c.database) + "." + quoteIdent(r.Replace(c.template))
+	return quoteIdent(c.database) + "." + quoteIdent(c.mirrorTableName(s))
+}
+
+func (c *ClickHouse) mirrorTableName(s *pb.Schema) string {
+	return strings.NewReplacer("{namespace}", s.GetNamespace(), "{table}", s.GetName()).Replace(c.template)
+}
+
+func quoteString(s string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, "'", `\'`).Replace(s) + "'"
 }
 
 // mirrorFor creates or extends the mirror table of a schema, once per
@@ -92,6 +99,7 @@ func (c *ClickHouse) mirrorFor(ctx context.Context, s *pb.Schema) (*mirrorTable,
 	}
 	t = &mirrorTable{name: c.mirrorName(s), cols: s.GetColumns()}
 	var defs, keys, adds []string
+	want := map[string]string{} // column -> ClickHouse type
 	for i, col := range t.cols {
 		typ := chType(col)
 		if col.GetKey() {
@@ -101,6 +109,7 @@ func (c *ClickHouse) mirrorFor(ctx context.Context, s *pb.Schema) (*mirrorTable,
 			typ = "Nullable(" + typ + ")"
 			adds = append(adds, "ADD COLUMN IF NOT EXISTS "+quoteIdent(col.GetName())+" "+typ)
 		}
+		want[col.GetName()] = typ
 		defs = append(defs, quoteIdent(col.GetName())+" "+typ)
 	}
 	if len(t.keys) == 0 {
@@ -117,6 +126,10 @@ func (c *ClickHouse) mirrorFor(ctx context.Context, s *pb.Schema) (*mirrorTable,
 		if _, err := c.exec(ctx, "ALTER TABLE "+t.name+" "+strings.Join(adds, ", "), nil); err != nil {
 			return nil, err
 		}
+	}
+	// Columns whose type changed (design D31).
+	if err := c.retype(ctx, s, t, want); err != nil {
+		return nil, err
 	}
 	c.mu.Lock()
 	c.mirrors[s.GetId()] = t
@@ -441,4 +454,39 @@ func (c *ClickHouse) fillUnchanged(ctx context.Context, p *pendingTable) error {
 		p.rows[k] = r
 	}
 	return nil
+}
+
+// retype changes the type of mirror columns whose Postgres type changed
+// (ALTER TABLE ... MODIFY COLUMN converts the rows already there). A key
+// column cannot change: it orders the table, which must then be rebuilt.
+func (c *ClickHouse) retype(ctx context.Context, s *pb.Schema, t *mirrorTable, want map[string]string) error {
+	out, err := c.exec(ctx, "SELECT name, type FROM system.columns WHERE database = "+quoteString(c.database)+
+		" AND table = "+quoteString(c.mirrorTableName(s))+" FORMAT JSONEachRow", nil)
+	if err != nil {
+		return err
+	}
+	var mods []string
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var col struct{ Name, Type string }
+		if err := dec.Decode(&col); err != nil {
+			return fmt.Errorf("clickhouse: columns of %s: %w", t.name, err)
+		}
+		typ, ok := want[col.Name]
+		if !ok || typ == col.Type {
+			continue
+		}
+		for _, k := range t.keys {
+			if t.cols[k].GetName() == col.Name {
+				return fmt.Errorf("clickhouse: key column %s of %s changed type from %s to %s; drop the mirror table and reset the sink to rebuild it",
+					col.Name, t.name, col.Type, typ)
+			}
+		}
+		mods = append(mods, "MODIFY COLUMN "+quoteIdent(col.Name)+" "+typ)
+	}
+	if len(mods) == 0 {
+		return nil
+	}
+	_, err = c.exec(ctx, "ALTER TABLE "+t.name+" "+strings.Join(mods, ", "), nil)
+	return err
 }

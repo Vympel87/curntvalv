@@ -89,9 +89,40 @@ func TestChangesUsesBatchSchemas(t *testing.T) {
 	if len(got) != 2 || got[0].Seq != 5 || got[1].Seq != 7 || got[1].Index != 9 || got[0].Table() != "public.orders" {
 		t.Fatalf("changes %+v", got)
 	}
+	// items is new to the log: its definition is announced before its
+	// first change, with an id of its own.
 	all := Changes(9, tb, lookup, nil)
-	if len(all) != 3 || all[1].Table() != "public.items" || all[1].ID() != "0/64:6" {
-		t.Fatalf("all changes %+v", all)
+	var got2 []string
+	for _, c := range all {
+		got2 = append(got2, c.ID()+" "+c.Op()+" "+c.Table())
+	}
+	want := []string{"0/64:5 insert public.orders", "0/64:6:schema schema public.items", "0/64:6 insert public.items", "0/64:7 insert public.orders"}
+	if !slices.Equal(got2, want) {
+		t.Fatalf("all changes %q, want %q", got2, want)
+	}
+	if rest := WithoutSchemaChanges(all); len(rest) != 3 || rest[1].ID() != "0/64:6" {
+		t.Fatalf("without schema changes %+v", rest)
+	}
+}
+
+func TestSchemaChangeJSON(t *testing.T) {
+	sc := &pb.Schema{Id: 3, Namespace: "public", Name: "orders", Columns: []*pb.Column{
+		{Name: "id", TypeOid: 23, TypeModifier: -1, Key: true}, {Name: "code", TypeOid: 1043, TypeModifier: 24}, {Name: "geo", TypeOid: 99999, TypeModifier: -1}}}
+	tb := batch(100, 0, 3)
+	tb.Schemas = []*pb.Schema{sc}
+	b, err := json.Marshal(Changes(4, tb, nil, nil)[0].JSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"op":"schema"`, `"table":"public.orders"`, `"id":"0/64:0:schema"`,
+		`"columns":[{"name":"id","type":"integer","type_oid":23,"type_modifier":-1,"key":true},` +
+			`{"name":"code","type":"character varying","type_oid":1043,"type_modifier":24},{"name":"geo","type_oid":99999,"type_modifier":-1}]`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("%s lacks %s", b, want)
+		}
+	}
+	if strings.Contains(string(b), `"after"`) {
+		t.Fatalf("schema change with a row: %s", b)
 	}
 }
 
@@ -155,16 +186,17 @@ func TestReaderReadsAndSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Changes) != 3 || res.Next != 5 || res.TxEntries != 2 {
+	// Entry 2 brings the orders schema: one schema change, then the rows.
+	if len(res.Changes) != 4 || !res.Changes[0].IsSchemaChange() || res.Next != 5 || res.TxEntries != 2 {
 		t.Fatalf("read all: %d changes, next %d, tx %d", len(res.Changes), res.Next, res.TxEntries)
 	}
-	// The schema stored by entry 2 is used for entry 4.
-	if res.Changes[2].Table() != "public.orders" || res.Changes[2].Index != 4 {
-		t.Fatalf("last change %+v", res.Changes[2])
+	// The schema stored by entry 2 is used for entry 4, not announced again.
+	if res.Changes[3].Table() != "public.orders" || res.Changes[3].Index != 4 || res.Changes[3].IsSchemaChange() {
+		t.Fatalf("last change %+v", res.Changes[3])
 	}
 	// max limits entries, not changes.
 	res, err = r.Read(ctx, 2, 2, nil)
-	if err != nil || len(res.Changes) != 2 || res.Next != 4 {
+	if err != nil || len(res.Changes) != 3 || res.Next != 4 {
 		t.Fatalf("max 2 from 2: %+v %v", res, err)
 	}
 	// A filter that matches nothing still advances.

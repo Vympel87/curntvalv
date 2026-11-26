@@ -83,6 +83,10 @@ type Config struct {
 	// MaxTxChanges bounds the changes of one transaction held in memory
 	// (default 100000); a larger one is delivered in parts.
 	MaxTxChanges int
+	// SchemaChanges delivers a change with op schema before the first change
+	// of a table under a definition new to the log (design D31). By default
+	// they are left out.
+	SchemaChanges bool
 	// SkipCommitInterval is how often the offset is stored when entries are
 	// read but none of their changes pass Tables and Shape (default 1s).
 	SkipCommitInterval time.Duration
@@ -344,7 +348,11 @@ func (r *Runner) session(ctx context.Context) error {
 			return err
 		}
 		from = res.Next
-		changes := r.shape.Apply(res.Changes)
+		changes := res.Changes
+		if !r.cfg.SchemaChanges {
+			changes = event.WithoutSchemaChanges(changes)
+		}
+		changes = r.shape.Apply(changes)
 		units := singles(changes)
 		safe := res.Next - 1
 		if r.cfg.Transactions {

@@ -729,7 +729,7 @@ func logCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 				sc, ok := resp.GetSchemas()[id]
 				return sc, ok
 			}
-			for _, c := range event.Changes(e.GetIndex(), e.GetTxBatch(), lookup, nil) {
+			for _, c := range event.WithoutSchemaChanges(event.Changes(e.GetIndex(), e.GetTxBatch(), lookup, nil)) {
 				if *limit > 0 && printed >= *limit {
 					return nil
 				}
@@ -797,6 +797,7 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	name := fs.String("name", "", "a named subscription: the cluster keeps the position and the next run continues there (created on first use)")
 	start := fs.String("start", "earliest", "with a new --name: earliest (the oldest retained change) or latest (only new changes)")
 	policy := fs.String("policy", "block", "with a new --name: block (the log keeps what the subscription has not read) or drop")
+	schemas := fs.Bool("schema-changes", false, "also print an event with op schema when a table's definition changes")
 	txs := fs.Bool("transactions", false, "print whole transactions, each change with tx_changes; --limit stops after a whole transaction")
 	var tables listFlag
 	fs.Var(&tables, "table", "table to receive, as NAME or NAMESPACE.NAME; repeat or comma separate (default: all)")
@@ -829,7 +830,7 @@ func subscribeCmd(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	enc := json.NewEncoder(stdout)
 	printed := 0
-	opts := client.Options{From: *from, Tables: tables, Name: *name, StartLatest: *start == "latest", Drop: *policy == "drop",
+	opts := client.Options{From: *from, Tables: tables, Name: *name, StartLatest: *start == "latest", Drop: *policy == "drop", SchemaChanges: *schemas,
 		OnRetry: func(addr string, err error, next uint64) {
 			fmt.Fprintf(stderr, "subscribe: %s: %s; retrying from index %d\n", addr, status.Convert(err).Message(), next)
 		}}

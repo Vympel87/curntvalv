@@ -94,6 +94,11 @@ const (
 	// A row read from the table by a backfill (design D17): the row as it was
 	// at the event's position. Consumers treat it as an upsert.
 	Op_OP_BACKFILL Op = 6
+	// Not stored in the log: readers that ask for schema changes (design
+	// D31) get one before the first change of a table that uses a table
+	// definition the log has not had before. It has no rows; its schema_id
+	// names the new definition.
+	Op_OP_SCHEMA Op = 7
 )
 
 // Enum value maps for Op.
@@ -106,6 +111,7 @@ var (
 		4: "OP_TRUNCATE",
 		5: "OP_SOURCE_RESET",
 		6: "OP_BACKFILL",
+		7: "OP_SCHEMA",
 	}
 	Op_value = map[string]int32{
 		"OP_UNSPECIFIED":  0,
@@ -115,6 +121,7 @@ var (
 		"OP_TRUNCATE":     4,
 		"OP_SOURCE_RESET": 5,
 		"OP_BACKFILL":     6,
+		"OP_SCHEMA":       7,
 	}
 )
 
@@ -1438,7 +1445,7 @@ const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\x16BACKFILL_STATE_PENDING\x10\x01\x12\x17\n" +
 	"\x13BACKFILL_STATE_DONE\x10\x02\x12\x1c\n" +
 	"\x18BACKFILL_STATE_CANCELLED\x10\x03\x12\x19\n" +
-	"\x15BACKFILL_STATE_FAILED\x10\x04*|\n" +
+	"\x15BACKFILL_STATE_FAILED\x10\x04*\x8b\x01\n" +
 	"\x02Op\x12\x12\n" +
 	"\x0eOP_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tOP_INSERT\x10\x01\x12\r\n" +
@@ -1446,7 +1453,8 @@ const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\tOP_DELETE\x10\x03\x12\x0f\n" +
 	"\vOP_TRUNCATE\x10\x04\x12\x13\n" +
 	"\x0fOP_SOURCE_RESET\x10\x05\x12\x0f\n" +
-	"\vOP_BACKFILL\x10\x06*\x82\x01\n" +
+	"\vOP_BACKFILL\x10\x06\x12\r\n" +
+	"\tOP_SCHEMA\x10\a*\x82\x01\n" +
 	"\tValueKind\x12\x1a\n" +
 	"\x16VALUE_KIND_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fVALUE_KIND_NULL\x10\x01\x12\x13\n" +

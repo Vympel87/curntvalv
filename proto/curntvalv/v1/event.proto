@@ -100,6 +100,11 @@ enum Op {
   // A row read from the table by a backfill (design D17): the row as it was
   // at the event's position. Consumers treat it as an upsert.
   OP_BACKFILL = 6;
+  // Not stored in the log: readers that ask for schema changes (design
+  // D31) get one before the first change of a table that uses a table
+  // definition the log has not had before. It has no rows; its schema_id
+  // names the new definition.
+  OP_SCHEMA = 7;
 }
 
 message Event {

@@ -258,3 +258,30 @@ func TestSubscribeSplitsLargeTransaction(t *testing.T) {
 		t.Fatalf("next indexes %v", got)
 	}
 }
+
+func TestSubscribeSchemaChanges(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		c, r := subscribeClient(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		stream, err := c.Subscribe(ctx, &pb.SubscribeRequest{FromIndex: 5, SchemaChanges: on})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sch := change(5, 0x100, 0)
+		sch.Event = &pb.Event{SchemaId: 7, Op: pb.Op_OP_SCHEMA}
+		<-r.calls
+		r.results <- readResult{res: event.Result{Changes: []event.Change{sch, change(5, 0x100, 0)}, Next: 6, TxEntries: 1}}
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 1
+		if on {
+			want = 2
+		}
+		if len(resp.Events) != want || on && (resp.Events[0].Event.Op != pb.Op_OP_SCHEMA || resp.Events[0].Id != "0/100:0:schema" || resp.Schemas[7] == nil) {
+			t.Fatalf("schema_changes=%v: %+v", on, resp)
+		}
+	}
+}

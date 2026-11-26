@@ -90,7 +90,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		from = res.Next
-		for _, c := range res.Changes {
+		for _, c := range event.WithoutSchemaChanges(res.Changes) {
 			data, err := json.Marshal(c.JSON())
 			if err != nil {
 				return

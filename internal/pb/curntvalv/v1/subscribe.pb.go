@@ -302,7 +302,10 @@ type SubscribeRequest struct {
 	// carries tx_changes, the number of its changes the stream sends. A
 	// transaction may span several responses; next_index never points into
 	// one, so resuming there sends it again from its start.
-	Transactions  bool `protobuf:"varint,3,opt,name=transactions,proto3" json:"transactions,omitempty"`
+	Transactions bool `protobuf:"varint,3,opt,name=transactions,proto3" json:"transactions,omitempty"`
+	// Send an event with op OP_SCHEMA when a table's definition changes,
+	// before its first change under the new one (design D31).
+	SchemaChanges bool `protobuf:"varint,4,opt,name=schema_changes,json=schemaChanges,proto3" json:"schema_changes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -354,6 +357,13 @@ func (x *SubscribeRequest) GetTables() []string {
 func (x *SubscribeRequest) GetTransactions() bool {
 	if x != nil {
 		return x.Transactions
+	}
+	return false
+}
+
+func (x *SubscribeRequest) GetSchemaChanges() bool {
+	if x != nil {
+		return x.SchemaChanges
 	}
 	return false
 }
@@ -547,12 +557,13 @@ const file_curntvalv_v1_subscribe_proto_rawDesc = "" +
 	"generation\x18\x02 \x01(\x04R\n" +
 	"generation\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x04R\x06offset\"\x1c\n" +
-	"\x1aCommitSubscriptionResponse\"m\n" +
+	"\x1aCommitSubscriptionResponse\"\x94\x01\n" +
 	"\x10SubscribeRequest\x12\x1d\n" +
 	"\n" +
 	"from_index\x18\x01 \x01(\x04R\tfromIndex\x12\x16\n" +
 	"\x06tables\x18\x02 \x03(\tR\x06tables\x12\"\n" +
-	"\ftransactions\x18\x03 \x01(\bR\ftransactions\"\xff\x01\n" +
+	"\ftransactions\x18\x03 \x01(\bR\ftransactions\x12%\n" +
+	"\x0eschema_changes\x18\x04 \x01(\bR\rschemaChanges\"\xff\x01\n" +
 	"\x11SubscribeResponse\x121\n" +
 	"\x06events\x18\x01 \x03(\v2\x19.curntvalv.v1.ChangeEventR\x06events\x12F\n" +
 	"\aschemas\x18\x02 \x03(\v2,.curntvalv.v1.SubscribeResponse.SchemasEntryR\aschemas\x12\x1d\n" +

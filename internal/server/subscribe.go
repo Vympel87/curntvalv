@@ -184,6 +184,9 @@ func (s *Subscribe) Subscribe(req *pb.SubscribeRequest, stream pb.SubscribeServi
 			return status.Error(codes.Internal, err.Error())
 		}
 		from = res.Next
+		if !req.GetSchemaChanges() {
+			res.Changes = event.WithoutSchemaChanges(res.Changes)
+		}
 		changes, next := res.Changes, res.Next
 		if group != nil {
 			changes = nil

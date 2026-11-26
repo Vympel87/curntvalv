@@ -109,7 +109,12 @@ func (s *callSink) rows() []string {
 
 func runSink(t *testing.T, h *harness, s Sink, cfg Config) func() {
 	t.Helper()
-	cfg.Name, cfg.RetryMin, cfg.RetryMax = "test", time.Millisecond, 20*time.Millisecond
+	return runSinkNamed(t, h, "test", s, cfg)
+}
+
+func runSinkNamed(t *testing.T, h *harness, name string, s Sink, cfg Config) func() {
+	t.Helper()
+	cfg.Name, cfg.RetryMin, cfg.RetryMax = name, time.Millisecond, 20*time.Millisecond
 	cfg.SkipCommitInterval = 20 * time.Millisecond
 	r, err := NewRunner(cfg, s, h.node, event.NewReader(h.node, h.node.f), h.node.f)
 	if err != nil {

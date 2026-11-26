@@ -68,6 +68,9 @@ message SubscribeRequest {
   // transaction may span several responses; next_index never points into
   // one, so resuming there sends it again from its start.
   bool transactions = 3;
+  // Send an event with op OP_SCHEMA when a table's definition changes,
+  // before its first change under the new one (design D31).
+  bool schema_changes = 4;
 }
 
 message SubscribeResponse {

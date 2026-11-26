@@ -108,7 +108,10 @@ func (l *raftLog) batch(t *testing.T, lsn uint64, firstSeq uint32, final bool, i
 
 func (l *raftLog) batchOf(t *testing.T, sc *pb.Schema, lsn uint64, firstSeq uint32, final bool, ids ...string) {
 	t.Helper()
-	tb := &pb.TxBatch{CommitLsn: lsn, EndLsn: lsn + 1, FirstSeq: firstSeq, Final: final, Schemas: []*pb.Schema{sc}}
+	tb := &pb.TxBatch{CommitLsn: lsn, EndLsn: lsn + 1, FirstSeq: firstSeq, Final: final}
+	if _, ok := l.f.Schema(sc.GetId()); !ok { // as the source does: only new ones
+		tb.Schemas = []*pb.Schema{sc}
+	}
 	for _, id := range ids {
 		tb.Events = append(tb.Events, &pb.Event{SchemaId: sc.Id, Op: pb.Op_OP_INSERT,
 			After: &pb.Row{Values: []*pb.Value{{Kind: pb.ValueKind_VALUE_KIND_TEXT, Data: []byte(id)}, {Kind: pb.ValueKind_VALUE_KIND_NULL}}}})
@@ -211,5 +214,36 @@ func TestNamedTransactionsCommitBetweenTransactions(t *testing.T) {
 	}
 	if again[len(again)-1] != "3:2/2" {
 		t.Fatalf("resumed with %v", again)
+	}
+}
+
+func TestSchemaChanges(t *testing.T) {
+	l := &raftLog{f: fsm.New()}
+	l.batch(t, 0x100, 0, true, "1")
+	l.batch(t, 0x200, 0, true, "2") // orders is known by now
+	addr, _ := serve(t, event.NewReader(l, l.f))
+	c, _ := New([]string{addr})
+	ctx := ctxT(t)
+	var got []string
+	for ch, err := range c.Subscribe(ctx, Options{SchemaChanges: true}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ch.Op == OpSchema {
+			var cols []string
+			for _, col := range ch.Columns {
+				cols = append(cols, col.Name)
+			}
+			got = append(got, fmt.Sprintf("schema %s %s %v %d", ch.ID, ch.Table, cols, len(ch.After)))
+		} else {
+			got = append(got, fmt.Sprintf("%s %s", ch.Op, *ch.After["id"]))
+		}
+		if len(got) == 3 {
+			break
+		}
+	}
+	want := []string{"schema 0/100:0:schema public.orders [id note] 0", "insert 1", "insert 2"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

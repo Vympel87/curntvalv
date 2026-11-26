@@ -22,7 +22,8 @@ type Shape struct {
 	// Ops keeps only these operations; empty keeps all.
 	Ops []pb.Op
 	// Where keeps a change only if every expression is true on its new row
-	// (the old row for a delete). Truncates pass: they have no row.
+	// (the old row for a delete). Truncates and schema changes pass: they
+	// have no row.
 	Where []*Expr
 	// Columns keeps only these columns, Drop removes these. Key columns
 	// are always kept: sinks need them to de-duplicate and mirror.
@@ -90,7 +91,7 @@ func ParseWhere(s string) (*Expr, error) {
 func ParseOp(s string) (pb.Op, error) {
 	op, ok := pb.Op_value["OP_"+strings.ToUpper(s)]
 	if !ok || pb.Op(op) == pb.Op_OP_UNSPECIFIED || pb.Op(op) == pb.Op_OP_SOURCE_RESET {
-		return 0, fmt.Errorf("sink: unknown op %q (insert, update, delete, truncate, backfill)", s)
+		return 0, fmt.Errorf("sink: unknown op %q (insert, update, delete, truncate, backfill, schema)", s)
 	}
 	return pb.Op(op), nil
 }
@@ -168,7 +169,7 @@ func (s *shaper) Apply(changes []event.Change) []event.Change {
 // delete.
 func (s *shaper) filter(c event.Change) (event.Change, bool) {
 	op := c.Event.GetOp()
-	if len(s.Where) == 0 || op == pb.Op_OP_TRUNCATE {
+	if len(s.Where) == 0 || op == pb.Op_OP_TRUNCATE || op == pb.Op_OP_SCHEMA {
 		return c, true
 	}
 	if op == pb.Op_OP_DELETE {

@@ -186,6 +186,15 @@ func TestParseSinkSpec(t *testing.T) {
 	if _, err := parseSinkSpec("name=m,type=webhook,url=http://x,on_error=ignore"); err == nil {
 		t.Error("on_error=ignore accepted")
 	}
+	if sc, err := parseSinkSpec("name=hook,type=webhook,url=http://x,schema_changes=true"); err != nil || !sinkConfig(sc).SchemaChanges {
+		t.Fatalf("schema_changes: %+v %v", sc, err)
+	}
+	for _, bad := range []string{"name=m,type=meilisearch,url=http://x,schema_changes=true", "name=c,type=clickhouse,url=http://x,schema_changes=true",
+		"name=r,type=redis,url=redis://x,schema_changes=true", "name=h,type=webhook,url=http://x,schema_changes=yes"} {
+		if _, err := parseSinkSpec(bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
 	tx, err := parseSinkSpec("name=bus,type=kafka,url=kafka://a,transactions=true,max_tx=500")
 	if c := sinkConfig(tx); err != nil || !c.Transactions || c.MaxTxChanges != 500 || tx.txID != "curntvalv-bus" {
 		t.Fatalf("transactions: %+v %v", tx, err)

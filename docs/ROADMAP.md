@@ -62,12 +62,12 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 - Transactions in `curntvalv subscribe` and the Go client (`tx_changes`,
   `Client.Transactions`)
 
-## v0.9: schema changes (next)
+## v0.9: schema changes (done)
 
-- A `schema` event when a table's columns change (added, dropped, type
-  changed), from the Relation messages pgoutput already sends
-- ClickHouse mirror tables follow added columns (`ALTER TABLE ... ADD
-  COLUMN`) instead of needing a rebuild
+- A `schema` event when a table's definition changes, from the Relation
+  messages pgoutput already sends (design D31)
+- ClickHouse mirror tables follow type changes (`MODIFY COLUMN`); added
+  columns were followed since v0.5
 
 ## v0.10: archive and pacing
 

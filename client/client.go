@@ -78,7 +78,22 @@ const (
 	// between Reset.PreviousLSN and Reset.LSN may be missing or repeated.
 	// It has no table and is sent whatever Options.Tables says.
 	OpSourceReset Op = "source_reset"
+	// OpSchema is not a row change: the table's definition changed, and the
+	// changes that follow use Columns (design D31). Only with
+	// Options.SchemaChanges.
+	OpSchema Op = "schema"
 )
+
+// Column is a column of a table definition.
+type Column struct {
+	Name string `json:"name"`
+	// Type is the Postgres type name for common types ("integer", "text",
+	// "timestamp with time zone", ...), else empty; TypeOID is always set.
+	Type         string `json:"type,omitempty"`
+	TypeOID      uint32 `json:"type_oid"`
+	TypeModifier int32  `json:"type_modifier"` // -1 without one; e.g. 24 for varchar(20)
+	Key          bool   `json:"key,omitempty"` // part of the replica identity
+}
 
 // Reset describes a source reset (OpSourceReset).
 type Reset struct {
@@ -118,6 +133,8 @@ type Change struct {
 	// transaction the stream sends (design D30). 0 means the change stands
 	// alone.
 	TxChanges uint32 `json:"tx_changes,omitempty"`
+	// Columns is the new table definition, for OpSchema.
+	Columns []Column `json:"columns,omitempty"`
 	// Reset is set for OpSourceReset.
 	Reset *Reset `json:"reset,omitempty"`
 }
@@ -138,6 +155,11 @@ type Options struct {
 	// transaction but sends it again from its start. Client.Transactions
 	// sets it and yields one transaction at a time.
 	Transactions bool
+	// SchemaChanges adds a change with OpSchema before the first change of
+	// a table under a definition new to the log: a column added, dropped,
+	// renamed or retyped, a new key, the table seen for the first time
+	// (design D31).
+	SchemaChanges bool
 
 	// Name makes this a named subscription (design D22): the cluster keeps
 	// its position and Subscribe continues from there; From must be 0. A
@@ -233,7 +255,7 @@ func (c *Client) Subscribe(ctx context.Context, opts Options) iter.Seq2[Change, 
 			addr := c.addrs[attempt%len(c.addrs)]
 			received, restart := false, false
 			var failed error
-			stop, err := c.stream(ctx, addr, &pb.SubscribeRequest{FromIndex: next, Tables: opts.Tables, Transactions: opts.Transactions},
+			stop, err := c.stream(ctx, addr, &pb.SubscribeRequest{FromIndex: next, Tables: opts.Tables, Transactions: opts.Transactions, SchemaChanges: opts.SchemaChanges},
 				func(resp *pb.SubscribeResponse, schemas map[uint64]*pb.Schema) bool {
 					received = true
 					for _, ce := range resp.GetEvents() {
@@ -337,6 +359,9 @@ func convert(ce *pb.ChangeEvent, schemas map[uint64]*pb.Schema) Change {
 	ch := Change{ID: j.ID, Index: j.Index, LSN: j.LSN, Seq: j.Seq, Xid: j.Xid,
 		CommitTime: time.UnixMicro(ce.GetCommitTimeUs()).UTC(), Table: j.Table, Op: Op(j.Op),
 		Before: row(j.Before), After: row(j.After), Unchanged: j.Unchanged, TxChanges: ce.GetTxChanges()}
+	for _, col := range j.Columns {
+		ch.Columns = append(ch.Columns, Column{Name: col.Name, Type: col.Type, TypeOID: col.TypeOID, TypeModifier: col.TypeModifier, Key: col.Key})
+	}
 	if r := j.Reset; r != nil {
 		ch.Reset = &Reset{PreviousLSN: r.PreviousLSN, PreviousSystemID: r.PreviousSystemID, PreviousTimeline: r.PreviousTimeline,
 			LSN: r.LSN, SystemID: r.SystemID, Timeline: r.Timeline, Reason: r.Reason}

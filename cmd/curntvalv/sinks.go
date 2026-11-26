@@ -48,11 +48,12 @@ type sinkSpec struct {
 	transactions      bool   // deliver whole transactions (design D30)
 	maxTx             int    // max_tx
 	txID              string // kafka transactional_id
+	schemaChanges     bool   // schema_changes=true (design D31)
 	hashKeyFile       string // read by loadHashKey
 }
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
-	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete][,on_error=retry|skip][,transactions=true][,max_tx=N]" +
+	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete][,on_error=retry|skip][,transactions=true][,max_tx=N][,schema_changes=true]" +
 	"[,database=DB][,into=TABLE][,mode=changelog|mirror] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
 	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true][,transactional_id=ID] (kafka)"
 
@@ -177,6 +178,12 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.maxTx = n
 		case "transactional_id":
 			sp.txID = v
+		case "schema_changes":
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return sinkSpec{}, usageErr("--sink: schema_changes must be true or false")
+			}
+			sp.schemaChanges = b
 		case "on_leave":
 			if v != "skip" && v != "delete" {
 				return sinkSpec{}, usageErr("--sink: on_leave must be skip or delete")
@@ -232,6 +239,9 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 		return sinkSpec{}, usageErr("--sink %s: hash needs hash_key_file=PATH (a secret of at least %d bytes, the same on every node)", sp.name, sink.MinHashKey)
 	case len(sp.shape.Hash) == 0 && sp.hashKeyFile != "":
 		return sinkSpec{}, usageErr("--sink %s: hash_key_file without hash", sp.name)
+	}
+	if sp.schemaChanges && !slices.Contains([]string{"webhook", "kafka", "nats"}, sp.typ) {
+		return sinkSpec{}, usageErr("--sink %s: schema_changes is for webhook, kafka and nats sinks (a %s sink follows table definitions itself or has no place for them)", sp.name, sp.typ)
 	}
 	if (sp.maxTx > 0 || sp.txID != "") && !sp.transactions {
 		return sinkSpec{}, usageErr("--sink %s: max_tx and transactional_id need transactions=true", sp.name)
@@ -315,7 +325,7 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 
 func sinkConfig(sp sinkSpec) sink.Config {
 	return sink.Config{Name: sp.name, Type: sp.typ, Tables: event.Filter(sp.tables), StartLatest: sp.startLatest, Shape: sp.shape,
-		SkipPoison: sp.skipPoison, Transactions: sp.transactions, MaxTxChanges: sp.maxTx}
+		SkipPoison: sp.skipPoison, Transactions: sp.transactions, MaxTxChanges: sp.maxTx, SchemaChanges: sp.schemaChanges}
 }
 
 // repeatFlag collects every value of a repeated flag as is.

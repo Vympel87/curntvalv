@@ -70,6 +70,7 @@ curntValv aims for the first set of features with the operating cost of the seco
 | Hashed columns, rows leaving a filter as deletes | ✅ implemented (v0.6) |
 | Poison changes (`on_error=skip`), rolling upgrade test | ✅ implemented (v0.7) |
 | Whole transactions for sinks, Kafka and subscribers | ✅ implemented (v0.8) |
+| Schema change events, ClickHouse mirrors following type changes | ✅ on main, for v0.9 |
 
 ## Install
 
@@ -262,6 +263,12 @@ curntvalv subscribe --transactions --table orders   # each change with tx_change
 A transaction above 100000 changes, or one cut short by a Postgres
 failover, comes one change at a time (`TxChanges` 0).
 
+With `Options.SchemaChanges` (`subscribe --schema-changes`, sink option
+`schema_changes=true`) a change with op `schema` and the table's `columns`
+comes before the first change of a table under a new definition, such as
+after `ALTER TABLE ... ADD COLUMN`. Postgres reports a definition with the
+table's next row change, so it comes then, not at the `ALTER TABLE`.
+
 ## Sinks
 
 Add `--sink` (repeatable) to every node, with the same values everywhere:
@@ -297,6 +304,7 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `on_error` | `retry` (default): a change the sink refuses is retried until it succeeds. `skip`: a change the sink keeps refusing while it accepts others is passed over and recorded (`curntvalv sink skipped NAME`); an outage never skips anything |
 | `transactions` | `true`: deliver whole Postgres transactions; each change gets `tx_changes`, the number of changes of its transaction in the same delivery (webhook: one request; Kafka: one Kafka transaction). Default `false` |
 | `max_tx` | With `transactions`: a transaction with more changes than this (default 100000) is delivered in parts, without `tx_changes` |
+| `schema_changes` | Webhook, Kafka, NATS: `true` sends an event with `"op":"schema"` and the new `columns` before the first change of a table after its definition changed (`ALTER TABLE`). Default `false` |
 | `transactional_id` | Kafka, with `transactions`: the producer's transactional id (default `curntvalv-NAME`); unique per curntValv cluster |
 | `rename` | Rename columns in what the sink receives (`rename=status:state+note:comment`) |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
@@ -339,8 +347,9 @@ clickhouse-client -q "SELECT * FROM public_orders FINAL"   # FINAL: each row onc
 
 Columns get ClickHouse types (integers, Decimal, Bool, UUID, Date32,
 DateTime64 in UTC; other types as String), new Postgres columns are added,
-and large values an update leaves unchanged are kept. Tables need a primary
-key.
+a column whose type changes is changed too (the key's type cannot change:
+drop the table and reset the sink), and large values an update leaves
+unchanged are kept. Tables need a primary key.
 
 The other sinks:
 

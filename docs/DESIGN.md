@@ -1092,6 +1092,51 @@ A backfill reads them from the table into the log, next to the stream.
   nothing for it; end to end a 2500-row Postgres transaction reaching a
   webhook in one request and `subscribe --transactions`.
 
+### D31. Schema changes
+
+- **The problem.** After `ALTER TABLE` the changes of a table have other
+  columns, and consumers find out only from the rows: a column appears in
+  `after`, a value no longer fits.
+- **Nothing new in the log.** pgoutput sends a Relation message before the
+  first change of a table under a definition the session has not sent; the
+  source stores a definition in the batch that first uses it only if the
+  cluster has not stored it (D3). So a batch carrying a schema marks a
+  definition new to the log: the reader turns it into a change with op
+  `schema` before the first change that uses it, with that change's
+  position and the id suffix `:schema` (`0/16B3748:2:schema`). Every node
+  derives the same ones from the same entries, older logs included, and
+  rolling upgrades are unaffected.
+- **What counts.** Any change to what the definition holds: columns added,
+  dropped, renamed or retyped, the key or the replica identity, the table's
+  name or namespace; and a table's first definition. Postgres sends it
+  with the table's next row change, not at the `ALTER TABLE`. A definition
+  that comes back (a column dropped and added again with the same type) is
+  not new and is not announced again. Rarely, after a leader change, one
+  is announced twice.
+- **Opt-in.** Sinks take `schema_changes=true` (webhook, Kafka, NATS:
+  sinks whose consumers get the JSON form), subscribers
+  `SubscribeRequest.schema_changes` / `Options.SchemaChanges` /
+  `subscribe --schema-changes`. The JSON form has `columns`: name, type
+  name for common types, type OID and modifier, key. Filters apply:
+  `table`, `op` (`op=schema`), and `columns`/`drop`/`rename`/`mask`/`hash`
+  reshape the announced definition as they reshape rows; `where` passes it.
+  With `transactions=true` it counts in `tx_changes`. Elsewhere schema
+  changes are dropped where the log is read. In Kafka it has no key, so it
+  may land in another partition than the rows that follow it.
+- **ClickHouse mirrors** already added new columns (D24). They now also
+  follow type changes: for each new definition the mirror compares its
+  columns' ClickHouse types (system.columns) with the wanted ones and runs
+  `ALTER TABLE ... MODIFY COLUMN`, which converts the rows already there.
+  Without it ClickHouse silently wraps a bigint value into an Int32
+  column. A key column cannot change type in place (it orders the table):
+  the sink stops with an error saying to drop the table and reset the
+  sink. Dropped columns stay in the mirror, NULL in new rows.
+- **Testing.** The reader's schema changes and their JSON; a runner with
+  and without the option, reshaped and counted in a transaction; the
+  subscribe stream and the client; a mirror retyping a column against
+  ClickHouse (and refusing a key); end to end `ADD COLUMN` and `ALTER
+  COLUMN TYPE` in Postgres reaching a webhook and a mirror.
+
 ## 4. Data model
 
 ```

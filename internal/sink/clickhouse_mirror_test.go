@@ -204,3 +204,51 @@ func TestClickHouseMirrorReal(t *testing.T) {
 		t.Fatalf("no key: %v", err)
 	}
 }
+
+// TestClickHouseMirrorRetypeReal: a column whose Postgres type changed is
+// changed in the mirror, rows already there converted; a key column cannot
+// change.
+func TestClickHouseMirrorRetypeReal(t *testing.T) {
+	chURL := os.Getenv("CURNTVALV_TEST_CH_URL")
+	if chURL == "" {
+		t.Skip("CURNTVALV_TEST_CH_URL not set; run `make test-ch`")
+	}
+	prefix := fmt.Sprintf("r%d_", time.Now().UnixNano()%1_000_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	table := "`default`.`" + prefix + "items`"
+	schema := func(qty uint32, idType uint32) *pb.Schema {
+		s := &pb.Schema{Namespace: "public", Name: "items", Columns: []*pb.Column{
+			{Name: "id", TypeOid: idType, Key: true}, {Name: "qty", TypeOid: qty}}}
+		s.Id = fsm.SchemaID(s)
+		return s
+	}
+	newSink := func() *ClickHouse {
+		c, err := NewClickHouse(ClickHouseConfig{URL: chURL, Mirror: true, Table: prefix + "{table}"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	c := newSink()
+	t.Cleanup(func() { c.exec(context.Background(), "DROP TABLE IF EXISTS "+table, nil) })
+	if err := c.Deliver(ctx, mirrorChanges(schema(oidInt4, oidInt4), 1, mc{op: pb.Op_OP_INSERT, after: []string{"1", "7"}})); err != nil {
+		t.Fatal(err)
+	}
+	// ALTER TABLE items ALTER qty TYPE bigint, then a value int4 cannot hold;
+	// a new sink (another leader) finds the table as it is.
+	for _, cs := range []*ClickHouse{c, newSink()} {
+		if err := cs.Deliver(ctx, mirrorChanges(schema(oidInt8, oidInt4), 2, mc{op: pb.Op_OP_INSERT, after: []string{"2", "5000000000"}})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := c.Query(ctx, "SELECT toTypeName(qty), groupArray(qty) FROM (SELECT qty FROM "+table+" FINAL ORDER BY id) GROUP BY 1 FORMAT TSV")
+	if err != nil || strings.TrimSpace(string(out)) != "Nullable(Int64)\t[7,5000000000]" {
+		t.Fatalf("after retype: %q %v", out, err)
+	}
+	// The key's type cannot change in place.
+	err = newSink().Deliver(ctx, mirrorChanges(schema(oidInt8, oidInt8), 3, mc{op: pb.Op_OP_INSERT, after: []string{"3", "1"}}))
+	if err == nil || !strings.Contains(err.Error(), "key column id") {
+		t.Fatalf("key retype: %v", err)
+	}
+}
