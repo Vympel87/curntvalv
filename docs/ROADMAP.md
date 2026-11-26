@@ -62,7 +62,7 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 - Transactions in `curntvalv subscribe` and the Go client (`tx_changes`,
   `Client.Transactions`)
 
-## v0.9: schema changes
+## v0.9: schema changes (next)
 
 - A `schema` event when a table's columns change (added, dropped, type
   changed), from the Relation messages pgoutput already sends
