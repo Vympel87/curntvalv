@@ -203,8 +203,14 @@ func ParseExpr(src string) (*Expr, error) {
 }
 
 // Eval reports whether the row matches; a missing row does not.
-func (e *Expr) Eval(s *pb.Schema, r *pb.Row) bool {
-	return r != nil && s != nil && e.root.eval(s, r) == triTrue
+func (e *Expr) Eval(s *pb.Schema, r *pb.Row) bool { return e.eval(s, r) == triTrue }
+
+// eval evaluates three-valued; a missing row or schema is unknown.
+func (e *Expr) eval(s *pb.Schema, r *pb.Row) tri {
+	if r == nil || s == nil {
+		return triUnknown
+	}
+	return e.root.eval(s, r)
 }
 
 type tokKind int

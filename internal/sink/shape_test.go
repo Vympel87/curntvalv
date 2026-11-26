@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/Vympel87/curntvalv/internal/event"
 	"github.com/Vympel87/curntvalv/internal/fsm"
 	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
@@ -79,7 +81,9 @@ func TestShapeFilters(t *testing.T) {
 		// only the key is known, so note=paid fails), a truncate passes.
 		{Shape{Where: []*Expr{where(t, "note=paid")}}, "[insert:1:paid update:2:paid truncate backfill:3:paid reset]"},
 		{Shape{Where: []*Expr{where(t, "id=1")}}, "[insert:1:paid delete:1:<nil> truncate reset]"},
-		{Shape{Where: []*Expr{where(t, "note!=paid")}}, "[insert:2:open delete:1:<nil> truncate reset]"},
+		// A delete's old row holds only the key (default replica identity):
+		// note is unknown, so the delete is skipped (on_leave=delete takes it).
+		{Shape{Where: []*Expr{where(t, "note!=paid")}}, "[insert:2:open truncate reset]"},
 		{Shape{Where: []*Expr{where(t, "missing!=x")}}, "[truncate reset]"},
 		{Shape{Ops: []pb.Op{pb.Op_OP_UPDATE}, Where: []*Expr{where(t, "id=2")}}, "[update:2:paid reset]"},
 	} {
@@ -162,4 +166,61 @@ func TestRunnerShapeSkips(t *testing.T) {
 	h.run(Config{Shape: Shape{Where: []*Expr{where(t, "id != 3")}}})
 	h.waitRows("orders:1", "orders:2", "orders:4")
 	waitFor(t, "offset past the filtered entry", func() bool { return h.offset("test") >= 3 })
+}
+
+func TestShapeLeaveAsDelete(t *testing.T) {
+	full := func(id, note string) *pb.Row { return orderRow(id, note) } // REPLICA IDENTITY FULL
+	keyRow := func(id string) *pb.Row {                                 // the default identity: key only
+		return &pb.Row{Values: []*pb.Value{text(id), {Kind: pb.ValueKind_VALUE_KIND_NULL}, {Kind: pb.ValueKind_VALUE_KIND_NULL},
+			{Kind: pb.ValueKind_VALUE_KIND_NULL}, {Kind: pb.ValueKind_VALUE_KIND_NULL}}}
+	}
+	fullSchema := proto.Clone(ordersSchema).(*pb.Schema)
+	fullSchema.ReplicaIdentity = identityFull
+	ch := func(op pb.Op, before, after *pb.Row) event.Change {
+		sc := ordersSchema // the default identity: old rows carry the key only
+		if before != nil && before.GetValues()[1].GetKind() == pb.ValueKind_VALUE_KIND_TEXT {
+			sc = fullSchema
+		}
+		return event.Change{Index: 1, Schema: sc, Event: &pb.Event{SchemaId: 7, Op: op, Before: before, After: after}}
+	}
+	paid := where(t, "note = paid")
+	for _, tc := range []struct {
+		name string
+		c    event.Change
+		skip string // result without on_leave
+		del  string // with on_leave=delete
+	}{
+		{"update stays in", ch(pb.Op_OP_UPDATE, nil, full("1", "paid")), "update:1:paid", "update:1:paid"},
+		{"update leaves, old row known", ch(pb.Op_OP_UPDATE, full("1", "paid"), full("1", "refunded")), "-", "delete:1:paid"},
+		{"update leaves, old row unknown", ch(pb.Op_OP_UPDATE, nil, full("1", "refunded")), "-", "delete:1:<nil>"},
+		{"update never was in", ch(pb.Op_OP_UPDATE, full("1", "open"), full("1", "refunded")), "-", "-"},
+		{"key change out of the filter", ch(pb.Op_OP_UPDATE, keyRow("1"), full("2", "open")), "-", "delete:1:<nil>"},
+		{"delete, old row unknown", ch(pb.Op_OP_DELETE, keyRow("1"), nil), "-", "delete:1:<nil>"},
+		// The NULLs of a key-only old row are not values: != does not hold.
+		{"delete, old row unknown, !=", event.Change{Index: 1, Schema: ordersSchema, Event: &pb.Event{SchemaId: 7, Op: pb.Op_OP_DELETE,
+			Before: keyRow("1")}}, "-", "delete:1:<nil>"},
+		{"delete, old row known in", ch(pb.Op_OP_DELETE, full("1", "paid"), nil), "delete:1:paid", "delete:1:paid"},
+		{"delete, old row known out", ch(pb.Op_OP_DELETE, full("1", "open"), nil), "-", "-"},
+		{"insert out", ch(pb.Op_OP_INSERT, nil, full("1", "open")), "-", "-"},
+	} {
+		for _, leave := range []bool{false, true} {
+			out := newShaper(Shape{Where: []*Expr{paid}, LeaveAsDelete: leave}).Apply([]event.Change{tc.c})
+			got := "-"
+			if len(out) == 1 {
+				got = shapeIDs(out)[0]
+			}
+			want := tc.skip
+			if leave {
+				want = tc.del
+			}
+			if got != want {
+				t.Errorf("%s, on_leave=%v: %s, want %s", tc.name, leave, got, want)
+			}
+		}
+	}
+	// A delete made from an update carries the key: mirrors can drop it.
+	out := newShaper(Shape{Where: []*Expr{paid}, LeaveAsDelete: true}).Apply([]event.Change{ch(pb.Op_OP_UPDATE, nil, full("9", "refunded"))})
+	if k, err := documentKey(ordersSchema, out[0].Event.GetBefore()); err != nil || k != "9" || out[0].Event.GetAfter() != nil {
+		t.Fatalf("delete %v: %q %v", out[0].Event, k, err)
+	}
 }

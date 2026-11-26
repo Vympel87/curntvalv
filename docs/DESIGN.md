@@ -961,6 +961,30 @@ A backfill reads them from the table into the log, next to the stream.
   values. Changing the key changes every hash: a mirror then holds rows
   under both.
 
+### D27. Rows leaving a filter
+
+- **`on_leave=delete`** (default `skip`) keeps a filtered mirror right. An
+  update whose new row fails `where` is delivered as a delete, unless its
+  old row is known to have failed too (then the sink never had the row);
+  a delete passes unless its old row is known to fail. The delete carries
+  the old row, or the key taken from the new row. Deleting a row a mirror
+  does not hold is harmless; keeping one it should not is not, so an
+  unknown old row counts as a match.
+- **The old row is mostly unknown.** With the default replica identity
+  Postgres sends only the key columns of the old row and NULL for the
+  others; these NULLs are not values, so the filter sees them as unknown
+  (also without `on_leave`). Before this, a delete was judged on them:
+  `where=status!=paid` passed every delete and `where=status=paid` none.
+  Now a delete whose filter needs a non-key column is skipped unless
+  `on_leave=delete` (or REPLICA IDENTITY FULL tells).
+- `op=` judges the change as it arrives: an update made a delete passes
+  `op=update`.
+- **Testing.** Every combination of old row known in, known out and
+  unknown, for updates and deletes, with and without the option; end to
+  end a ClickHouse mirror with `where=status = paid` equals `SELECT ...
+  WHERE status = 'paid'` after rows leave, enter, are deleted and change
+  key, and does not without the option.
+
 ## 4. Data model
 
 ```

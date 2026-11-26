@@ -122,3 +122,40 @@ func diffLines(want, got []string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// TestEndToEndMirrorLeavesFilter: with where and on_leave=delete a mirror
+// holds exactly the rows that match, also after updates that leave or enter
+// the filter, deletes and key changes, with the default replica identity.
+func TestEndToEndMirrorLeavesFilter(t *testing.T) {
+	chURL := os.Getenv("CURNTVALV_TEST_CH_URL")
+	if chURL == "" {
+		t.Skip("CURNTVALV_TEST_CH_URL not set; run `make test-ext`")
+	}
+	f := newPGFixture(t)
+	f.exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN status text", f.table))
+	u, _ := url.Parse(chURL)
+	base := u.String()
+	prefix := "leave" + strings.TrimPrefix(f.table, "rows_") + "_"
+	newE2EWith(t, f.env(), append(f.args(),
+		"--sink", "name=paid,type=clickhouse,url="+chURL+",mode=mirror,into="+prefix+"{table},where=status = paid,on_leave=delete")...)
+	mirror := "default.`" + prefix + f.table + "`"
+	t.Cleanup(func() { http.Post(base+"/?query="+url.QueryEscape("DROP TABLE IF EXISTS "+mirror), "text/plain", nil) })
+	f.waitSlot()
+	f.exec(fmt.Sprintf("INSERT INTO %s SELECT g, CASE WHEN g <= 5 THEN 'paid' ELSE 'open' END FROM generate_series(1, 10) g", f.table))
+	f.exec(fmt.Sprintf("UPDATE %s SET status = 'refunded' WHERE id = 2", f.table)) // leaves
+	f.exec(fmt.Sprintf("UPDATE %s SET status = 'paid' WHERE id = 7", f.table))     // enters
+	f.exec(fmt.Sprintf("DELETE FROM %s WHERE id IN (3, 8)", f.table))              // a match and a non-match
+	f.exec(fmt.Sprintf("UPDATE %s SET id = 40 WHERE id = 4", f.table))             // key change, stays in
+	f.exec(fmt.Sprintf("UPDATE %s SET id = 90, status = 'open' WHERE id = 9", f.table))
+	f.exec(fmt.Sprintf("INSERT INTO %s VALUES (100, 'paid')", f.table))
+
+	want := "1\n100\n40\n5\n7" // SELECT id WHERE status = 'paid', as text, sorted
+	var got string
+	waitE2E(t, "mirror holds the matching rows", 60*time.Second, func() bool {
+		if chQuery(t, base, "EXISTS TABLE "+mirror) != "1" {
+			return false
+		}
+		got = chQuery(t, base, "SELECT toString(id) AS i FROM "+mirror+" FINAL ORDER BY i FORMAT TSV")
+		return got == want
+	})
+}

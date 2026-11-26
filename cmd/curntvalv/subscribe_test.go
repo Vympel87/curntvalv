@@ -172,6 +172,14 @@ func TestParseSinkSpec(t *testing.T) {
 			t.Errorf("%s accepted", file)
 		}
 	}
+	if ol, err := parseSinkSpec("name=m,type=webhook,url=http://x,where=a=1,on_leave=delete"); err != nil || !ol.shape.LeaveAsDelete {
+		t.Fatalf("on_leave: %+v %v", ol.shape, err)
+	}
+	for _, bad := range []string{"on_leave=delete", "where=a=1,on_leave=drop"} {
+		if _, err := parseSinkSpec("name=m,type=webhook,url=http://x," + bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
 	mir, err := parseSinkSpec("name=olap,type=clickhouse,url=http://x,mode=mirror,into=pg_{table}")
 	if err != nil || !mir.mirror || mir.chTable != "pg_{table}" {
 		t.Fatalf("mirror: %+v %v", mir, err)

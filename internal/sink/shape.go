@@ -40,6 +40,12 @@ type Shape struct {
 	// cannot be guessed without the key. NULL stays NULL.
 	Hash    []string
 	HashKey []byte
+	// LeaveAsDelete delivers an update whose new row fails Where as a
+	// delete, unless its old row is known to have failed too, and passes
+	// a delete unless its old row is known to fail (design D27). Mirrors
+	// then drop rows that leave the filter. Without it such updates are
+	// skipped, and deletes need their old row to match.
+	LeaveAsDelete bool
 }
 
 // MinHashKey is the shortest hash key accepted, in bytes.
@@ -120,6 +126,20 @@ func (s Shape) Empty() bool {
 		len(s.Mask) == 0 && len(s.Rename) == 0 && len(s.Hash) == 0
 }
 
+// whereOf evaluates every Where expression on row, three-valued.
+func (s *shaper) whereOf(sc *pb.Schema, row *pb.Row) tri {
+	out := triTrue
+	for _, e := range s.Where {
+		switch e.eval(sc, row) {
+		case triFalse:
+			return triFalse
+		case triUnknown:
+			out = triUnknown
+		}
+	}
+	return out
+}
+
 // Apply returns the changes that pass, reshaped. It does not modify its
 // input.
 func (s *shaper) Apply(changes []event.Change) []event.Change {
@@ -135,7 +155,8 @@ func (s *shaper) Apply(changes []event.Change) []event.Change {
 		if len(s.Ops) > 0 && !slices.Contains(s.Ops, c.Event.GetOp()) {
 			continue
 		}
-		if !s.matches(c) {
+		c, ok := s.filter(c)
+		if !ok {
 			continue
 		}
 		out = append(out, s.reshape(c))
@@ -143,20 +164,69 @@ func (s *shaper) Apply(changes []event.Change) []event.Change {
 	return out
 }
 
-func (s *shaper) matches(c event.Change) bool {
-	if len(s.Where) == 0 || c.Event.GetOp() == pb.Op_OP_TRUNCATE {
-		return true
+// filter applies Where; with LeaveAsDelete an update may come back as a
+// delete.
+func (s *shaper) filter(c event.Change) (event.Change, bool) {
+	op := c.Event.GetOp()
+	if len(s.Where) == 0 || op == pb.Op_OP_TRUNCATE {
+		return c, true
 	}
-	row := c.Event.GetAfter()
-	if c.Event.GetOp() == pb.Op_OP_DELETE {
-		row = c.Event.GetBefore()
+	if op == pb.Op_OP_DELETE {
+		w := s.whereOf(c.Schema, oldRow(c.Schema, c.Event.GetBefore()))
+		return c, w == triTrue || s.LeaveAsDelete && w == triUnknown
 	}
-	for _, e := range s.Where {
-		if !e.Eval(c.Schema, row) {
-			return false
+	if s.whereOf(c.Schema, c.Event.GetAfter()) == triTrue {
+		return c, true
+	}
+	if !s.LeaveAsDelete || op != pb.Op_OP_UPDATE {
+		return c, false
+	}
+	// The new row fails. Unless the old one is known to have failed too,
+	// the sink may hold the row: it goes.
+	if s.whereOf(c.Schema, oldRow(c.Schema, c.Event.GetBefore())) == triFalse {
+		return c, false
+	}
+	before := c.Event.GetBefore()
+	if before == nil {
+		before = keyOnly(c.Schema, c.Event.GetAfter())
+	}
+	c.Event = &pb.Event{SchemaId: c.Event.GetSchemaId(), Op: pb.Op_OP_DELETE, Before: before}
+	return c, true
+}
+
+// identityFull is pgoutput's replica identity of REPLICA IDENTITY FULL.
+const identityFull = 'f'
+
+// oldRow returns an old row image for filtering: unless the table has
+// REPLICA IDENTITY FULL, Postgres sends only the key columns and NULL for
+// the others, which are unknown rather than NULL.
+func oldRow(sc *pb.Schema, row *pb.Row) *pb.Row {
+	if row == nil || sc.GetReplicaIdentity() == identityFull {
+		return row
+	}
+	out := &pb.Row{Values: make([]*pb.Value, len(row.GetValues()))}
+	for i, v := range row.GetValues() {
+		if i < len(sc.GetColumns()) && sc.GetColumns()[i].GetKey() {
+			out.Values[i] = v
+		} else {
+			out.Values[i] = &pb.Value{Kind: pb.ValueKind_VALUE_KIND_UNCHANGED}
 		}
 	}
-	return true
+	return out
+}
+
+// keyOnly returns row with every non-key column NULL, as Postgres sends
+// the old row of a delete with the default replica identity.
+func keyOnly(sc *pb.Schema, row *pb.Row) *pb.Row {
+	out := &pb.Row{Values: make([]*pb.Value, len(row.GetValues()))}
+	for i, v := range row.GetValues() {
+		if i < len(sc.GetColumns()) && sc.GetColumns()[i].GetKey() {
+			out.Values[i] = v
+		} else {
+			out.Values[i] = &pb.Value{Kind: pb.ValueKind_VALUE_KIND_NULL}
+		}
+	}
+	return out
 }
 
 // reshape projects, masks and renames.

@@ -12,6 +12,16 @@ break compatibility.
 - Hashed columns (design D26): `hash=A+B` with `hash_key_file=PATH`
   replaces values with their HMAC-SHA256 under a secret key, so they can
   still be joined but not guessed; key columns may be hashed too.
+- `on_leave=delete` (design D27): with `where`, an update that moves a row
+  out of the filter is delivered as a delete, so filtered mirrors drop it;
+  deletes whose old row is not known pass.
+
+### Changed
+
+- The non-key columns of an old row sent with the default replica
+  identity are unknown to `where`, not NULL. A delete is therefore skipped
+  by a filter on such a column (before, `!=` passed every delete and `=`
+  none); `on_leave=delete` delivers it.
 
 ## [0.5.0]
 

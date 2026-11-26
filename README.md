@@ -269,6 +269,7 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `columns`, `drop` | Keep only these columns, or remove these (`columns=id+note`, `drop=password+ssn`); key columns always stay |
 | `mask` | Replace these columns' values with `***` (`mask=email+phone`); NULL stays NULL, key columns are not masked |
 | `hash`, `hash_key_file` | Replace these columns' values with their HMAC-SHA256 (hex) under a secret from a file (at least 16 bytes, the same on every node): `hash=email+user_id,hash_key_file=/etc/curntvalv/hash.key`. Equal values stay equal; key columns may be hashed |
+| `on_leave` | With `where`: `delete` delivers an update that moves a row out of the filter (and a delete whose old row is not known) as a delete, so mirrors drop the row; `skip` (default) leaves it out |
 | `rename` | Rename columns in what the sink receives (`rename=status:state+note:comment`) |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
 | `tombstones` | Kafka: `true` sends a tombstone after each delete and for the old key of a key change (for compacted topics); default `false` |
@@ -284,8 +285,12 @@ All options name columns by their Postgres names. A value that is not
 known (an unchanged TOASTed column) never matches; NULL matches `is null`,
 `!=` and `not in`.
 
-An update that moves a row out of a `where` filter is not delivered, so a
-mirror keeps the last matching version. Source resets pass every filter.
+An update that moves a row out of a `where` filter is not delivered by
+default, so a mirror keeps the last matching version; with `on_leave=delete`
+it arrives as a delete instead (use it for mirrors: Meilisearch, ClickHouse
+`mode=mirror`). Postgres sends only the key of a deleted row unless the table
+has `REPLICA IDENTITY FULL`, so a filter on other columns cannot judge
+deletes: `on_leave=delete` passes them. Source resets pass every filter.
 
 Delivery is at-least-once: after a leader change some changes can arrive
 again. Every change has a stable `id` (`"<commit LSN>:<seq>"`). ClickHouse

@@ -49,8 +49,8 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0.
 ## v0.6 (in progress)
 
 - Hashed columns with a secret key (design D26)
+- Updates leaving a filter delivered as deletes (design D27)
 
 ## Next
 
-- Deliver an update that leaves a `where` filter as a delete (needs
-  REPLICA IDENTITY FULL)
+- Nothing planned yet.

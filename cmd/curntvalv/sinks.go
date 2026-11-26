@@ -48,7 +48,7 @@ type sinkSpec struct {
 }
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
-	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...]" +
+	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete]" +
 	"[,database=DB][,into=TABLE][,mode=changelog|mirror] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
 	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true] (kafka)"
 
@@ -154,6 +154,11 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.shape.Hash = names
 		case "hash_key_file":
 			sp.hashKeyFile = v
+		case "on_leave":
+			if v != "skip" && v != "delete" {
+				return sinkSpec{}, usageErr("--sink: on_leave must be skip or delete")
+			}
+			sp.shape.LeaveAsDelete = v == "delete"
 		case "rename":
 			m, err := sink.ParseRename(v)
 			if err != nil {
@@ -204,6 +209,9 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 		return sinkSpec{}, usageErr("--sink %s: hash needs hash_key_file=PATH (a secret of at least %d bytes, the same on every node)", sp.name, sink.MinHashKey)
 	case len(sp.shape.Hash) == 0 && sp.hashKeyFile != "":
 		return sinkSpec{}, usageErr("--sink %s: hash_key_file without hash", sp.name)
+	}
+	if sp.shape.LeaveAsDelete && len(sp.shape.Where) == 0 {
+		return sinkSpec{}, usageErr("--sink %s: on_leave needs where", sp.name)
 	}
 	for _, c := range sp.shape.Hash {
 		if slices.Contains(sp.shape.Mask, c) {
