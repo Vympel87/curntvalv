@@ -36,8 +36,14 @@ type ClickHouse struct {
 	table    string // quoted `db`.`table`
 	client   *http.Client
 
-	mu    sync.Mutex
-	ready bool // table exists
+	// Mirror mode (design D24).
+	mirror   bool
+	database string
+	template string // table name with {namespace} and {table}
+
+	mu      sync.Mutex
+	ready   bool                    // changelog table exists
+	mirrors map[uint64]*mirrorTable // by schema id
 }
 
 // ClickHouseConfig configures a ClickHouse sink.
@@ -45,9 +51,17 @@ type ClickHouseConfig struct {
 	// URL of the HTTP interface, e.g. http://user:password@host:8123.
 	URL      string
 	Database string // default "default"
-	Table    string // default "curntvalv_events"
-	Timeout  time.Duration
+	// Table is the changelog table, default "curntvalv_events"; with
+	// Mirror the mirror table's name, where "{namespace}" and "{table}" are
+	// replaced, default "{namespace}_{table}".
+	Table string
+	// Mirror keeps one typed table per Postgres table with its current rows
+	// instead of a changelog (design D24).
+	Mirror  bool
+	Timeout time.Duration
 }
+
+var mirrorTemplate = regexp.MustCompile(`^([A-Za-z0-9_]|\{namespace\}|\{table\})+$`)
 
 var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
@@ -62,17 +76,25 @@ func NewClickHouse(cfg ClickHouseConfig) (*ClickHouse, error) {
 	}
 	if cfg.Table == "" {
 		cfg.Table = "curntvalv_events"
+		if cfg.Mirror {
+			cfg.Table = "{namespace}_{table}"
+		}
 	}
-	if !identifier.MatchString(cfg.Database) || !identifier.MatchString(cfg.Table) {
+	if !identifier.MatchString(cfg.Database) || !cfg.Mirror && !identifier.MatchString(cfg.Table) ||
+		cfg.Mirror && !mirrorTemplate.MatchString(cfg.Table) {
 		return nil, fmt.Errorf("clickhouse: bad database or table name %q.%q", cfg.Database, cfg.Table)
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
 	}
 	c := &ClickHouse{
-		shown:  u.Redacted(),
-		table:  fmt.Sprintf("`%s`.`%s`", cfg.Database, cfg.Table),
-		client: &http.Client{Timeout: cfg.Timeout},
+		shown:    u.Redacted(),
+		table:    fmt.Sprintf("`%s`.`%s`", cfg.Database, cfg.Table),
+		client:   &http.Client{Timeout: cfg.Timeout},
+		mirror:   cfg.Mirror,
+		database: cfg.Database,
+		template: cfg.Table,
+		mirrors:  map[uint64]*mirrorTable{},
 	}
 	if u.User != nil {
 		c.user = u.User.Username()
@@ -120,6 +142,9 @@ ORDER BY (source_table, lsn, seq)`
 func (c *ClickHouse) Deliver(ctx context.Context, changes []event.Change) error {
 	if len(changes) == 0 {
 		return nil
+	}
+	if c.mirror {
+		return c.deliverMirror(ctx, changes)
 	}
 	if err := c.ensureTable(ctx); err != nil {
 		return err

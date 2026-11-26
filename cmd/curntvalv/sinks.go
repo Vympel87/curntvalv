@@ -35,6 +35,7 @@ type sinkSpec struct {
 	startLatest       bool
 	drop              bool // policy=drop: retention does not wait for this sink
 	database, chTable string
+	mirror            bool   // clickhouse mode=mirror
 	subject, stream   string // nats; stream also redis
 	maxLen            int64  // redis
 	index             string // meilisearch
@@ -44,14 +45,14 @@ type sinkSpec struct {
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
 	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,rename=OLD:NEW+...]" +
-	"[,database=DB][,into=TABLE] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
+	"[,database=DB][,into=TABLE][,mode=changelog|mirror] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
 	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512] (kafka)"
 
 // sinkKeys lists the keys only some sink types take.
 func sinkKeys(typ string) []string {
 	switch typ {
 	case "clickhouse":
-		return []string{"database", "into"}
+		return []string{"database", "into", "mode"}
 	case "nats":
 		return []string{"subject", "stream"}
 	case "redis":
@@ -106,6 +107,11 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.database = v
 		case "into":
 			sp.chTable = v
+		case "mode":
+			if v != "changelog" && v != "mirror" {
+				return sinkSpec{}, usageErr("--sink: mode must be changelog or mirror")
+			}
+			sp.mirror = v == "mirror"
 		case "subject":
 			sp.subject = v
 		case "stream":
@@ -170,7 +176,7 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 	case len(sp.urls) > 1 && sp.typ != "kafka":
 		return sinkSpec{}, usageErr("--sink %s: url given twice (only kafka takes several brokers)", sp.name)
 	}
-	for _, k := range []string{"database", "into", "subject", "stream", "maxlen", "index", "topic", "sasl"} {
+	for _, k := range []string{"database", "into", "mode", "subject", "stream", "maxlen", "index", "topic", "sasl"} {
 		if seen[k] && !slices.Contains(sinkKeys(sp.typ), k) {
 			return sinkSpec{}, usageErr("--sink %s: %s is not a %s option", sp.name, k, sp.typ)
 		}
@@ -211,7 +217,7 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 	case "webhook":
 		return sink.NewWebhook(sink.WebhookConfig{Name: sp.name, URL: sp.url})
 	case "clickhouse":
-		return sink.NewClickHouse(sink.ClickHouseConfig{URL: sp.url, Database: sp.database, Table: sp.chTable})
+		return sink.NewClickHouse(sink.ClickHouseConfig{URL: sp.url, Database: sp.database, Table: sp.chTable, Mirror: sp.mirror})
 	case "nats":
 		return sink.NewNATS(sink.NATSConfig{URL: sp.url, Subject: sp.subject, Stream: sp.stream})
 	case "redis":

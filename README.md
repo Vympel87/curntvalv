@@ -258,7 +258,8 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `table` | Only these tables (`orders` or `public.orders`); repeat for more. Default: all |
 | `start` | `earliest` (default: the whole retained history) or `latest`, for a new sink |
 | `policy` | `block` (default): the log keeps everything the sink has not delivered. `drop`: retention cuts anyway; a sink left behind stops (`failed`) until it is reset |
-| `database`, `into` | ClickHouse database (default `default`) and table (default `curntvalv_events`) |
+| `database`, `into` | ClickHouse database (default `default`) and table (default `curntvalv_events`; with `mode=mirror` a template, default `{namespace}_{table}`) |
+| `mode` | ClickHouse: `changelog` (default, every change as a row) or `mirror` (one typed table per Postgres table with its current rows) |
 | `subject`, `stream` | NATS subject prefix (default `curntvalv`) and JetStream stream (default `curntvalv`, created if missing, capturing `<subject>.>`) |
 | `stream`, `maxlen` | Redis stream key (default `curntvalv`; `{table}` gives one stream per table) and approximate trim length (default: keep all) |
 | `index` | Meilisearch index uid (default `{namespace}_{table}`) |
@@ -290,6 +291,20 @@ gets a `ReplacingMergeTree` changelog table that drops copies on merge (use
 webhook body is `{"sink": "hook", "events": [...]}`; any 2xx is success,
 anything else is retried with backoff. `curntvalv status` shows each sink's
 offset, lag and last error.
+
+With `mode=mirror` ClickHouse instead keeps one typed table per Postgres
+table, holding its current rows (`ReplacingMergeTree(_version, _deleted)`
+ordered by the primary key):
+
+```bash
+--sink 'name=olap,type=clickhouse,url=http://user:pass@clickhouse:8123,mode=mirror,table=orders'
+clickhouse-client -q "SELECT * FROM public_orders FINAL"   # FINAL: each row once, no deleted rows
+```
+
+Columns get ClickHouse types (integers, Decimal, Bool, UUID, Date32,
+DateTime64 in UTC; other types as String), new Postgres columns are added,
+and large values an update leaves unchanged are kept. Tables need a primary
+key.
 
 The other sinks:
 

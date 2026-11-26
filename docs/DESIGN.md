@@ -467,8 +467,8 @@ then only the initial configuration.
   source table, op, and `before`/`after` as JSON text. Engine
   `ReplacingMergeTree ORDER BY (source_table, lsn, seq)`: a redelivered
   change has the same key and disappears on merge; `FINAL` hides it before
-  that. Mirror tables (one per Postgres table, upserted by primary key, with
-  typed columns) are planned after v0.1.
+  that. Mirror tables (one typed table per Postgres table with its current
+  rows) are `mode=mirror` (D24).
 - **Subscribe API.** `SubscribeService.Subscribe(from_index, tables)` is a
   server stream that any node can serve. It reads only entries the node has
   applied (so every schema is known), sends each schema once per stream,
@@ -891,6 +891,42 @@ A backfill reads them from the table into the log, next to the stream.
   is not applied for that table.
 - **Order.** Filters, then projection, masks and renames; every option
   names columns by their Postgres names.
+
+### D24. ClickHouse mirror tables
+
+- **`mode=mirror`** on a ClickHouse sink keeps one typed table per Postgres
+  table (`into=` is a name template, default `{namespace}_{table}`)
+  holding its current rows, next to the changelog mode of D12.
+- **Engine.** `ReplacingMergeTree(_version, _deleted) ORDER BY (key
+  columns)`: each change inserts the whole row, `_version` from its log
+  position (`index << 24 | seq`), so a redelivered change replaces itself
+  and a later change wins; a delete inserts the key with `_deleted = 1`.
+  `SELECT ... FINAL` shows each row once, without deleted ones (checked on
+  ClickHouse 25.8). A key change deletes the old key; a truncate runs
+  `TRUNCATE TABLE` in its place in the batch. Changes of one key in a batch
+  are merged into its last version before inserting.
+- **Types.** bool → Bool, int2/4/8 → Int16/32/64, float4/8 → Float32/64,
+  numeric(p,s) → Decimal(p,s) (numeric without a precision → String, to
+  stay exact), uuid → UUID, date → Date32, timestamp and timestamptz →
+  DateTime64(6, 'UTC'); everything else → String in Postgres text form. Key
+  columns are not nullable, the others are. Values ClickHouse cannot hold
+  (infinity, NaN, BC dates) become NULL.
+- **Unchanged TOAST.** An update that leaves a large value untouched does
+  not carry it. The sink takes it from the previous version of the row in
+  the same batch, from the old row with REPLICA IDENTITY FULL, or reads it
+  back from the mirror (`FINAL`, matching the key's text form); a row the
+  mirror does not have gets NULL.
+- **Schema changes.** A column added in Postgres is added with `ADD COLUMN
+  IF NOT EXISTS`; dropped or retyped columns stay as they are. Tables
+  without a key cannot be mirrored (an error for the sink). Projections,
+  masks and renames (D21, D23) apply first: the mirror has the columns the
+  sink sees.
+- **Testing.** Type mapping and value conversion in unit tests; against a
+  real ClickHouse: backfill, a TOASTed value kept, merged changes in one
+  batch, a key change, a delete, redelivery of everything, a new column, a
+  truncate, a one-column and a two-column key. End to end with a leader
+  kill: the mirror equals the Postgres table. A one-column key bug (ClickHouse
+  does not take `('7')` as a tuple) was found only end to end.
 
 ## 4. Data model
 

@@ -139,6 +139,23 @@ func TestParseSinkSpec(t *testing.T) {
 			t.Errorf("%s accepted", bad)
 		}
 	}
+	mir, err := parseSinkSpec("name=olap,type=clickhouse,url=http://x,mode=mirror,into=pg_{table}")
+	if err != nil || !mir.mirror || mir.chTable != "pg_{table}" {
+		t.Fatalf("mirror: %+v %v", mir, err)
+	}
+	if _, err := newSink(mir); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"name=o,type=clickhouse,url=http://x,mode=copy", "name=o,type=webhook,url=http://x,mode=mirror"} {
+		if _, err := parseSinkSpec(bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	if sp, _ := parseSinkSpec("name=o,type=clickhouse,url=http://x,into={table}"); sp.name != "" {
+		if _, err := newSink(sp); err == nil {
+			t.Error("a table template without mode=mirror accepted")
+		}
+	}
 	kf, err := parseSinkSpec("name=bus,type=kafka,url=kafka://a:9092,url=kafka://b:9092,topic=cdc.{table},table=orders")
 	if err != nil || len(kf.urls) != 2 || kf.topic != "cdc.{table}" {
 		t.Fatalf("kafka: %+v %v", kf, err)

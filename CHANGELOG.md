@@ -15,6 +15,11 @@ break compatibility.
   `COLUMN=VALUE` form keeps working.
 - `mask=` replaces column values with `***`, `rename=` renames columns in
   what a sink receives.
+- ClickHouse mirror tables (design D24): `mode=mirror` keeps one typed
+  table per Postgres table with its current rows
+  (`ReplacingMergeTree(_version, _deleted)` by primary key), handling
+  deletes, key changes, truncates, unchanged TOASTed values and new
+  columns.
 
 ## [0.4.0]
 
