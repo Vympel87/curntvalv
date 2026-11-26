@@ -271,6 +271,7 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `mask` | Replace these columns' values with `***` (`mask=email+phone`); NULL stays NULL, key columns are not masked |
 | `hash`, `hash_key_file` | Replace these columns' values with their HMAC-SHA256 (hex) under a secret from a file (at least 16 bytes, the same on every node): `hash=email+user_id,hash_key_file=/etc/curntvalv/hash.key`. Equal values stay equal; key columns may be hashed |
 | `on_leave` | With `where`: `delete` delivers an update that moves a row out of the filter (and a delete whose old row is not known) as a delete, so mirrors drop the row; `skip` (default) leaves it out |
+| `on_error` | `retry` (default): a change the sink refuses is retried until it succeeds. `skip`: a change the sink keeps refusing while it accepts others is passed over and recorded (`curntvalv sink skipped NAME`); an outage never skips anything |
 | `rename` | Rename columns in what the sink receives (`rename=status:state+note:comment`) |
 | `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
 | `tombstones` | Kafka: `true` sends a tombstone after each delete and for the old key of a key change (for compacted topics); default `false` |
@@ -514,6 +515,7 @@ make test-pg # the same, plus the Postgres tests (starts Postgres in Docker)
 make test-ch # the same, plus the ClickHouse tests (starts ClickHouse in Docker)
 make test-sinks # the same, plus NATS, Redis, Meilisearch and Kafka (in Docker)
 make test-ext # with all of them
+make test-upgrade # a rolling upgrade from the previous release (UPGRADE_FROM=v0.6.0)
 make chaos   # random faults against a real cluster and Postgres (CHAOS_TIME=2m, CHAOS_SEED=N)
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 ```

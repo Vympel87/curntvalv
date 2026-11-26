@@ -1,4 +1,4 @@
-.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-sinks sinks-up sinks-down test-ext chaos failover-up failover-down test-failover
+.PHONY: test build proto test-pg pg-up pg-down test-ch ch-up ch-down test-sinks sinks-up sinks-down test-ext chaos failover-up failover-down test-failover test-upgrade
 
 test:
 	go vet ./...
@@ -124,3 +124,18 @@ test-failover:
 		CURNTVALV_TEST_PG_PRIMARY_URL='$(FO_PRIMARY_URL)' CURNTVALV_TEST_PG_STANDBY_URL='$(FO_STANDBY_URL)' \
 			go test -race -count=1 -run "^TestFailover$$s$$" -v ./internal/source/pg/ || { $(MAKE) --no-print-directory failover-down; exit 1; }; \
 	done; $(MAKE) --no-print-directory failover-down
+
+# Upgrades a running cluster from the release UPGRADE_FROM to this build,
+# one node at a time, with Postgres changes flowing (TestRollingUpgrade).
+# The old binary is built from its tag once and kept in .cache/.
+UPGRADE_FROM ?= v0.6.0
+UPGRADE_DIR = $(CURDIR)/.cache/upgrade-$(UPGRADE_FROM)
+
+test-upgrade: pg-up
+	@test -x $(UPGRADE_DIR)/curntvalv || { \
+		rm -rf $(UPGRADE_DIR)/src && git worktree prune && \
+		git worktree add --detach $(UPGRADE_DIR)/src $(UPGRADE_FROM) && \
+		(cd $(UPGRADE_DIR)/src && go build -o $(UPGRADE_DIR)/curntvalv ./cmd/curntvalv); \
+		status=$$?; git worktree remove --force $(UPGRADE_DIR)/src; exit $$status; }
+	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_UPGRADE_FROM_BIN=$(UPGRADE_DIR)/curntvalv \
+		go test -count=1 -timeout 20m -run 'TestRollingUpgrade$$' -v ./cmd/curntvalv/

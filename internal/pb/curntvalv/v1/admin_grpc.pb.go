@@ -32,6 +32,7 @@ const (
 	AdminService_RemoveMember_FullMethodName       = "/curntvalv.v1.AdminService/RemoveMember"
 	AdminService_ResetSubscription_FullMethodName  = "/curntvalv.v1.AdminService/ResetSubscription"
 	AdminService_DeleteSubscription_FullMethodName = "/curntvalv.v1.AdminService/DeleteSubscription"
+	AdminService_SinkSkips_FullMethodName          = "/curntvalv.v1.AdminService/SinkSkips"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -79,6 +80,9 @@ type AdminServiceClient interface {
 	// DeleteSubscription removes a named subscription, so it no longer holds
 	// the log. Leader only.
 	DeleteSubscription(ctx context.Context, in *DeleteSubscriptionRequest, opts ...grpc.CallOption) (*DeleteSubscriptionResponse, error)
+	// SinkSkips lists the changes a sink passed over (design D28), the most
+	// recent last. Any node can answer.
+	SinkSkips(ctx context.Context, in *SinkSkipsRequest, opts ...grpc.CallOption) (*SinkSkipsResponse, error)
 }
 
 type adminServiceClient struct {
@@ -219,6 +223,16 @@ func (c *adminServiceClient) DeleteSubscription(ctx context.Context, in *DeleteS
 	return out, nil
 }
 
+func (c *adminServiceClient) SinkSkips(ctx context.Context, in *SinkSkipsRequest, opts ...grpc.CallOption) (*SinkSkipsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SinkSkipsResponse)
+	err := c.cc.Invoke(ctx, AdminService_SinkSkips_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -264,6 +278,9 @@ type AdminServiceServer interface {
 	// DeleteSubscription removes a named subscription, so it no longer holds
 	// the log. Leader only.
 	DeleteSubscription(context.Context, *DeleteSubscriptionRequest) (*DeleteSubscriptionResponse, error)
+	// SinkSkips lists the changes a sink passed over (design D28), the most
+	// recent last. Any node can answer.
+	SinkSkips(context.Context, *SinkSkipsRequest) (*SinkSkipsResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -312,6 +329,9 @@ func (UnimplementedAdminServiceServer) ResetSubscription(context.Context, *Reset
 }
 func (UnimplementedAdminServiceServer) DeleteSubscription(context.Context, *DeleteSubscriptionRequest) (*DeleteSubscriptionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteSubscription not implemented")
+}
+func (UnimplementedAdminServiceServer) SinkSkips(context.Context, *SinkSkipsRequest) (*SinkSkipsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SinkSkips not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -568,6 +588,24 @@ func _AdminService_DeleteSubscription_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_SinkSkips_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SinkSkipsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).SinkSkips(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_SinkSkips_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).SinkSkips(ctx, req.(*SinkSkipsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -626,6 +664,10 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSubscription",
 			Handler:    _AdminService_DeleteSubscription_Handler,
+		},
+		{
+			MethodName: "SinkSkips",
+			Handler:    _AdminService_SinkSkips_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

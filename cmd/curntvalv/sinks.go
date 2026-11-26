@@ -44,11 +44,12 @@ type sinkSpec struct {
 	topic, sasl       string // kafka
 	tombstones        bool   // kafka
 	shape             sink.Shape
+	skipPoison        bool   // on_error=skip
 	hashKeyFile       string // read by loadHashKey
 }
 
 const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
-	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete]" +
+	"[,op=OP]...[,where=EXPR]...[,columns=A+B][,drop=A+B][,mask=A+B][,hash=A+B,hash_key_file=PATH][,rename=OLD:NEW+...][,on_leave=skip|delete][,on_error=retry|skip]" +
 	"[,database=DB][,into=TABLE][,mode=changelog|mirror] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
 	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512][,tombstones=true] (kafka)"
 
@@ -154,6 +155,11 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.shape.Hash = names
 		case "hash_key_file":
 			sp.hashKeyFile = v
+		case "on_error":
+			if v != "retry" && v != "skip" {
+				return sinkSpec{}, usageErr("--sink: on_error must be retry or skip")
+			}
+			sp.skipPoison = v == "skip"
 		case "on_leave":
 			if v != "skip" && v != "delete" {
 				return sinkSpec{}, usageErr("--sink: on_leave must be skip or delete")
@@ -285,7 +291,8 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 }
 
 func sinkConfig(sp sinkSpec) sink.Config {
-	return sink.Config{Name: sp.name, Type: sp.typ, Tables: event.Filter(sp.tables), StartLatest: sp.startLatest, Shape: sp.shape}
+	return sink.Config{Name: sp.name, Type: sp.typ, Tables: event.Filter(sp.tables), StartLatest: sp.startLatest, Shape: sp.shape,
+		SkipPoison: sp.skipPoison}
 }
 
 // repeatFlag collects every value of a repeated flag as is.
@@ -321,9 +328,12 @@ func (h nodeHealth) Sinks() []*pb.SinkStatus {
 	for _, r := range h.runners {
 		st := r.Status()
 		s := &pb.SinkStatus{Name: st.Name, Type: st.Type, State: string(st.State),
-			Delivered: st.Delivered, Failures: st.Failures, LastError: st.LastError, Policy: "block"}
+			Delivered: st.Delivered, Failures: st.Failures, LastError: st.LastError, Policy: "block", OnError: "retry"}
 		if i := len(out); i < len(h.specs) && h.specs[i].drop {
 			s.Policy = "drop"
+		}
+		if i := len(out); i < len(h.specs) && h.specs[i].skipPoison {
+			s.OnError = "skip"
 		}
 		out = append(out, s)
 	}

@@ -133,6 +133,7 @@ type e2eCluster struct {
 	procs map[int]*proc
 	args  []string         // server flags besides id, peers, data dir
 	extra map[int][]string // flags for one node only
+	bins  map[int]string   // another binary for one node (upgrade tests)
 	env   []string         // extra environment for servers
 	// cliEnv is extra environment for client commands (TLS CA, token).
 	cliEnv []string
@@ -181,6 +182,12 @@ func newE2E(t *testing.T) *e2eCluster {
 }
 
 func newE2EWith(t *testing.T, env []string, args ...string) *e2eCluster {
+	return newE2EBins(t, "", env, args...)
+}
+
+// newE2EBins is newE2EWith with every node started from binary bin (an
+// older release in upgrade tests); "" is the binary under test.
+func newE2EBins(t *testing.T, from string, env []string, args ...string) *e2eCluster {
 	if testing.Short() {
 		t.Skip("end-to-end test skipped in -short mode")
 	}
@@ -199,6 +206,9 @@ func newE2EWith(t *testing.T, env []string, args ...string) *e2eCluster {
 		peers = append(peers, fmt.Sprintf("%d=%s", i, addr))
 	}
 	c.peers = strings.Join(peers, ",")
+	if from != "" {
+		c.bins = map[int]string{1: from, 2: from, 3: from}
+	}
 	for i := 1; i <= 3; i++ {
 		c.start(i)
 	}
@@ -230,7 +240,11 @@ func (c *e2eCluster) start(i int) {
 	args := []string{"server", "--id", fmt.Sprint(i), "--peers", c.peers,
 		"--data-dir", filepath.Join(c.dir, fmt.Sprintf("node%d", i)), "--tick", "20ms", "--log-level", "debug",
 		"--http-listen", c.https[i-1]}
-	cmd := exec.Command(c.bin, slices.Concat(args, c.args, c.extra[i])...)
+	bin := c.bin
+	if b, ok := c.bins[i]; ok {
+		bin = b
+	}
+	cmd := exec.Command(bin, slices.Concat(args, c.args, c.extra[i])...)
 	cmd.Env = append(os.Environ(), c.env...)
 	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {

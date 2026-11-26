@@ -34,6 +34,7 @@ type Meta interface {
 	Get(key string) ([]byte, bool)
 	Schema(id uint64) (*pb.Schema, bool)
 	SinkPosition(name string) (fsm.SinkPosition, bool)
+	SinkSkips(name string) fsm.SinkSkips
 	LastChange() uint64
 	Backfills() []*pb.Backfill
 	Subscriptions() []*pb.Subscription
@@ -149,6 +150,7 @@ func (a *Admin) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResp
 		for _, s := range resp.Sinks {
 			pos, _ := a.meta.SinkPosition(s.Name)
 			s.Offset, s.Generation = pos.Offset, pos.Gen
+			s.Skipped = a.meta.SinkSkips(s.Name).Total
 			if last > s.Offset {
 				s.Lag = last - s.Offset
 			}
@@ -331,6 +333,15 @@ func (a *Admin) CancelBackfill(ctx context.Context, req *pb.CancelBackfillReques
 		return nil, a.sourceError(err)
 	}
 	return &pb.CancelBackfillResponse{Index: idx, Tables: names}, nil
+}
+
+// SinkSkips lists the changes a sink passed over.
+func (a *Admin) SinkSkips(_ context.Context, req *pb.SinkSkipsRequest) (*pb.SinkSkipsResponse, error) {
+	if !a.configured(req.GetName()) {
+		return nil, status.Errorf(codes.NotFound, "no sink %q on this node", req.GetName())
+	}
+	sk := a.meta.SinkSkips(req.GetName())
+	return &pb.SinkSkipsResponse{Total: sk.Total, Recent: sk.Recent}, nil
 }
 
 // ResetSubscription moves a named subscription and starts a new

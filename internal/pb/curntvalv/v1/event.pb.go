@@ -1253,6 +1253,86 @@ func (x *SubscriptionCommand) GetDrop() bool {
 	return false
 }
 
+// SinkSkip records a change a sink with on_error=skip could not deliver
+// and passed over (design D28). The change itself stays in the log at
+// index.
+type SinkSkip struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Sink  string                 `protobuf:"bytes,1,opt,name=sink,proto3" json:"sink,omitempty"`
+	Index uint64                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	// The change's id ("<commit LSN>:<seq>").
+	Id            string `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	Error         string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
+	TimeUs        int64  `protobuf:"varint,5,opt,name=time_us,json=timeUs,proto3" json:"time_us,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SinkSkip) Reset() {
+	*x = SinkSkip{}
+	mi := &file_curntvalv_v1_event_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SinkSkip) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SinkSkip) ProtoMessage() {}
+
+func (x *SinkSkip) ProtoReflect() protoreflect.Message {
+	mi := &file_curntvalv_v1_event_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SinkSkip.ProtoReflect.Descriptor instead.
+func (*SinkSkip) Descriptor() ([]byte, []int) {
+	return file_curntvalv_v1_event_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *SinkSkip) GetSink() string {
+	if x != nil {
+		return x.Sink
+	}
+	return ""
+}
+
+func (x *SinkSkip) GetIndex() uint64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *SinkSkip) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SinkSkip) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *SinkSkip) GetTimeUs() int64 {
+	if x != nil {
+		return x.TimeUs
+	}
+	return 0
+}
+
 var File_curntvalv_v1_event_proto protoreflect.FileDescriptor
 
 const file_curntvalv_v1_event_proto_rawDesc = "" +
@@ -1346,7 +1426,13 @@ const file_curntvalv_v1_event_proto_rawDesc = "" +
 	"\rACTION_CREATE\x10\x01\x12\x11\n" +
 	"\rACTION_COMMIT\x10\x02\x12\x10\n" +
 	"\fACTION_RESET\x10\x03\x12\x11\n" +
-	"\rACTION_DELETE\x10\x04*\x9d\x01\n" +
+	"\rACTION_DELETE\x10\x04\"s\n" +
+	"\bSinkSkip\x12\x12\n" +
+	"\x04sink\x18\x01 \x01(\tR\x04sink\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x0e\n" +
+	"\x02id\x18\x03 \x01(\tR\x02id\x12\x14\n" +
+	"\x05error\x18\x04 \x01(\tR\x05error\x12\x17\n" +
+	"\atime_us\x18\x05 \x01(\x03R\x06timeUs*\x9d\x01\n" +
 	"\rBackfillState\x12\x1e\n" +
 	"\x1aBACKFILL_STATE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16BACKFILL_STATE_PENDING\x10\x01\x12\x17\n" +
@@ -1381,7 +1467,7 @@ func file_curntvalv_v1_event_proto_rawDescGZIP() []byte {
 }
 
 var file_curntvalv_v1_event_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_curntvalv_v1_event_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_curntvalv_v1_event_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_curntvalv_v1_event_proto_goTypes = []any{
 	(BackfillState)(0),              // 0: curntvalv.v1.BackfillState
 	(Op)(0),                         // 1: curntvalv.v1.Op
@@ -1399,6 +1485,7 @@ var file_curntvalv_v1_event_proto_goTypes = []any{
 	(*Column)(nil),                  // 13: curntvalv.v1.Column
 	(*Subscription)(nil),            // 14: curntvalv.v1.Subscription
 	(*SubscriptionCommand)(nil),     // 15: curntvalv.v1.SubscriptionCommand
+	(*SinkSkip)(nil),                // 16: curntvalv.v1.SinkSkip
 }
 var file_curntvalv_v1_event_proto_depIdxs = []int32{
 	12, // 0: curntvalv.v1.TxBatch.schemas:type_name -> curntvalv.v1.Schema
@@ -1431,7 +1518,7 @@ func file_curntvalv_v1_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_curntvalv_v1_event_proto_rawDesc), len(file_curntvalv_v1_event_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -5,6 +5,29 @@ All notable changes are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
 break compatibility.
 
+## [Unreleased]
+
+### Added
+
+- Poison changes (design D28): `on_error=skip` passes over a change a sink
+  keeps refusing while it accepts others, instead of retrying it forever;
+  an outage never skips anything. Skipped changes are recorded through
+  Raft: `curntvalv sink skipped NAME`, a SKIPPED column in `status`,
+  `curntvalv_sink_skipped_total`.
+- `make test-upgrade` and a CI job: a rolling upgrade from the previous
+  release with Postgres changes flowing, including an old node that
+  installs a snapshot from a new leader (design D29).
+
+### Changed
+
+- `curntvalv status` shows a SKIPPED column for sinks.
+
+### Upgrading from 0.6
+
+- Snapshots stay at version 7 until a sink skips a change; use
+  `on_error=skip` only once every node runs 0.7 (a 0.6 node stops on a
+  skip record).
+
 ## [0.6.0]
 
 ### Added

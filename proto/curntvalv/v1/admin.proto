@@ -47,6 +47,19 @@ service AdminService {
   // DeleteSubscription removes a named subscription, so it no longer holds
   // the log. Leader only.
   rpc DeleteSubscription(DeleteSubscriptionRequest) returns (DeleteSubscriptionResponse);
+  // SinkSkips lists the changes a sink passed over (design D28), the most
+  // recent last. Any node can answer.
+  rpc SinkSkips(SinkSkipsRequest) returns (SinkSkipsResponse);
+}
+
+message SinkSkipsRequest {
+  string name = 1;
+}
+
+message SinkSkipsResponse {
+  uint64 total = 1;
+  // At most the last 100.
+  repeated SinkSkip recent = 2;
 }
 
 message StatusRequest {}
@@ -170,6 +183,10 @@ message SinkStatus {
   uint64 generation = 9;
   // Failed deliveries on this node since it started.
   uint64 failures = 10;
+  // Changes passed over with on_error=skip (replicated, design D28).
+  uint64 skipped = 11;
+  // "retry" or "skip".
+  string on_error = 12;
 }
 
 message ResetSinkRequest {

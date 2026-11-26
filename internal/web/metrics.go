@@ -139,6 +139,7 @@ func writeMetrics(st *pb.StatusResponse, c Counters, version string) []byte {
 		m.gauge("curntvalv_sink_generation", "Number of resets of the sink (replicated).", float64(s.GetGeneration()), l...)
 		m.counter("curntvalv_sink_delivered_total", "Changes delivered by this node.", float64(s.GetDelivered()), l...)
 		m.counter("curntvalv_sink_failures_total", "Failed deliveries on this node.", float64(s.GetFailures()), l...)
+		m.counter("curntvalv_sink_skipped_total", "Changes the sink passed over with on_error=skip (replicated).", float64(s.GetSkipped()), l...)
 		for _, state := range componentStates {
 			m.gauge("curntvalv_sink_state", "State of the sink on this node (1 for the current one).",
 				boolf(s.GetState() == state), append(l, label{"state", state})...)

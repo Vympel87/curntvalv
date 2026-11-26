@@ -985,6 +985,53 @@ A backfill reads them from the table into the log, next to the stream.
   WHERE status = 'paid'` after rows leave, enter, are deleted and change
   key, and does not without the option.
 
+### D28. Poison changes
+
+- **The problem.** A change a sink can never accept (a document Meilisearch
+  rejects, a value that does not fit a ClickHouse column, a message above
+  NATS's max_payload) is retried forever, and every later change waits
+  behind it.
+- **`on_error=skip`** (default `retry`, the behaviour of D12). After a batch
+  failed `MaxAttempts` times (5) the runner delivers it one change at a
+  time. A change that still fails is passed over only if the sink accepts
+  another one: first the canary, the last change it accepted (delivering
+  it again is harmless, delivery is at least once), else the next change.
+  If nothing is accepted the sink is taken to be down and the change is
+  retried with backoff: an outage never skips anything.
+- **Recorded through Raft** (`SinkSkip`: sink, log index, change id, error,
+  time), the same on every node: a total per sink and the last 100. The
+  change itself stays in the log, so `curntvalv subscribe --from INDEX`
+  shows it. `curntvalv sink skipped NAME` (`AdminService.SinkSkips`) lists
+  them; `status` has a SKIPPED column, `/metrics`
+  `curntvalv_sink_skipped_total`.
+- **Snapshots.** Skips need snapshot format v8, which v0.6 nodes cannot
+  read; a snapshot is v8 only while a sink has skipped something (D29).
+- **Testing.** Runner tests with a sink that refuses some rows (in the
+  middle and as the very last change), one that is down (nothing skipped,
+  delivery resumes) and the default (a poison change blocks); end to end a
+  webhook refusing one row with a strict and a lenient sink.
+
+### D29. Rolling upgrades
+
+- **Snapshots in the oldest format that holds their state.** A node of the
+  new release may send its snapshot to a node of the old one during a
+  rolling upgrade. The state machine therefore writes the lowest version
+  that represents the state: v8 only with recorded skips (D28), v7
+  otherwise; Raft adds its configuration envelope only after a membership
+  change (D18). New state needs a new section and the old version as long
+  as the section is empty.
+- **New log entries are another matter**: an old node stops on a command it
+  does not know (deliberately, rather than diverge), so features that
+  write new commands are used only once every node runs the new release;
+  CHANGELOG says which ones.
+- **`make test-upgrade`** builds the previous release from its tag
+  (`UPGRADE_FROM`, default v0.6.0) and runs TestRollingUpgrade: a cluster
+  of the old release with Postgres and a webhook sink is upgraded one node
+  at a time while rows are inserted; one old node is kept down until the
+  log is cut past it and must install a snapshot from a new leader. Every
+  row must arrive and every node apply the same log. With snapshots always
+  in the newest format the test fails. CI runs it as its own job.
+
 ## 4. Data model
 
 ```

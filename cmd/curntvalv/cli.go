@@ -211,14 +211,14 @@ func printPipeline(out io.Writer, st *pb.StatusResponse) {
 		return
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SINK\tTYPE\tPOLICY\tSTATE\tOFFSET\tLAG\tDELIVERED\tERROR")
+	fmt.Fprintln(w, "SINK\tTYPE\tPOLICY\tSTATE\tOFFSET\tLAG\tDELIVERED\tSKIPPED\tERROR")
 	for _, s := range st.GetSinks() {
 		e := s.GetLastError()
 		if e == "" {
 			e = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n", s.GetName(), s.GetType(), s.GetPolicy(), s.GetState(),
-			s.GetOffset(), s.GetLag(), s.GetDelivered(), e)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n", s.GetName(), s.GetType(), s.GetPolicy(), s.GetState(),
+			s.GetOffset(), s.GetLag(), s.GetDelivered(), s.GetSkipped(), e)
 	}
 	w.Flush()
 }
@@ -289,7 +289,7 @@ func formatBytes(n int64) string {
 
 // sinkCmd runs "sink reset NAME --to earliest|latest|INDEX".
 func sinkCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	const want = "want: sink reset NAME --to earliest|latest|INDEX"
+	const want = "want: sink reset NAME --to earliest|latest|INDEX | sink skipped NAME"
 	var to string
 	cf, pos, err := parseClientFlags("sink", args, stderr, func(fs *flag.FlagSet) {
 		fs.StringVar(&to, "to", "", "new position: earliest (replay everything retained), latest (skip to now) "+
@@ -297,6 +297,31 @@ func sinkCmd(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	})
 	if err != nil {
 		return err
+	}
+	if len(pos) == 2 && pos[0] == "skipped" {
+		ctx, cancel := context.WithTimeout(ctx, cf.timeout)
+		defer cancel()
+		return onLeader(ctx, cf, func(ctx context.Context, c pb.AdminServiceClient) error {
+			r, err := c.SinkSkips(ctx, &pb.SinkSkipsRequest{Name: pos[1]})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "%d change(s) skipped by sink %s", r.GetTotal(), pos[1])
+			if n := len(r.GetRecent()); uint64(n) < r.GetTotal() {
+				fmt.Fprintf(stdout, ", the last %d:", n)
+			}
+			fmt.Fprintln(stdout)
+			w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "INDEX\tCHANGE\tTIME\tERROR")
+			for _, s := range r.GetRecent() {
+				fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", s.GetIndex(), s.GetId(), time.UnixMicro(s.GetTimeUs()).UTC().Format(time.RFC3339), s.GetError())
+			}
+			w.Flush()
+			if len(r.GetRecent()) > 0 {
+				fmt.Fprintln(stdout, "the changes are still in the log: curntvalv subscribe --from INDEX shows them")
+			}
+			return nil
+		})
 	}
 	if len(pos) != 2 || pos[0] != "reset" {
 		return usageErr(want)

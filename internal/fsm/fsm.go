@@ -42,6 +42,7 @@ const (
 	opSinkReset    op = 4
 	opBackfill     op = 5
 	opSubscription op = 6
+	opSinkSkip     op = 7
 )
 
 const (
@@ -50,7 +51,7 @@ const (
 	// MaxValueSize is the largest allowed value in bytes.
 	MaxValueSize = 1 << 20
 
-	snapshotVersion = 7
+	snapshotVersion = 8
 )
 
 var (
@@ -118,6 +119,8 @@ type FSM struct {
 	backfills map[string]*pb.Backfill
 	// subs are the named subscriptions by name, design D22.
 	subs map[string]*pb.Subscription
+	// skips are the changes sinks passed over, by sink, design D28.
+	skips map[string]SinkSkips
 	// lastChange is the index of the last applied entry with row changes.
 	lastChange uint64
 	applied    uint64
@@ -128,7 +131,8 @@ type FSM struct {
 // New returns an empty state machine.
 func New() *FSM {
 	return &FSM{kv: map[string][]byte{}, schemas: map[uint64]*pb.Schema{}, sinks: map[string]SinkPosition{},
-		backfills: map[string]*pb.Backfill{}, subs: map[string]*pb.Subscription{}, changed: make(chan struct{})}
+		backfills: map[string]*pb.Backfill{}, subs: map[string]*pb.Subscription{},
+		skips: map[string]SinkSkips{}, changed: make(chan struct{})}
 }
 
 // Applied returns the index of the last applied entry and a channel that is
@@ -194,6 +198,8 @@ func (f *FSM) applyMeta(index uint64, b []byte) error {
 		return f.applySinkOffset(key, rest)
 	case opSinkReset:
 		return f.applySinkReset(key, rest)
+	case opSinkSkip:
+		return f.applySinkSkip(key, rest)
 	case opBackfill:
 		if string(key) != backfillKey {
 			return fmt.Errorf("%w: backfill command with key %q", ErrCorrupt, key)
@@ -248,11 +254,15 @@ func (f *FSM) AppliedIndex() uint64 {
 //	| last change index u64 |
 //	| backfill count uvarint | backfill* |
 //	| subscription count uvarint | subscription* |
+//	| skip count uvarint | (sink name, total u64, n uvarint, skip*)* |   (v8)
 //
 // with keys in sorted order, schemas in id order, sinks in name order, and
 // backfills in table order, subscriptions in name order, and each key,
 // value, schema, backfill, subscription (protobuf) and sink name
-// length-prefixed. Version 6 (without subscriptions), 5 (without backfills), 4
+// length-prefixed. A snapshot is written in the oldest version that holds
+// its state, so nodes of the previous release can still install it during
+// a rolling upgrade: version 8 only when sinks skipped changes (design
+// D28), else 7. Version 6 (without subscriptions), 5 (without backfills), 4
 // (without system_id and timeline), 3 (sinks without generation) and 2
 // (without the sink section) are still restored.
 func (f *FSM) Snapshot() ([]byte, error) {
@@ -327,6 +337,29 @@ func (f *FSM) Snapshot() ([]byte, error) {
 			return nil, fmt.Errorf("fsm: snapshot subscription %s: %w", n, err)
 		}
 		b = appendBytes(b, sb)
+	}
+	if len(f.skips) == 0 {
+		b[0] = 7
+		return b, nil
+	}
+	names = names[:0]
+	for n := range f.skips {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	b = binary.AppendUvarint(b, uint64(len(names)))
+	for _, n := range names {
+		sk := f.skips[n]
+		b = appendBytes(b, []byte(n))
+		b = binary.LittleEndian.AppendUint64(b, sk.Total)
+		b = binary.AppendUvarint(b, uint64(len(sk.Recent)))
+		for _, s := range sk.Recent {
+			sb, err := marshalOpts.Marshal(s)
+			if err != nil {
+				return nil, fmt.Errorf("fsm: snapshot skip: %w", err)
+			}
+			b = appendBytes(b, sb)
+		}
 	}
 	return b, nil
 }
@@ -461,12 +494,46 @@ func (f *FSM) Restore(b []byte) error {
 			rest = r
 		}
 	}
+	skips := map[string]SinkSkips{}
+	if b[0] >= 8 {
+		nk, k := binary.Uvarint(rest)
+		if k <= 0 {
+			return fmt.Errorf("%w: bad skip count", ErrCorrupt)
+		}
+		rest = rest[k:]
+		for range nk {
+			name, r, ok := readBytes(rest)
+			if !ok || len(r) < 8 {
+				return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+			}
+			sk := SinkSkips{Total: binary.LittleEndian.Uint64(r[:8])}
+			n, k := binary.Uvarint(r[8:])
+			if k <= 0 {
+				return fmt.Errorf("%w: bad skip list", ErrCorrupt)
+			}
+			r = r[8+k:]
+			for range n {
+				sb, rr, ok := readBytes(r)
+				if !ok {
+					return fmt.Errorf("%w: truncated snapshot", ErrCorrupt)
+				}
+				s := &pb.SinkSkip{}
+				if err := proto.Unmarshal(sb, s); err != nil {
+					return fmt.Errorf("%w: snapshot skip: %v", ErrCorrupt, err)
+				}
+				sk.Recent = append(sk.Recent, s)
+				r = rr
+			}
+			skips[string(name)] = sk
+			rest = r
+		}
+	}
 	if len(rest) != 0 {
 		return fmt.Errorf("%w: trailing bytes in snapshot", ErrCorrupt)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kv, f.src, f.schemas, f.sinks, f.lastChange, f.backfills, f.subs = kv, src, schemas, sinks, lastChange, backfills, subs
+	f.kv, f.src, f.schemas, f.sinks, f.lastChange, f.backfills, f.subs, f.skips = kv, src, schemas, sinks, lastChange, backfills, subs, skips
 	f.setApplied(applied)
 	return nil
 }

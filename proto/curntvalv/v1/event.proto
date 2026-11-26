@@ -205,3 +205,15 @@ message SubscriptionCommand {
   uint64 generation = 4;
   bool drop = 5;
 }
+
+// SinkSkip records a change a sink with on_error=skip could not deliver
+// and passed over (design D28). The change itself stays in the log at
+// index.
+message SinkSkip {
+  string sink = 1;
+  uint64 index = 2;
+  // The change's id ("<commit LSN>:<seq>").
+  string id = 3;
+  string error = 4;
+  int64 time_us = 5;
+}

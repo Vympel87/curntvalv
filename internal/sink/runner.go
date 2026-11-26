@@ -16,6 +16,7 @@ import (
 
 	"github.com/Vympel87/curntvalv/internal/event"
 	"github.com/Vympel87/curntvalv/internal/fsm"
+	pb "github.com/Vympel87/curntvalv/internal/pb/curntvalv/v1"
 	"github.com/Vympel87/curntvalv/internal/raft"
 )
 
@@ -67,6 +68,13 @@ type Config struct {
 	// RetryMin and RetryMax bound the backoff after a failed delivery
 	// (defaults 100ms and 30s).
 	RetryMin, RetryMax time.Duration
+	// SkipPoison passes over a change the sink keeps refusing while it
+	// accepts others (on_error=skip, design D28), and records it through
+	// Raft. By default a failing change is retried until it succeeds.
+	SkipPoison bool
+	// MaxAttempts is how often a batch, and then a single change, is tried
+	// before SkipPoison looks for a poison change (default 5).
+	MaxAttempts int
 	// SkipCommitInterval is how often the offset is stored when entries are
 	// read but none of their changes pass Tables and Shape (default 1s).
 	SkipCommitInterval time.Duration
@@ -95,6 +103,7 @@ type Status struct {
 	State     State
 	Delivered uint64 // changes delivered by this node since it started
 	Failures  uint64 // failed Deliver calls on this node since it started
+	Skipped   uint64 // changes passed over by this node since it started
 	LastError string
 }
 
@@ -106,7 +115,10 @@ type Runner struct {
 	reader  Reader
 	offsets Offsets
 	shape   *shaper
-	log     *slog.Logger
+	// canary is the last change the sink accepted: delivering it again
+	// tells whether the sink is up (design D28).
+	canary *event.Change
+	log    *slog.Logger
 
 	mu     sync.Mutex
 	status Status
@@ -119,6 +131,9 @@ func NewRunner(cfg Config, s Sink, node Node, reader Reader, offsets Offsets) (*
 	}
 	if cfg.MaxEntries <= 0 {
 		cfg.MaxEntries = 100
+	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = 5
 	}
 	if cfg.MaxBatch <= 0 {
 		cfg.MaxBatch = 500
@@ -341,12 +356,14 @@ func (r *Runner) session(ctx context.Context) error {
 }
 
 // deliver hands changes to the sink in batches, retrying each batch with
-// backoff until it succeeds or ctx is cancelled.
+// backoff until it succeeds or ctx is cancelled. With SkipPoison a batch
+// that keeps failing is delivered one change at a time, passing over
+// poison changes.
 func (r *Runner) deliver(ctx context.Context, changes []event.Change) error {
 	for len(changes) > 0 {
 		batch := changes[:min(len(changes), r.cfg.MaxBatch)]
 		backoff := r.cfg.RetryMin
-		for {
+		for attempt := 1; ; attempt++ {
 			err := r.sink.Deliver(ctx, batch)
 			if err == nil {
 				break
@@ -356,18 +373,112 @@ func (r *Runner) deliver(ctx context.Context, changes []event.Change) error {
 			}
 			r.setState(StateRetrying, err)
 			r.addFailure()
+			if r.cfg.SkipPoison && attempt >= r.cfg.MaxAttempts {
+				if err := r.oneByOne(ctx, batch, changes[len(batch):]); err != nil {
+					return err
+				}
+				break
+			}
 			r.log.Warn("delivery failed, retrying", "err", err, "first", batch[0].ID(), "changes", len(batch), "retry_in", backoff)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
+			if err := r.wait(ctx, backoff); err != nil {
+				return err
 			}
 			backoff = min(2*backoff, r.cfg.RetryMax)
 		}
 		r.setState(StateRunning, nil)
 		r.addDelivered(len(batch))
+		last := batch[len(batch)-1]
+		r.canary = &last
 		changes = changes[len(batch):]
 	}
+	return nil
+}
+
+func (r *Runner) wait(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// oneByOne delivers batch change by change (design D28). A change that
+// fails MaxAttempts times is poison if the sink still accepts another
+// change, the canary or a later one: it is recorded and passed over.
+// Otherwise the sink is taken to be down and the change is retried.
+func (r *Runner) oneByOne(ctx context.Context, batch, later []event.Change) error {
+	for i := 0; i < len(batch); i++ {
+		c := batch[i]
+		backoff := r.cfg.RetryMin
+		for {
+			var err error
+			for attempt := 0; attempt < r.cfg.MaxAttempts; attempt++ {
+				if err = r.sink.Deliver(ctx, []event.Change{c}); err == nil || ctx.Err() != nil {
+					break
+				}
+				r.addFailure()
+				if attempt+1 < r.cfg.MaxAttempts {
+					if err := r.wait(ctx, r.cfg.RetryMin); err != nil {
+						return err
+					}
+				}
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err == nil {
+				r.canary = &c
+				break
+			}
+			if r.sinkAccepts(ctx, append(batch[i+1:len(batch):len(batch)], later...)) {
+				if err := r.recordSkip(ctx, c, err); err != nil {
+					return err
+				}
+				break
+			}
+			r.setState(StateRetrying, err)
+			r.log.Warn("delivery failed and the sink accepts nothing; retrying", "err", err, "change", c.ID(), "retry_in", backoff)
+			if err := r.wait(ctx, backoff); err != nil {
+				return err
+			}
+			backoff = min(2*backoff, r.cfg.RetryMax)
+		}
+	}
+	return nil
+}
+
+// sinkAccepts reports whether the sink accepts some other change: the
+// canary, or else the first of later (delivering it early is harmless: it
+// is delivered again in its turn).
+func (r *Runner) sinkAccepts(ctx context.Context, later []event.Change) bool {
+	probe := r.canary
+	if probe == nil && len(later) > 0 {
+		probe = &later[0]
+	}
+	if probe == nil {
+		return false
+	}
+	return r.sink.Deliver(ctx, []event.Change{*probe}) == nil
+}
+
+// recordSkip stores that c was passed over.
+func (r *Runner) recordSkip(ctx context.Context, c event.Change, cause error) error {
+	msg := cause.Error()
+	if len(msg) > 500 {
+		msg = msg[:500]
+	}
+	data, err := fsm.EncodeSinkSkip(&pb.SinkSkip{Sink: r.cfg.Name, Index: c.Index, Id: c.ID(), Error: msg, TimeUs: time.Now().UnixMicro()})
+	if err != nil {
+		return err
+	}
+	if _, err := r.node.Propose(ctx, data); err != nil {
+		return fmt.Errorf("sink: record skipped change %s: %w", c.ID(), err)
+	}
+	r.mu.Lock()
+	r.status.Skipped++
+	r.mu.Unlock()
+	r.log.Error("change skipped: the sink refuses it but accepts others", "change", c.ID(), "index", c.Index, "err", cause)
 	return nil
 }
 

@@ -189,10 +189,10 @@ func parseNodes(status string) []nodeRow {
 }
 
 // sinkLine returns the fields of a sink's line in `curntvalv status`:
-// SINK TYPE POLICY STATE OFFSET LAG DELIVERED ERROR...
+// SINK TYPE POLICY STATE OFFSET LAG DELIVERED SKIPPED ERROR...
 func sinkLine(status, name string) []string {
 	for _, line := range strings.Split(status, "\n") {
-		if f := strings.Fields(line); len(f) >= 8 && f[0] == name && (f[1] == "webhook" || f[1] == "clickhouse") {
+		if f := strings.Fields(line); len(f) >= 9 && f[0] == name && (f[1] == "webhook" || f[1] == "clickhouse") {
 			return f
 		}
 	}
@@ -233,7 +233,7 @@ func TestEndToEndRetentionAndReplay(t *testing.T) {
 	b.setDown(false)
 	waitE2E(t, "sink b to fail", 60*time.Second, func() bool {
 		f := sinkLine(c.mustCLI("status"), "b")
-		return f != nil && f[3] == "failed" && strings.Contains(strings.Join(f[7:], " "), "compaction")
+		return f != nil && f[3] == "failed" && strings.Contains(strings.Join(f[8:], " "), "compaction")
 	})
 	rowRange(t, "a", func() map[string]string { m, _ := a.ids(); return m }(), 1, 300)
 

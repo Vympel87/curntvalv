@@ -180,6 +180,12 @@ func TestParseSinkSpec(t *testing.T) {
 			t.Errorf("%s accepted", bad)
 		}
 	}
+	if oe, err := parseSinkSpec("name=m,type=webhook,url=http://x,on_error=skip"); err != nil || !oe.skipPoison || !sinkConfig(oe).SkipPoison {
+		t.Fatalf("on_error: %+v %v", oe, err)
+	}
+	if _, err := parseSinkSpec("name=m,type=webhook,url=http://x,on_error=ignore"); err == nil {
+		t.Error("on_error=ignore accepted")
+	}
 	mir, err := parseSinkSpec("name=olap,type=clickhouse,url=http://x,mode=mirror,into=pg_{table}")
 	if err != nil || !mir.mirror || mir.chTable != "pg_{table}" {
 		t.Fatalf("mirror: %+v %v", mir, err)
@@ -251,8 +257,8 @@ func TestPrintPipeline(t *testing.T) {
 		Sinks:     []*pb.SinkStatus{{Name: "hook", Type: "webhook", Policy: "block", State: "running", Offset: 9, Lag: 2, Delivered: 30}}})
 	want := "\nRETENTION max age 168h0m0s, max size 10.0 GiB; log 1.5 MiB; removable up to entry 4 (held back by sink hook)\n" +
 		"SOURCE postgres: retrying (pg: connect: refused)\n" +
-		"SINK  TYPE     POLICY  STATE    OFFSET  LAG  DELIVERED  ERROR\n" +
-		"hook  webhook  block   running  9       2    30         -\n"
+		"SINK  TYPE     POLICY  STATE    OFFSET  LAG  DELIVERED  SKIPPED  ERROR\n" +
+		"hook  webhook  block   running  9       2    30         0        -\n"
 	if out.String() != want {
 		t.Fatalf("got\n%q\nwant\n%q", out.String(), want)
 	}
