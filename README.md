@@ -570,7 +570,7 @@ make test-pg # the same, plus the Postgres tests (starts Postgres in Docker)
 make test-ch # the same, plus the ClickHouse tests (starts ClickHouse in Docker)
 make test-sinks # the same, plus NATS, Redis, Meilisearch and Kafka (in Docker)
 make test-ext # with all of them
-make test-upgrade # a rolling upgrade from the previous release (UPGRADE_FROM=v0.9.0)
+make test-upgrade # a rolling upgrade from the previous release (UPGRADE_FROM=v0.10.0)
 make chaos   # random faults against a real cluster and Postgres (CHAOS_TIME=2m, CHAOS_SEED=N)
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 ```
