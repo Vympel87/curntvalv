@@ -43,7 +43,24 @@ jobs:
           MEILI_NO_ANALYTICS: "true"
         ports:
           - 7700:7700
+      kafka:
+        image: apache/kafka:3.9.1
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+          KAFKA_NUM_PARTITIONS: "3"
+        ports:
+          - 9092:9092
     env:
+      CURNTVALV_TEST_KAFKA_URL: kafka://localhost:9092
       CURNTVALV_TEST_REDIS_URL: redis://localhost:6379
       CURNTVALV_TEST_MEILI_URL: http://:curntvalv-test-key@localhost:7700
       CURNTVALV_TEST_NATS_URL: nats://localhost:4222

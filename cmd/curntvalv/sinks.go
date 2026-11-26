@@ -27,8 +27,10 @@ import (
 //	name=NAME,type=nats,url=nats://HOST:PORT[,subject=PREFIX][,stream=STREAM]...
 //	name=NAME,type=redis,url=redis://HOST:PORT[/DB][,stream=KEY][,maxlen=N]...
 //	name=NAME,type=meilisearch,url=http://[:KEY@]HOST:PORT[,index=UID]...
+//	name=NAME,type=kafka,url=kafka://HOST:PORT[,url=...][,topic=T][,sasl=M]...
 type sinkSpec struct {
 	name, typ, url    string
+	urls              []string // every url (kafka takes several)
 	tables            []string
 	startLatest       bool
 	drop              bool // policy=drop: retention does not wait for this sink
@@ -36,10 +38,12 @@ type sinkSpec struct {
 	subject, stream   string // nats; stream also redis
 	maxLen            int64  // redis
 	index             string // meilisearch
+	topic, sasl       string // kafka
 }
 
-const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
-	"[,database=DB][,into=TABLE] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)"
+const sinkUsage = "name=NAME,type=webhook|clickhouse|nats|redis|meilisearch|kafka,url=URL[,table=T]...[,start=earliest|latest][,policy=block|drop]" +
+	"[,database=DB][,into=TABLE] (clickhouse) [,subject=PREFIX][,stream=NAME] (nats) [,stream=KEY][,maxlen=N] (redis) [,index=UID] (meilisearch)" +
+	" [,url=...]...[,topic=T][,sasl=plain|scram-sha-256|scram-sha-512] (kafka)"
 
 // sinkKeys lists the keys only some sink types take.
 func sinkKeys(typ string) []string {
@@ -52,6 +56,8 @@ func sinkKeys(typ string) []string {
 		return []string{"stream", "maxlen"}
 	case "meilisearch":
 		return []string{"index"}
+	case "kafka":
+		return []string{"topic", "sasl"}
 	}
 	return nil
 }
@@ -68,7 +74,7 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 		if !ok || v == "" {
 			return sinkSpec{}, usageErr("--sink: bad part %q, want KEY=VALUE (%s)", part, sinkUsage)
 		}
-		if seen[k] && k != "table" {
+		if seen[k] && k != "table" && k != "url" {
 			return sinkSpec{}, usageErr("--sink: %s given twice", k)
 		}
 		seen[k] = true
@@ -78,7 +84,10 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 		case "type":
 			sp.typ = v
 		case "url":
-			sp.url = v
+			if sp.url == "" {
+				sp.url = v
+			}
+			sp.urls = append(sp.urls, v)
 		case "table":
 			sp.tables = append(sp.tables, v)
 		case "start":
@@ -107,6 +116,10 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 			sp.maxLen = n
 		case "index":
 			sp.index = v
+		case "topic":
+			sp.topic = v
+		case "sasl":
+			sp.sasl = v
 		default:
 			return sinkSpec{}, usageErr("--sink: unknown key %q (%s)", k, sinkUsage)
 		}
@@ -114,12 +127,14 @@ func parseSinkSpec(s string) (sinkSpec, error) {
 	switch {
 	case !fsm.ValidSinkName(sp.name):
 		return sinkSpec{}, usageErr("--sink: name %q must be lower case letters, digits, _ and - (%s)", sp.name, sinkUsage)
-	case !slices.Contains([]string{"webhook", "clickhouse", "nats", "redis", "meilisearch"}, sp.typ):
-		return sinkSpec{}, usageErr("--sink %s: type must be webhook, clickhouse, nats, redis or meilisearch", sp.name)
+	case !slices.Contains([]string{"webhook", "clickhouse", "nats", "redis", "meilisearch", "kafka"}, sp.typ):
+		return sinkSpec{}, usageErr("--sink %s: type must be webhook, clickhouse, nats, redis, meilisearch or kafka", sp.name)
 	case sp.url == "":
 		return sinkSpec{}, usageErr("--sink %s: url is required", sp.name)
+	case len(sp.urls) > 1 && sp.typ != "kafka":
+		return sinkSpec{}, usageErr("--sink %s: url given twice (only kafka takes several brokers)", sp.name)
 	}
-	for _, k := range []string{"database", "into", "subject", "stream", "maxlen", "index"} {
+	for _, k := range []string{"database", "into", "subject", "stream", "maxlen", "index", "topic", "sasl"} {
 		if seen[k] && !slices.Contains(sinkKeys(sp.typ), k) {
 			return sinkSpec{}, usageErr("--sink %s: %s is not a %s option", sp.name, k, sp.typ)
 		}
@@ -140,6 +155,8 @@ func newSink(sp sinkSpec) (sink.Sink, error) {
 		return sink.NewRedis(sink.RedisConfig{URL: sp.url, Stream: sp.stream, MaxLen: sp.maxLen})
 	case "meilisearch":
 		return sink.NewMeilisearch(sink.MeilisearchConfig{URL: sp.url, Index: sp.index})
+	case "kafka":
+		return sink.NewKafka(sink.KafkaConfig{URLs: sp.urls, Topic: sp.topic, SASL: sp.sasl})
 	}
 	return nil, fmt.Errorf("unknown sink type %q", sp.typ)
 }

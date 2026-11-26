@@ -338,7 +338,7 @@ then only the initial configuration.
   `make proto` regenerates it with buf v1.75.0, protoc-gen-go v1.36.12 and
   protoc-gen-go-grpc v1.6.2. Runtime dependencies: `google.golang.org/grpc`
   v1.80.0 (the newest release that still supports Go 1.24) and
-  `google.golang.org/protobuf`.
+  `google.golang.org/protobuf`. The Kafka sink adds franz-go (D20).
 - **RaftService.Stream** is a client stream of one-way Raft messages. Every
   node opens one stream to each peer; replies come back on the peer's own
   stream. `Transport.Send` puts a message in a bounded per-peer queue and
@@ -738,7 +738,7 @@ A backfill reads them from the table into the log, next to the stream.
 - **No new dependencies.** NATS's client protocol, Redis's RESP and
   Meilisearch's REST API are small enough for the standard library, like
   the ClickHouse sink; each sink keeps one connection and opens a new one
-  after any error. Kafka needs a client library and waits.
+  after any error. Kafka's protocol is not; its sink uses a library (D20).
 - **NATS JetStream.** One message per change, subject
   `<prefix>.<namespace>.<table>` (names reduced to subject-safe tokens),
   header `Nats-Msg-Id` = the change id, published with a reply subject and
@@ -768,6 +768,37 @@ A backfill reads them from the table into the log, next to the stream.
   (also in CI); end to end with a leader kill, which redelivers: Redis and
   JetStream hold exactly one entry per change, and Meilisearch equals the
   table. With automatic Redis IDs the end-to-end test finds the duplicates.
+
+### D20. Kafka sink
+
+- **franz-go** (`github.com/twmb/franz-go`, pure Go, no cgo), the only
+  dependency added for a sink: Kafka's protocol (metadata, partition
+  leaders, batches, idempotent producer, SASL) is too large to write by
+  hand. v1.21.7, the newest release that supports Go 1.25 (v1.22 needs Go
+  1.26). Only `pkg/kgo` and `pkg/sasl` are used; it brings `kmsg`,
+  `klauspost/compress` and `pierrec/lz4`.
+- **Records.** One per change: the value is the shared JSON form, the key
+  the replica identity key as a JSON object (`{"id":"5"}`), so the changes
+  of a row land in one partition in order; truncates and resets have no
+  key. Headers `curntvalv-id` and `curntvalv-op`. Topic
+  `curntvalv.{table}` by default (`{table}` = "namespace.name", characters
+  Kafka does not allow become `_`; resets go to `_source_reset`). Topics
+  are created by the brokers if they allow it; create them yourself to
+  choose partitions and replication.
+- **Delivery.** `acks=all` and the idempotent producer, so the client's
+  own retries never duplicate or reorder a record; a batch counts as
+  delivered when every record is acknowledged. After an error the producer
+  is replaced. A new curntValv leader has a new producer id, so the
+  redelivery after a leader change can repeat records: at least once, and
+  consumers de-duplicate on `curntvalv-id`. Transactions would fence an old
+  leader's producer but not make the hand-over exactly once, because the
+  sink offset lives in Raft, not in Kafka.
+- **Not done.** Deletes produce no tombstone, and a key change no
+  tombstone for the old key, so log-compacted topics keep deleted rows.
+- **Testing.** Configuration, topics and keys in unit tests; against a
+  real Kafka 3.9 (KRaft) with `make test-sinks`: order per key, headers, a
+  reset, an unreachable broker. End to end with a leader kill: every change
+  of the log is in the topic.
 
 ## 4. Data model
 

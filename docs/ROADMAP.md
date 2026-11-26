@@ -35,9 +35,9 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0.
 
 ## v0.4 (in progress)
 
-- Sinks: NATS JetStream, Redis Streams, Meilisearch (design D19)
+- Sinks: NATS JetStream, Redis Streams, Meilisearch (design D19), Kafka
+  (design D20)
 
 ## Next
 
-- Kafka sink (needs a client library)
 - Filters and simple transforms per sink

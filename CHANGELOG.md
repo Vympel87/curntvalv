@@ -14,6 +14,9 @@ break compatibility.
   (`type=redis`: `XADD` with entry IDs from the log, so each change is in the
   stream once) and Meilisearch (`type=meilisearch`: a search index mirroring
   each table). No new dependencies (design D19).
+- Kafka sink (`type=kafka`, design D20): a record per change keyed by the
+  row's key, idempotent producer with `acks=all`, SASL PLAIN/SCRAM and TLS,
+  several seed brokers. Adds the dependency franz-go v1.21.7.
 - `make test-sinks` runs their tests against real servers in Docker; CI
   runs them too.
 

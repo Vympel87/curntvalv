@@ -112,10 +112,27 @@ func TestParseSinkSpec(t *testing.T) {
 	if _, err := newSink(sp); err != nil {
 		t.Fatal(err)
 	}
+	kf, err := parseSinkSpec("name=bus,type=kafka,url=kafka://a:9092,url=kafka://b:9092,topic=cdc.{table},table=orders")
+	if err != nil || len(kf.urls) != 2 || kf.topic != "cdc.{table}" {
+		t.Fatalf("kafka: %+v %v", kf, err)
+	}
+	for _, spec := range []string{"name=q,type=nats,url=nats://x,subject=a.b,stream=s", "name=r,type=redis,url=redis://x,stream=k,maxlen=9",
+		"name=m,type=meilisearch,url=http://x,index=i", "name=bus,type=kafka,url=kafka://a:9092,url=kafka://b:9092"} {
+		sp, err := parseSinkSpec(spec)
+		if err != nil {
+			t.Fatalf("%s: %v", spec, err)
+		}
+		if _, err := newSink(sp); err != nil {
+			t.Fatalf("%s: %v", spec, err)
+		}
+	}
 	for _, bad := range []string{
-		"type=webhook,url=http://x",                    // no name
-		"name=Hook,type=webhook,url=http://x",          // bad name
-		"name=h,type=kafka,url=http://x",               // unknown type
+		"type=webhook,url=http://x",                     // no name
+		"name=Hook,type=webhook,url=http://x",           // bad name
+		"name=h,type=mqtt,url=http://x",                 // unknown type
+		"name=h,type=webhook,url=http://x,url=http://y", // several urls: kafka only
+		"name=h,type=redis,url=redis://x,topic=t",       // kafka key on redis
+		"name=h,type=redis,url=redis://x,maxlen=-1",
 		"name=h,type=webhook",                          // no url
 		"name=h,type=webhook,url=http://x,into=t",      // clickhouse key on webhook
 		"name=h,type=webhook,url=http://x,start=now",   // bad start

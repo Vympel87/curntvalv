@@ -226,13 +226,14 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 --sink 'name=queue,type=nats,url=nats://nats:4222'                 # JetStream
 --sink 'name=log,type=redis,url=redis://redis:6379,stream=cdc:{table}'
 --sink 'name=search,type=meilisearch,url=http://:MASTER_KEY@meili:7700'
+--sink 'name=bus,type=kafka,url=kafka://k1:9092,url=kafka://k2:9092'
 ```
 
 | Key | Meaning |
 |---|---|
 | `name` | Required. Lower case letters, digits, `_`, `-`; the offset is stored under it |
-| `type` | `clickhouse`, `webhook`, `nats`, `redis` or `meilisearch` |
-| `url` | ClickHouse HTTP interface, webhook URL, `nats://[USER:PASS@\|TOKEN@]HOST:PORT` (`tls://` for TLS), `redis://[USER:PASS@]HOST:PORT[/DB]` (`rediss://`), or `http[s]://[:API_KEY@]HOST:PORT` for Meilisearch |
+| `type` | `clickhouse`, `webhook`, `nats`, `redis`, `meilisearch` or `kafka` |
+| `url` | ClickHouse HTTP interface, webhook URL, `nats://[USER:PASS@\|TOKEN@]HOST:PORT` (`tls://` for TLS), `redis://[USER:PASS@]HOST:PORT[/DB]` (`rediss://`), `http[s]://[:API_KEY@]HOST:PORT` for Meilisearch, or `kafka://[USER:PASS@]HOST:PORT` (`kafka+tls://`; repeat `url` for more seed brokers) |
 | `table` | Only these tables (`orders` or `public.orders`); repeat for more. Default: all |
 | `start` | `earliest` (default: the whole retained history) or `latest`, for a new sink |
 | `policy` | `block` (default): the log keeps everything the sink has not delivered. `drop`: retention cuts anyway; a sink left behind stops (`failed`) until it is reset |
@@ -240,6 +241,7 @@ Add `--sink` (repeatable) to every node, with the same values everywhere:
 | `subject`, `stream` | NATS subject prefix (default `curntvalv`) and JetStream stream (default `curntvalv`, created if missing, capturing `<subject>.>`) |
 | `stream`, `maxlen` | Redis stream key (default `curntvalv`; `{table}` gives one stream per table) and approximate trim length (default: keep all) |
 | `index` | Meilisearch index uid (default `{namespace}_{table}`) |
+| `topic`, `sasl` | Kafka topic (default `curntvalv.{table}`) and SASL mechanism for the URL's credentials: `plain` (default), `scram-sha-256`, `scram-sha-512` |
 
 Delivery is at-least-once: after a leader change some changes can arrive
 again. Every change has a stable `id` (`"<commit LSN>:<seq>"`). ClickHouse
@@ -265,6 +267,11 @@ The other sinks:
   upserts, deletes and truncates remove documents. Numbers, booleans and
   JSON keep their type. The sink waits until Meilisearch has applied each
   batch.
+- **Kafka**: one record per change, the JSON as value, the row's key
+  (`{"id":"5"}`) as record key so a row's changes stay in order, headers
+  `curntvalv-id` and `curntvalv-op`. Idempotent producer with `acks=all`;
+  after a leader change some records can repeat, so de-duplicate on
+  `curntvalv-id`. No tombstones for deletes yet.
 
 ## Retention and replay
 
@@ -439,7 +446,7 @@ make test    # go vet + go test -race
 make build   # builds ./bin/curntvalv
 make test-pg # the same, plus the Postgres tests (starts Postgres in Docker)
 make test-ch # the same, plus the ClickHouse tests (starts ClickHouse in Docker)
-make test-sinks # the same, plus NATS, Redis and Meilisearch (in Docker)
+make test-sinks # the same, plus NATS, Redis, Meilisearch and Kafka (in Docker)
 make test-ext # with all of them
 make chaos   # random faults against a real cluster and Postgres (CHAOS_TIME=2m, CHAOS_SEED=N)
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)

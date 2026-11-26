@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // redisXLen returns the length of a Redis stream (a minimal RESP client).
@@ -113,10 +116,15 @@ func TestEndToEndStreamSinks(t *testing.T) {
 	f.exec(fmt.Sprintf("INSERT INTO %s SELECT g, 'old' FROM generate_series(1, 300) g", f.table)) // before the cluster
 	name := strings.ReplaceAll(f.table, "_", "")
 	stream := "e2e-" + name
-	c := newE2EWith(t, f.env(), append(f.args(),
+	args := append(f.args(),
 		"--sink", "name=queue,type=nats,url="+natsURL+",subject=e2e."+name+",stream="+stream,
 		"--sink", "name=log,type=redis,url="+redisURL+",stream="+stream+":{table}",
-		"--sink", "name=search,type=meilisearch,url="+meiliURL+",index="+name+"_{table}")...)
+		"--sink", "name=search,type=meilisearch,url="+meiliURL+",index="+name+"_{table}")
+	kafkaURL := os.Getenv("CURNTVALV_TEST_KAFKA_URL")
+	if kafkaURL != "" {
+		args = append(args, "--sink", "name=bus,type=kafka,url="+kafkaURL+",topic="+stream+".{table}")
+	}
+	c := newE2EWith(t, f.env(), args...)
 	sub := c.subscribe("--table", f.table)
 	f.waitSlot()
 	c.mustCLI("backfill", "start", f.table)
@@ -165,4 +173,60 @@ func TestEndToEndStreamSinks(t *testing.T) {
 	if got := meiliDocs(t, meiliURL, name+"_"+f.table); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("meilisearch has %d documents, the table %d rows", len(got), len(want))
 	}
+	if kafkaURL == "" {
+		return
+	}
+	// Kafka is at least once: every change, maybe some twice.
+	wantIDs := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(sub.out.String()), "\n") {
+		var j struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal([]byte(line), &j) == nil && j.ID != "" {
+			wantIDs[j.ID] = true
+		}
+	}
+	u, _ := url.Parse(kafkaURL)
+	var got map[string]int
+	waitE2E(t, "kafka has every change", 60*time.Second, func() bool {
+		got = kafkaIDs(t, u.Host, stream+".public."+f.table)
+		return len(got) >= len(wantIDs)
+	})
+	for id := range wantIDs {
+		if got[id] == 0 {
+			t.Errorf("change %s not in kafka", id)
+		}
+	}
+	if len(got) != len(wantIDs) {
+		t.Errorf("kafka has %d distinct changes, the log %d", len(got), len(wantIDs))
+	}
+}
+
+// kafkaIDs counts the records of a topic by curntvalv-id.
+func kafkaIDs(t *testing.T, broker, topic string) map[string]int {
+	t.Helper()
+	cl, err := kgo.NewClient(kgo.SeedBrokers(broker), kgo.ConsumeTopics(topic), kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	out := map[string]int{}
+	for idle := 0; idle < 2; {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		fs := cl.PollFetches(ctx)
+		cancel()
+		n := 0
+		fs.EachRecord(func(r *kgo.Record) {
+			for _, h := range r.Headers {
+				if h.Key == "curntvalv-id" {
+					out[string(h.Value)]++
+				}
+			}
+			n++
+		})
+		if n == 0 {
+			idle++
+		}
+	}
+	return out
 }

@@ -45,13 +45,15 @@ ch-down:
 test-ch: ch-up
 	CURNTVALV_TEST_CH_URL='$(CH_TEST_URL)' $(MAKE) test
 
-# Tests of the NATS, Redis and Meilisearch sinks read CURNTVALV_TEST_NATS_URL,
-# CURNTVALV_TEST_REDIS_URL and CURNTVALV_TEST_MEILI_URL and are skipped
-# without them. test-sinks starts the three in Docker.
+# Tests of the NATS, Redis, Meilisearch and Kafka sinks read
+# CURNTVALV_TEST_NATS_URL, _REDIS_URL, _MEILI_URL and _KAFKA_URL and are
+# skipped without them. test-sinks starts the four in Docker.
 NATS_TEST_URL ?= nats://127.0.0.1:54222
 REDIS_TEST_URL ?= redis://127.0.0.1:56379
 MEILI_TEST_URL ?= http://:curntvalv-test-key@127.0.0.1:57700
-SINKS_ENV = CURNTVALV_TEST_NATS_URL='$(NATS_TEST_URL)' CURNTVALV_TEST_REDIS_URL='$(REDIS_TEST_URL)' CURNTVALV_TEST_MEILI_URL='$(MEILI_TEST_URL)'
+KAFKA_TEST_URL ?= kafka://127.0.0.1:59092
+SINKS_ENV = CURNTVALV_TEST_NATS_URL='$(NATS_TEST_URL)' CURNTVALV_TEST_REDIS_URL='$(REDIS_TEST_URL)' \
+	CURNTVALV_TEST_MEILI_URL='$(MEILI_TEST_URL)' CURNTVALV_TEST_KAFKA_URL='$(KAFKA_TEST_URL)'
 
 sinks-up:
 	@docker inspect curntvalv-test-nats >/dev/null 2>&1 || docker run -d --name curntvalv-test-nats \
@@ -60,11 +62,19 @@ sinks-up:
 		-p 127.0.0.1:56379:6379 redis:7.4
 	@docker inspect curntvalv-test-meili >/dev/null 2>&1 || docker run -d --name curntvalv-test-meili \
 		-p 127.0.0.1:57700:7700 -e MEILI_MASTER_KEY=curntvalv-test-key -e MEILI_NO_ANALYTICS=true getmeili/meilisearch:v1.11
+	@docker inspect curntvalv-test-kafka >/dev/null 2>&1 || docker run -d --name curntvalv-test-kafka \
+		-p 127.0.0.1:59092:9092 -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+		-e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:59092 \
+		-e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+		-e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+		-e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
+		-e KAFKA_NUM_PARTITIONS=3 apache/kafka:3.9.1
 	@until docker exec curntvalv-test-redis redis-cli ping >/dev/null 2>&1; do sleep 1; done
+	@until docker logs curntvalv-test-kafka 2>&1 | grep -q 'Kafka Server started'; do sleep 1; done
 	@until curl -sf http://127.0.0.1:57700/health >/dev/null; do sleep 1; done
 
 sinks-down:
-	docker rm -f curntvalv-test-nats curntvalv-test-redis curntvalv-test-meili
+	docker rm -f curntvalv-test-nats curntvalv-test-redis curntvalv-test-meili curntvalv-test-kafka
 
 test-sinks: sinks-up
 	$(SINKS_ENV) $(MAKE) test
