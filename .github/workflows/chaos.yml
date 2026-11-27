@@ -1,0 +1,34 @@
+name: chaos
+# Long runs of TestChaos (make chaos, design §5): random node kills, pauses,
+# restarts, replication cuts and sink outages while Postgres changes flow,
+# then exactly-once checks on every consumer, whole transactions on a
+# transactions=true sink, and identical logs on every node. The seed of a
+# run is in its annotations; CURNTVALV_CHAOS_SEED=N make chaos
+# CHAOS_TIME=... repeats its fault schedule.
+on:
+  schedule:
+    - cron: "17 2 * * *" # nightly
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "How long to inject faults (Go duration)"
+        default: "30m"
+      seed:
+        description: "Seed to repeat a run (empty: random)"
+        default: ""
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # The default shell runs with pipefail: the step fails with the test.
+      - name: make chaos
+        run: make chaos CHAOS_TIME="${{ inputs.duration || '30m' }}" CHAOS_SEED="${{ inputs.seed }}" 2>&1 | tee chaos.log
+      - name: Report the failure
+        if: failure()
+        run: |
+          awk '/--- FAIL|^panic:|DATA RACE|chaos_test.go:[0-9]+: / { n++; if (n > 10) exit; msg = $0; for (i = 0; i < 12 && (getline line) > 0; i++) msg = msg "%0A" line; gsub(/::/, ": :", msg); print "::error title=" (n == 1 ? "first failure" : "failure " n) "::" msg }' chaos.log

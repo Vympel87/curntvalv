@@ -19,6 +19,11 @@ break compatibility.
   docs/BENCHMARKS.md with `make bench`: Go benchmarks of the hot paths
   and a 3-node cluster against Postgres (throughput, latency, log size).
 
+- A nightly CI run of the chaos test (30 minutes, `.github/workflows/chaos.yml`,
+  seed in the annotations). The chaos test also pauses followers and
+  checks that a `transactions=true` sink only ever gets whole
+  transactions.
+
 ### Fixed
 
 - `curntvalv` usage lists `sink skipped`.

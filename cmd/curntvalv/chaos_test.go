@@ -2,18 +2,25 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand/v2"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/Vympel87/curntvalv/internal/event"
 )
 
 // slotReady is true when slot $1 exists and no walsender is still creating
@@ -334,11 +341,17 @@ func TestChaos(t *testing.T) {
 		}
 	}
 	t.Logf("chaos seed %d (CURNTVALV_CHAOS_SEED=%d repeats the fault schedule)", seed, seed)
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		// An annotation, readable without the job log.
+		fmt.Printf("::notice title=chaos seed::CURNTVALV_CHAOS_SEED=%d make chaos CHAOS_TIME=%s repeats this run\n", seed, dur)
+	}
 	rng := rand.New(rand.NewPCG(seed, seed))
 
 	hook := newHookReceiver(t) // also fails every fifth request
+	txHook := newTxChecker(t)
 	args := append(f.args(), "--snapshot-entries", "50", "--retention-bytes", "64KB", "--wal-segment-bytes", "16KB",
-		"--sink", "name=hook,type=webhook,url="+hook.url+",table="+f.table)
+		"--sink", "name=hook,type=webhook,url="+hook.url+",table="+f.table,
+		"--sink", "name=txhook,type=webhook,url="+txHook.url+",table="+f.table+",transactions=true")
 	c := newE2EWith(t, f.env(), args...)
 	sub := c.subscribe("--table", f.table)
 	f.waitSlot()
@@ -398,10 +411,22 @@ func TestChaos(t *testing.T) {
 			c.kill(i)
 			sleep(pick(100*time.Millisecond, 3*time.Second))
 			c.start(i)
-		case k < 65:
+		case k < 55:
 			faults["pause leader"]++
 			l := c.leader()
 			p := c.procs[l].cmd.Process
+			p.Signal(syscall.SIGSTOP)
+			sleep(pick(500*time.Millisecond, 3*time.Second))
+			p.Signal(syscall.SIGCONT)
+		case k < 65:
+			// The leader goes on with one follower less.
+			faults["pause follower"]++
+			l := c.leader()
+			i := 1 + rng.IntN(3)
+			if i == l {
+				i = i%3 + 1
+			}
+			p := c.procs[i].cmd.Process
 			p.Signal(syscall.SIGSTOP)
 			sleep(pick(500*time.Millisecond, 3*time.Second))
 			p.Signal(syscall.SIGCONT)
@@ -412,8 +437,10 @@ func TestChaos(t *testing.T) {
 		case k < 93:
 			faults["webhook down"]++
 			hook.setDown(true)
+			txHook.setDown(true)
 			sleep(pick(time.Second, 5*time.Second))
 			hook.setDown(false)
+			txHook.setDown(false)
 		default:
 			faults["restart all"]++
 			for i := 1; i <= 3; i++ {
@@ -426,6 +453,7 @@ func TestChaos(t *testing.T) {
 		}
 	}
 	hook.setDown(false)
+	txHook.setDown(false)
 	wres := <-written
 	rows := wres.rows
 	stopped := time.Now()
@@ -435,12 +463,16 @@ func TestChaos(t *testing.T) {
 		t.Fatal("writer failed")
 	}
 
-	for name, get := range map[string]func() (map[string]string, int){"webhook": hook.ids, "subscriber": sub.ids} {
+	for name, get := range map[string]func() (map[string]string, int){"webhook": hook.ids, "subscriber": sub.ids, "transactions webhook": txHook.ids} {
 		ids := waitRows(t, name, get, rows)
 		rowRange(t, name, ids, 1, rows)
 		_, n := get()
 		t.Logf("%s: %d deliveries for %d rows, complete %s after the writer stopped",
 			name, n, rows, time.Since(stopped).Round(time.Second))
+	}
+
+	if v := txHook.violations(); len(v) > 0 {
+		t.Fatalf("%d deliveries with part of a transaction (design D30), first: %s", len(v), v[0])
 	}
 
 	// Every node holds the same log. Compaction can move while the logs are
@@ -486,4 +518,68 @@ func TestChaos(t *testing.T) {
 		t.Fatalf("no node compacted its log:\n%s", st)
 	}
 	t.Logf("log from index %d identical on all nodes (%d events)", from, events)
+}
+
+// txChecker is a webhook for a sink with transactions=true: it records the
+// rows, and every request whose transactions are not whole (design D30).
+type txChecker struct {
+	mu         sync.Mutex
+	url        string
+	got        map[string]string
+	deliveries int
+	down       bool
+	bad        []string
+}
+
+func newTxChecker(t *testing.T) *txChecker {
+	h := &txChecker{got: map[string]string{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.down {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Events []event.JSON `json:"events"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		perTx := map[string]uint32{}
+		for _, e := range body.Events {
+			perTx[e.LSN]++
+		}
+		for _, e := range body.Events {
+			// The writer's transactions are small, so every one is whole.
+			if e.TxChanges == 0 || e.TxChanges != perTx[e.LSN] {
+				h.bad = append(h.bad, fmt.Sprintf("change %s: tx_changes %d, %d of its transaction in the request", e.ID, e.TxChanges, perTx[e.LSN]))
+			}
+			row, _ := e.After["id"].(string)
+			h.got[e.ID] = row
+			h.deliveries++
+		}
+	}))
+	t.Cleanup(srv.Close)
+	h.url = srv.URL
+	return h
+}
+
+func (h *txChecker) ids() (map[string]string, int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return maps.Clone(h.got), h.deliveries
+}
+
+func (h *txChecker) setDown(down bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.down = down
+}
+
+func (h *txChecker) violations() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.bad)
 }

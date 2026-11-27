@@ -106,11 +106,13 @@ test-ext: pg-up ch-up sinks-up
 	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_TEST_CH_URL='$(CH_TEST_URL)' $(SINKS_ENV) $(MAKE) test
 
 # Random fault injection against a real cluster and Postgres (design §5).
-# CHAOS_SEED=N repeats a run's fault schedule.
+# CHAOS_SEED=N repeats a run's fault schedule; CI runs it nightly for 30
+# minutes (.github/workflows/chaos.yml).
 CHAOS_TIME ?= 2m
+CHAOS_TIMEOUT ?= 3h
 chaos: pg-up
 	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_CHAOS='$(CHAOS_TIME)' CURNTVALV_CHAOS_SEED='$(CHAOS_SEED)' \
-		go test -count=1 -timeout 60m -run 'TestChaos$$' -v ./cmd/curntvalv/
+		go test -count=1 -timeout $(CHAOS_TIMEOUT) -run 'TestChaos$$' -v ./cmd/curntvalv/
 
 # Postgres failover (design D7): a Postgres 17 primary and a streaming
 # standby that syncs failover slots. A promotion cannot be undone, so every

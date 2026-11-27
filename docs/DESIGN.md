@@ -1313,12 +1313,15 @@ The checker runs in two forms (`cmd/curntvalv`, with Postgres):
   exactly once.
 - `TestChaos` (`make chaos`, `CHAOS_TIME`, default 2m): random faults from a
   logged seed (`CHAOS_SEED` repeats a run) — SIGKILL of the leader or any
-  node, SIGSTOP of the leader for up to 3s (a stand-in for a partition;
-  real partitions are covered by the in-process Raft tests), a restart of
-  all nodes, `pg_terminate_backend` on the walsender, and webhook outages —
-  with small retention, so logs are cut and nodes install snapshots
-  meanwhile. Every consumer must hold exactly rows 1..N after
-  de-duplication by event id, and every node the same log.
+  node, SIGSTOP of the leader or of a follower for up to 3s (a stand-in
+  for a partition; real partitions are covered by the in-process Raft
+  tests), a restart of all nodes, `pg_terminate_backend` on the walsender,
+  and webhook outages — with small retention, so logs are cut and nodes
+  install snapshots meanwhile. Every consumer (a webhook, a subscriber, a
+  webhook with `transactions=true`) must hold exactly rows 1..N after
+  de-duplication by event id, the transactional one only whole
+  transactions (D30), and every node the same log. CI runs it nightly for
+  30 minutes (`.github/workflows/chaos.yml`); the seed is an annotation.
 - `TestEndToEndRetentionAndReplay` (part of `make test-pg`): size retention,
   a block sink holding the cut back, a drop sink that falls behind and is
   recovered with a reset, a sink added by a rolling restart, and a replay.
