@@ -136,17 +136,29 @@ test-failover:
 			go test -race -count=1 -run "^TestFailover$$s$$" -v ./internal/source/pg/ || { $(MAKE) --no-print-directory failover-down; exit 1; }; \
 	done; $(MAKE) --no-print-directory failover-down
 
-# Upgrades a running cluster from the release UPGRADE_FROM to this build,
-# one node at a time, with Postgres changes flowing (TestRollingUpgrade).
-# The old binary is built from its tag once and kept in .cache/.
-UPGRADE_FROM ?= v0.10.0
-UPGRADE_DIR = $(CURDIR)/.cache/upgrade-$(UPGRADE_FROM)
+# Upgrades from each release in UPGRADE_FROM to this build (design D34):
+# a rolling upgrade, one node at a time with Postgres changes flowing
+# (TestRollingUpgrade, design D29), and a stopped one, every node started
+# on this build from the old data directories (TestStoppedUpgrade). The
+# releases in STOPPED_UPGRADE_FROM are older than the snapshot format this
+# build sends, so only the stopped upgrade is supported from them. Each old
+# binary is built from its tag once and kept in .cache/.
+UPGRADE_FROM ?= v0.4.0 v0.5.0 v0.6.0 v0.7.0 v0.8.0 v0.9.0 v0.10.0
+STOPPED_UPGRADE_FROM ?= v0.2.1 v0.3.0
 
 test-upgrade: pg-up
-	@test -x $(UPGRADE_DIR)/curntvalv || { \
-		rm -rf $(UPGRADE_DIR)/src && git worktree prune && \
-		git worktree add --detach $(UPGRADE_DIR)/src $(UPGRADE_FROM) && \
-		(cd $(UPGRADE_DIR)/src && go build -o $(UPGRADE_DIR)/curntvalv ./cmd/curntvalv); \
-		status=$$?; git worktree remove --force $(UPGRADE_DIR)/src; exit $$status; }
-	CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_UPGRADE_FROM_BIN=$(UPGRADE_DIR)/curntvalv \
-		go test -count=1 -timeout 20m -run 'TestRollingUpgrade$$' -v ./cmd/curntvalv/
+	@for v in $(UPGRADE_FROM) $(STOPPED_UPGRADE_FROM); do \
+		dir=$(CURDIR)/.cache/upgrade-$$v; \
+		test -x $$dir/curntvalv || { \
+			rm -rf $$dir/src && git worktree prune && \
+			git worktree add --detach $$dir/src $$v && \
+			(cd $$dir/src && go build -o $$dir/curntvalv ./cmd/curntvalv); \
+			status=$$?; git worktree remove --force $$dir/src; test $$status = 0 || exit $$status; }; \
+		case " $(STOPPED_UPGRADE_FROM) " in \
+			*" $$v "*) run='TestStoppedUpgrade$$' ;; \
+			*) run='Test(Rolling|Stopped)Upgrade$$' ;; \
+		esac; \
+		echo "== upgrade from $$v ($$run)"; \
+		CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' CURNTVALV_UPGRADE_FROM_BIN=$$dir/curntvalv \
+			go test -count=1 -timeout 20m -run "$$run" -v ./cmd/curntvalv/ || exit 1; \
+	done

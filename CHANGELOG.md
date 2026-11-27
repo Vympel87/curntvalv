@@ -19,6 +19,13 @@ break compatibility.
 
 - `curntvalv` usage lists `sink skipped`.
 
+### Changed
+
+- `make test-upgrade` and CI test upgrades from every supported release:
+  rolling and stopped (TestStoppedUpgrade, every node started on the new
+  build from the old data directories) from 0.4 to 0.10, stopped only from
+  0.2.1 and 0.3 (design D34).
+
 ## [0.10.0]
 
 ### Added

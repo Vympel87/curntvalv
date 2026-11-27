@@ -80,7 +80,8 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 
 - Compatibility promise (design D34): enforced by baselines in `compat/`
   and data fixtures written by 1.0 (done)
-- Rolling upgrade test from every 0.x release that is still supported
+- Upgrade tests from every supported 0.x release: rolling from 0.4 to
+  0.10, stopped from 0.2.1 and 0.3 (done)
 - Operations guide (sizing, backups, recovery, monitoring), benchmarks
 - Longer chaos runs in CI
 - README: drop the early-development warning; a new demo GIF recorded from

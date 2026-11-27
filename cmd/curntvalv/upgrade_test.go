@@ -118,3 +118,54 @@ func TestRollingUpgrade(t *testing.T) {
 		t.Fatalf("%d panics in the node logs", n)
 	}
 }
+
+// TestStoppedUpgrade stops a cluster of the release in
+// CURNTVALV_UPGRADE_FROM_BIN and starts every node on this build from the
+// same data directories: snapshots and log entries the old release wrote
+// must be read (design D34). Rows keep flowing to the sink.
+func TestStoppedUpgrade(t *testing.T) {
+	old := os.Getenv("CURNTVALV_UPGRADE_FROM_BIN")
+	if old == "" {
+		t.Skip("CURNTVALV_UPGRADE_FROM_BIN not set; run `make test-upgrade`")
+	}
+	f := newPGFixture(t)
+	hook := newHookReceiverWith(t, 0)
+	c := newE2EBins(t, old, f.env(), append(f.args(), "--sink", "name=hook,type=webhook,url="+hook.url,
+		"--snapshot-entries", "20", "--wal-segment-bytes", "32KB", "--retention-bytes", "64KB")...)
+	f.waitSlot()
+	next := 1
+	insert := func(n int) {
+		f.insert(next, next+n-1, 10)
+		next += n
+	}
+	insert(300)
+	waitRows(t, "rows on the old release", func() (map[string]string, int) { return hook.ids() }, next-1)
+	// Snapshots and a cut log on every node, then everyone stops.
+	waitE2E(t, "log cut after a snapshot", 120*time.Second, func() bool {
+		insert(100)
+		return leaderFirst(c.mustCLI("status")) > 1
+	})
+	waitRows(t, "rows before the stop", func() (map[string]string, int) { return hook.ids() }, next-1)
+	for i := 1; i <= 3; i++ {
+		c.stop(i)
+	}
+	insert(100) // while the cluster is down
+	for i := 1; i <= 3; i++ {
+		c.bins[i] = c.bin
+		c.start(i)
+	}
+	insert(100)
+	waitRows(t, "rows after the upgrade", func() (map[string]string, int) { return hook.ids() }, next-1)
+	waitE2E(t, "every node applied the same log", 60*time.Second, func() bool {
+		st := c.mustCLI("status")
+		for _, l := range strings.Split(st, "\n")[1:] {
+			if f := strings.Fields(l); len(f) >= 9 && f[2] == "leader" {
+				return sameApplied(st, f[8]) && len(parseNodes(st)) == 3
+			}
+		}
+		return false
+	})
+	if n := c.logCount("panic"); n > 0 {
+		t.Fatalf("%d panics in the node logs", n)
+	}
+}

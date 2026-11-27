@@ -570,7 +570,7 @@ make test-pg # the same, plus the Postgres tests (starts Postgres in Docker)
 make test-ch # the same, plus the ClickHouse tests (starts ClickHouse in Docker)
 make test-sinks # the same, plus NATS, Redis, Meilisearch and Kafka (in Docker)
 make test-ext # with all of them
-make test-upgrade # a rolling upgrade from the previous release (UPGRADE_FROM=v0.10.0)
+make test-upgrade # rolling and stopped upgrades from every supported release (UPGRADE_FROM=v0.10.0 for one)
 make chaos   # random faults against a real cluster and Postgres (CHAOS_TIME=2m, CHAOS_SEED=N)
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 ```
@@ -581,7 +581,8 @@ Requires Go 1.25+.
 
 From 1.0 on, 1.x releases keep: data directories (a node reads what any
 earlier 1.x wrote; upgrade one node at a time from the previous minor
-release), the gRPC API, the JSON form of a change (new fields may appear),
+release; from 0.x: one node at a time from 0.4 to 0.10, or stop the
+cluster and start it on 1.x from 0.2.1 and 0.3), the gRPC API, the JSON form of a change (new fields may appear),
 commands, flags, config keys, environment variables and `--sink` options,
 metric names, and the Go client's API. Tests enforce it: `compat/` lists
 the public surface and `internal/fsm/testdata/v1` holds data files written

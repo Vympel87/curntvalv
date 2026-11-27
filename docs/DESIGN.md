@@ -1038,13 +1038,14 @@ A backfill reads them from the table into the log, next to the stream.
   does not know (deliberately, rather than diverge), so features that
   write new commands are used only once every node runs the new release;
   CHANGELOG says which ones.
-- **`make test-upgrade`** builds the previous release from its tag
-  (`UPGRADE_FROM`, default v0.10.0) and runs TestRollingUpgrade: a cluster
-  of the old release with Postgres and a webhook sink is upgraded one node
-  at a time while rows are inserted; one old node is kept down until the
-  log is cut past it and must install a snapshot from a new leader. Every
-  row must arrive and every node apply the same log. With snapshots always
-  in the newest format the test fails. CI runs it as its own job.
+- **`make test-upgrade`** builds old releases from their tags and runs
+  TestRollingUpgrade: a cluster of the old release with Postgres and a
+  webhook sink is upgraded one node at a time while rows are inserted; one
+  old node is kept down until the log is cut past it and must install a
+  snapshot from a new leader. Every row must arrive and every node apply
+  the same log. With snapshots always in the newest format the test
+  fails. Which releases, and TestStoppedUpgrade, are in D34. CI runs one
+  job per release.
 
 ### D30. Whole transactions
 
@@ -1203,9 +1204,9 @@ programs depend on. What breaks it waits for 2.0.
 
 - **Data on disk.** A 1.x node reads every data directory an earlier 1.x
   release wrote (WAL, Raft state, snapshots, state machine commands and
-  snapshots), and those of 0.10. A cluster can be upgraded one node at a
-  time from the previous minor release (and any patch of it), and stopped
-  and started on any later 1.x. Snapshots stay in the oldest format that
+  snapshots), and those of 0.x from 0.2.1 on. A cluster can be upgraded one
+  node at a time from the previous minor release (and any patch of it),
+  and stopped and started on any later 1.x. Snapshots stay in the oldest format that
   holds their state (D29). A feature that writes new log commands is used
   only once every node runs the release that knows them; CHANGELOG says
   which ("Upgrading from"). Downgrades are supported between patch
@@ -1250,8 +1251,17 @@ programs depend on. What breaks it waits for 2.0.
     must restore, each to the state in `expect.txt`. `make baseline`
     writes the files only when missing; they are never rewritten. Each
     later release that changes a format adds its own fixture next to them.
-  - `make test-upgrade` runs a rolling upgrade from the previous release
-    (D29).
+  - `make test-upgrade` upgrades from old releases built from their tags:
+    TestRollingUpgrade (D29) and TestStoppedUpgrade, which stops a cluster
+    of the old release after its log was cut behind snapshots and starts
+    every node on the new build from the same data directories. For 1.0
+    both run from every release from 0.4 to 0.10 (`UPGRADE_FROM`). Rolling
+    upgrades from 0.2.1 and 0.3 cannot work, since those nodes cannot read
+    the snapshot format a new leader sends (version 7, from 0.4), so only
+    the stopped upgrade runs from them (`STOPPED_UPGRADE_FROM`). 0.1 and
+    0.2.0 had a bug that lost a transaction committed at the stored idle
+    position (fixed in 0.2.1); upgrade them to 0.2.1 first. Later 1.x
+    releases add each new release to the list and keep 0.10, the last 0.x.
 
 ## 4. Data model
 
