@@ -30,6 +30,10 @@ break compatibility.
 
 ### Changed
 
+- README: no early-development warning; a features overview instead of the
+  per-release status table; a new demo GIF (`docs/demo.tape`, rendered
+  with vhs) showing a whole transaction, a leader kill and a ClickHouse
+  mirror table, which the compose cluster now also has.
 - `make test-upgrade` and CI test upgrades from every supported release:
   rolling and stopped (TestStoppedUpgrade, every node started on the new
   build from the old data directories) from 0.4 to 0.10, stopped only from

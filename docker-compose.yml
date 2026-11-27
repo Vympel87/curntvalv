@@ -6,7 +6,9 @@
 #   docker compose exec postgres psql -U postgres -c "INSERT INTO orders (item, qty) VALUES ('apple', 3)"
 #   curntvalv subscribe --table orders    # the change, as JSON, then new ones
 #   docker compose exec clickhouse clickhouse-client --password curntvalv \
-#     -q "SELECT op, after FROM curntvalv_events FINAL"
+#     -q "SELECT op, after FROM curntvalv_events FINAL"     # every change
+#   docker compose exec clickhouse clickhouse-client --password curntvalv \
+#     -q "SELECT * FROM public_orders FINAL"               # current rows (mirror)
 #   docker compose kill node1             # kill a node (maybe the leader)
 #   docker compose start node1            # it recovers from its volume
 #
@@ -54,21 +56,24 @@ services:
     <<: *node
     command: ["server", "--id", "1", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
               "--listen", "0.0.0.0:7000", "--data-dir", "/data", "--http-listen", "0.0.0.0:8080",
-              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123"]
+              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123",
+              "--sink", "name=mirror,type=clickhouse,url=http://default:curntvalv@clickhouse:8123,mode=mirror"]
     ports: ["127.0.0.1:7001:7000", "127.0.0.1:8081:8080"]
     volumes: ["node1:/data"]
   node2:
     <<: *node
     command: ["server", "--id", "2", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
               "--listen", "0.0.0.0:7000", "--data-dir", "/data", "--http-listen", "0.0.0.0:8080",
-              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123"]
+              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123",
+              "--sink", "name=mirror,type=clickhouse,url=http://default:curntvalv@clickhouse:8123,mode=mirror"]
     ports: ["127.0.0.1:7002:7000", "127.0.0.1:8082:8080"]
     volumes: ["node2:/data"]
   node3:
     <<: *node
     command: ["server", "--id", "3", "--peers", "1=node1:7000,2=node2:7000,3=node3:7000",
               "--listen", "0.0.0.0:7000", "--data-dir", "/data", "--http-listen", "0.0.0.0:8080",
-              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123"]
+              "--sink", "name=ch,type=clickhouse,url=http://default:curntvalv@clickhouse:8123",
+              "--sink", "name=mirror,type=clickhouse,url=http://default:curntvalv@clickhouse:8123,mode=mirror"]
     ports: ["127.0.0.1:7003:7000", "127.0.0.1:8083:8080"]
     volumes: ["node3:/data"]
 

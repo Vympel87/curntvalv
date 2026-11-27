@@ -3,8 +3,11 @@
 **Postgres CDC with a built-in, replicated event log.**
 Kafka-grade replay, single-binary simplicity.
 
-> ⚠️ Early development. Nothing here is ready for production. See the
-> [roadmap](docs/ROADMAP.md) for what exists today.
+From 1.0 on, data directories, the gRPC API, the JSON form of a change,
+the command line and the Go client stay compatible within 1.x
+([Compatibility](#compatibility)). Release notes are in
+[CHANGELOG.md](CHANGELOG.md); running it in production is in
+[docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 curntValv reads changes from Postgres (logical replication), stores them in an
 ordered log replicated across a small cluster with Raft, and delivers them to
@@ -13,9 +16,9 @@ sinks or directly to your application.
 ![Demo: a 3-node cluster keeps capturing changes after its leader is killed](docs/demo.gif)
 
 ```
-Postgres ──► curntValv cluster (3 nodes, one binary) ──► ClickHouse
-                    │                           ├──► Webhook
-                    │                           └──► your app (subscribe)
+Postgres ──► curntValv cluster (3 nodes, one binary) ──► ClickHouse, Kafka, NATS, Redis,
+                    │                           │     Meilisearch, S3, webhooks
+                    │                           └──► your app (gRPC subscribe, Go client)
                     └── replicated, replayable event log
 ```
 
@@ -42,36 +45,30 @@ curntValv aims for the first set of features with the operating cost of the seco
   another broker.
 - **Backfill** — copy the rows a table already has into the log, while
   changes keep flowing, without locking or a long transaction.
+- **Shape per sink** — filter rows with expressions, drop, mask, hash or
+  rename columns, deliver whole transactions, announce schema changes,
+  bound the rate.
 
 ## What it is not
 
 - Not a general-purpose message broker. Use NATS or Kafka for that
   (they can be curntValv sinks).
-- Postgres is the only source.
+- Postgres is the only source for now; others may follow after 1.0
+  ([roadmap](docs/ROADMAP.md)).
 
-## Status
+## Features
 
-| Part | State |
+| Area | |
 |---|---|
-| Design | [docs/DESIGN.md](docs/DESIGN.md) |
-| Log storage (`internal/wal`) | ✅ implemented, tested |
-| Raft: election, replication, snapshots, compaction, linearizable reads | ✅ implemented, fault-tested |
-| gRPC transport, `curntvalv server`, metadata KV | ✅ implemented |
-| Postgres source (exactly-once into the log, tested with leader kills) | ✅ implemented |
-| Sinks (ClickHouse, webhook) with stored offsets, subscribe API | ✅ implemented |
-| Retention, sink policies, replay (`sink reset`), chaos test | ✅ implemented |
-| Dashboard, Prometheus metrics, health checks, live change feed | ✅ implemented |
-| Postgres failover checks, `source reset`, config file | ✅ implemented (v0.3) |
-| Backfill of existing rows | ✅ implemented (v0.3) |
-| Adding and removing nodes at runtime | ✅ implemented (v0.3) |
-| Sinks for NATS JetStream, Redis Streams, Meilisearch, Kafka | ✅ implemented (v0.4) |
-| Filters and column projection per sink, named subscriptions | ✅ implemented (v0.4) |
-| Filter expressions, masks, renames, ClickHouse mirror tables, Kafka tombstones | ✅ implemented (v0.5) |
-| Hashed columns, rows leaving a filter as deletes | ✅ implemented (v0.6) |
-| Poison changes (`on_error=skip`), rolling upgrade test | ✅ implemented (v0.7) |
-| Whole transactions for sinks, Kafka and subscribers | ✅ implemented (v0.8) |
-| Schema change events, ClickHouse mirrors following type changes | ✅ implemented (v0.9) |
-| S3 archive sink, `batch`/`linger`/`max_rate` per sink | ✅ implemented (v0.10) |
+| Capture | Postgres 14+ logical replication; each change stored once, also across leader changes; Postgres failover checks; backfill of existing rows; schema change events |
+| Log | Replicated with Raft (3 or 5 nodes); snapshots; retention by age and size; replay from any retained position; nodes added and removed at runtime |
+| Sinks | ClickHouse (changelog or typed mirror tables), webhooks, Kafka (transactions, tombstones), NATS JetStream, Redis Streams, Meilisearch, S3 archive |
+| Per sink | Table, operation and row filters; column selection, masks, keyed hashes, renames; whole transactions; batching and rate limits; poison change handling |
+| Consumers | gRPC subscribe from any node; Go client; named subscriptions that keep their position |
+| Operations | One binary; config file; TLS and tokens; dashboard; Prometheus metrics; rolling upgrades |
+
+Design decisions are in [docs/DESIGN.md](docs/DESIGN.md), what comes next
+in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Install
 

@@ -86,7 +86,7 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
   (docs/OPERATIONS.md, docs/BENCHMARKS.md, `make bench`) (done)
 - Longer chaos runs in CI: nightly, 30 minutes (done)
 - README: drop the early-development warning; a new demo GIF recorded from
-  a script in the repo, so it can be made again
+  a script in the repo (`docs/demo.tape`), so it can be made again (done)
 
 ## After 1.0
 
