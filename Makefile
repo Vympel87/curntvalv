@@ -1,4 +1,4 @@
-.PHONY: test build baseline proto test-pg pg-up pg-down test-ch ch-up ch-down test-sinks sinks-up sinks-down test-ext chaos failover-up failover-down test-failover test-upgrade
+.PHONY: test build baseline bench proto test-pg pg-up pg-down test-ch ch-up ch-down test-sinks sinks-up sinks-down test-ext chaos failover-up failover-down test-failover test-upgrade
 
 test:
 	go vet ./...
@@ -6,6 +6,17 @@ test:
 
 build:
 	go build -o bin/curntvalv ./cmd/curntvalv
+
+# Benchmarks (docs/BENCHMARKS.md): Go benchmarks of the hot paths, then a
+# 3-node cluster with fsync reading from Postgres and delivering to a local
+# webhook. BENCH_ROWS rows in large transactions, BENCH_SINGLE one-row
+# transactions; BENCH_OUT=FILE also writes the table to FILE.
+BENCH_ROWS ?= 200000
+BENCH_SINGLE ?= 5000
+bench: pg-up
+	go test -run '^$$' -bench . -benchtime 2s ./internal/...
+	CURNTVALV_BENCH=1 CURNTVALV_BENCH_ROWS=$(BENCH_ROWS) CURNTVALV_BENCH_SINGLE=$(BENCH_SINGLE) CURNTVALV_BENCH_OUT=$(BENCH_OUT) \
+		CURNTVALV_TEST_PG_URL='$(PG_TEST_URL)' go test -v -count=1 -timeout 30m -run 'TestBenchmark$$' ./cmd/curntvalv/
 
 # Records new public surface in compat/ and writes missing on-disk fixtures
 # (design D34). It never removes a line or rewrites a fixture.

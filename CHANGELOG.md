@@ -14,6 +14,10 @@ break compatibility.
   webhook body, Go client, commands and flags, `--sink` options, metrics)
   and data files written by this release in `internal/fsm/testdata/v1`
   that later releases must read. `make baseline` records new surface.
+- docs/OPERATIONS.md, an operations guide (layout, sizing, Postgres,
+  monitoring and alert rules, upgrades, recovery, troubleshooting), and
+  docs/BENCHMARKS.md with `make bench`: Go benchmarks of the hot paths
+  and a 3-node cluster against Postgres (throughput, latency, log size).
 
 ### Fixed
 

@@ -572,10 +572,20 @@ make test-sinks # the same, plus NATS, Redis, Meilisearch and Kafka (in Docker)
 make test-ext # with all of them
 make test-upgrade # rolling and stopped upgrades from every supported release (UPGRADE_FROM=v0.10.0 for one)
 make chaos   # random faults against a real cluster and Postgres (CHAOS_TIME=2m, CHAOS_SEED=N)
+make bench   # Go benchmarks and a 3-node cluster against Postgres (docs/BENCHMARKS.md)
+make baseline # record new public surface in compat/ (design D34)
 make proto   # regenerates internal/pb (needs buf, see docs/DESIGN.md D10)
 ```
 
 Requires Go 1.25+.
+
+## Running it in production
+
+[docs/OPERATIONS.md](docs/OPERATIONS.md) covers layout, sizing, Postgres
+settings (and the WAL a slot holds), monitoring with alert rules,
+upgrades, node replacement, recovery and troubleshooting.
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md) has measured throughput and
+latency, and how to measure on your own hardware.
 
 ## Compatibility
 
