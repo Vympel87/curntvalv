@@ -2,7 +2,7 @@
 
 Each milestone ends with something that can be run and shown.
 
-Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
+Done: M0–M7 (v0.1.0), v0.2.0 to v0.10.0, v1.0.0.
 
 | # | Milestone | Done when |
 |---|---|---|
@@ -76,7 +76,7 @@ Done: M0–M7 (v0.1.0), v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0.
 - A rate limit per sink (`max_rate`), so a backfill does not flood a
   search index or a webhook; `batch` and `linger` (designs D32, D33)
 
-## v1.0: stable (next)
+## v1.0: stable (done)
 
 - Compatibility promise (design D34): enforced by baselines in `compat/`
   and data fixtures written by 1.0 (done)

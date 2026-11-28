@@ -3,9 +3,13 @@
 All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/). Before 1.0, minor versions may
-break compatibility.
+break compatibility; from 1.0 on, the promise in README "Compatibility"
+(design D34) holds for every 1.x release.
 
-## [Unreleased]
+## [1.0.0]
+
+The first stable release: no new features over 0.10, but the public
+surface, the data on disk and upgrades are now promised and tested.
 
 ### Added
 
@@ -363,6 +367,10 @@ First release. Early development: not ready for production.
 - No Postgres failover handling yet (design D7), no initial table
   snapshot, static membership.
 
+[1.0.0]: https://github.com/Vympel87/curntvalv/releases/tag/v1.0.0
+[0.10.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.10.0
+[0.9.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.9.0
+[0.8.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.8.0
 [0.7.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Vympel87/curntvalv/releases/tag/v0.5.0
